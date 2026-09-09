@@ -172,8 +172,20 @@ public final class CatalogDtos {
             long itemCount,
             List<ItemSummaryDto> items) {}
 
+    /**
+     * A page of the timeline.
+     *
+     * <p>Groups can span pages, since items are paged and then grouped — a month is an
+     * unbounded group, so the item is the only unit that can be bounded. The client
+     * merges groups by {@code key} as it scrolls.
+     */
     public record TimelineDto(
             String groupBy,
             List<TimelineGroupDto> groups,
-            long undatedCount) {}
+            long undatedCount,
+            int page,
+            int size,
+            long totalItems,
+            int totalPages,
+            boolean hasMore) {}
 }

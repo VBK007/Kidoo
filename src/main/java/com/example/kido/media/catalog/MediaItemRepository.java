@@ -1,8 +1,10 @@
 package com.example.kido.media.catalog;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
@@ -20,7 +22,33 @@ public interface MediaItemRepository
 
     Optional<MediaItem> findByFilePath(String filePath);
 
+    /**
+     * Every present row. Unbounded by nature, so callers that walk the whole library
+     * must use the paged overload below instead of this one.
+     */
     List<MediaItem> findByMissingFalse();
+
+    /** Paged walk over the whole library, for scan-time reconciliation. */
+    Page<MediaItem> findByMissingFalse(Pageable pageable);
+
+    /**
+     * Count and bytes of titles every profile has finished and nobody has touched
+     * since {@code cutoff}.
+     *
+     * <p>An aggregate rather than a full load: this backs one line of the admin Disk
+     * tab, and reading an entire library into memory to render it would be indefensible
+     * once the library is large. The correlated subquery counts how many profiles have
+     * finished each item, and coalesce treats a never-played item by when it was added.
+     */
+    @Query("""
+            select count(m), coalesce(sum(m.fileSize), 0) from MediaItem m
+            where m.missing = false
+              and coalesce(m.lastPlayedAt, m.addedAt) < :cutoff
+              and (select count(p) from PlaybackProgress p
+                   where p.mediaItemId = m.id and p.watched = true) >= :profileCount
+            """)
+    List<Object[]> reclaimableStats(@Param("cutoff") Instant cutoff,
+                                    @Param("profileCount") long profileCount);
 
     long countByMissingFalseAndHiddenFalse();
 
@@ -58,13 +86,6 @@ public interface MediaItemRepository
             """)
     List<Object[]> countAndBytesByType();
 
-    @Query("""
-            select m from MediaItem m
-            where m.missing = false and m.mediaInfo.probedAt is null
-              and m.type in :types
-            """)
-    List<MediaItem> findUnprobed(@Param("types") List<MediaType> types);
-
     long countByMissingTrue();
 
     /** Items whose metadata is trustworthy, as candidate sources for fixing others. */
@@ -90,6 +111,6 @@ public interface MediaItemRepository
     /** Timeline items still lacking a capture date — the client tagging nudge. */
     long countByTypeInAndCapturedAtIsNullAndMissingFalseAndHiddenFalse(List<MediaType> types);
 
-    List<MediaItem> findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDesc(
+    Page<MediaItem> findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDesc(
             List<MediaType> types, Pageable pageable);
 }

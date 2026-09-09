@@ -208,11 +208,20 @@ public class CatalogService {
      * tagged people, which a {@code group by} cannot express.
      */
     @Transactional(readOnly = true)
-    public TimelineDto timeline(Profile profile, String groupBy, int limit) {
+    public TimelineDto timeline(Profile profile, String groupBy, int page, int size) {
         String mode = groupBy == null ? "date" : groupBy.toLowerCase(Locale.ROOT);
-        List<MediaItem> found = items
+
+        // Items are paged and then grouped, rather than grouping the whole library and
+        // paging the groups. A photo library is the one place this catalog can hold tens
+        // of thousands of rows, and a month is an unbounded group — so the page is the
+        // unit that can actually be bounded. Groups may therefore span pages; the client
+        // merges by the stable group key as it scrolls, which is what a timeline UI does
+        // anyway.
+        int pageSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
+        Page<MediaItem> pageOfItems = items
                 .findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDesc(
-                        TIMELINE_TYPES, PageRequest.of(0, Math.min(Math.max(1, limit), 500)));
+                        TIMELINE_TYPES, PageRequest.of(Math.max(0, page), pageSize));
+        List<MediaItem> found = pageOfItems.getContent();
 
         Map<String, PlaybackProgress> progress = playback.progressByItemId(
                 profile, found.stream().map(MediaItem::getId).toList());
@@ -260,7 +269,12 @@ public class CatalogService {
         return new TimelineDto(
                 mode,
                 groups,
-                items.countByTypeInAndCapturedAtIsNullAndMissingFalseAndHiddenFalse(TIMELINE_TYPES));
+                items.countByTypeInAndCapturedAtIsNullAndMissingFalseAndHiddenFalse(TIMELINE_TYPES),
+                pageOfItems.getNumber(),
+                pageOfItems.getSize(),
+                pageOfItems.getTotalElements(),
+                pageOfItems.getTotalPages(),
+                pageOfItems.hasNext());
     }
 
     private static void addTo(Map<String, List<ItemSummaryDto>> grouped,

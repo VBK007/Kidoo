@@ -284,6 +284,54 @@ class MediaCatalogIntegrationTest {
         assertTrue(response.body().contains("NO DATE"), response.body());
     }
 
+    /**
+     * The timeline is the one place this catalog can hold tens of thousands of rows,
+     * so it is paged by item. A month is an unbounded group, which is why the item
+     * rather than the group is the unit that gets bounded.
+     */
+    @Test
+    void timelineIsPagedByItem() throws Exception {
+        for (int i = 0; i < 3; i++) {
+            MediaItem clip = insert("Clip " + i, MediaType.HOME_VIDEO, 2024,
+                    "h264", "mov,mp4", 1080, "aac");
+            clip.setCapturedAt(Instant.parse("2024-0" + (i + 1) + "-15T10:00:00Z"));
+            items.save(clip);
+        }
+
+        HttpResponse<String> firstPage =
+                send("GET", "/api/media/timeline?page=0&size=2", null, token);
+        assertEquals(200, firstPage.statusCode(), firstPage.body());
+        assertTrue(firstPage.body().contains("\"size\":2"), firstPage.body());
+        assertTrue(firstPage.body().contains("\"hasMore\":true"), firstPage.body());
+
+        // The last page is derived rather than assumed: other tests in this class also
+        // insert timeline items into the shared database, so page 1 is not necessarily
+        // the end of the list.
+        long totalPages = number(firstPage.body(), "totalPages");
+        assertTrue(totalPages >= 2, firstPage.body());
+
+        HttpResponse<String> lastPage = send("GET",
+                "/api/media/timeline?page=" + (totalPages - 1) + "&size=2", null, token);
+        assertTrue(lastPage.body().contains("\"hasMore\":false"), lastPage.body());
+    }
+
+    /** Reads a numeric JSON field, for assertions that depend on shared-state totals. */
+    private static long number(String json, String field) {
+        Matcher matcher = Pattern.compile("\"" + field + "\"\\s*:\\s*(\\d+)").matcher(json);
+        if (!matcher.find()) {
+            throw new AssertionError("no numeric field '" + field + "' in " + json);
+        }
+        return Long.parseLong(matcher.group(1));
+    }
+
+    @Test
+    void timelinePageSizeIsCapped() throws Exception {
+        HttpResponse<String> response =
+                send("GET", "/api/media/timeline?size=9999", null, token);
+        assertEquals(200, response.statusCode(), response.body());
+        assertTrue(response.body().contains("\"size\":100"), response.body());
+    }
+
     @Test
     void rejectsUnknownTimelineGrouping() throws Exception {
         assertEquals(400, send("GET", "/api/media/timeline?groupBy=nonsense", null, token)

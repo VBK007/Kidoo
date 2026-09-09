@@ -198,21 +198,13 @@ public class DiskService {
         long staleBytes = 0;
         int staleCount = 0;
         if (profileCount > 0) {
-            // Watched by every profile, and not touched for a year.
-            Map<String, Long> watchedCounts = new LinkedHashMap<>();
-            for (Object[] row : progress.countWatchedByItem()) {
-                watchedCounts.put((String) row[0], ((Number) row[1]).longValue());
-            }
-            for (MediaItem item : items.findByMissingFalse()) {
-                Long watchers = watchedCounts.get(item.getId());
-                boolean everyoneWatched = watchers != null && watchers >= profileCount;
-                boolean old = item.getLastPlayedAt() == null
-                        ? item.getAddedAt() != null && item.getAddedAt().isBefore(cutoff)
-                        : item.getLastPlayedAt().isBefore(cutoff);
-                if (everyoneWatched && old) {
-                    staleBytes += item.getFileSize();
-                    staleCount++;
-                }
+            // A single aggregate. This used to read every row in the library and every
+            // watched-progress row to produce two numbers for one line of this screen,
+            // which is fine on a demo library and indefensible on a real one.
+            List<Object[]> stats = items.reclaimableStats(cutoff, profileCount);
+            if (!stats.isEmpty()) {
+                staleCount = ((Number) stats.get(0)[0]).intValue();
+                staleBytes = ((Number) stats.get(0)[1]).longValue();
             }
         }
 

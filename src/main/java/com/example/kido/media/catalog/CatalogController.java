@@ -89,8 +89,9 @@ public class CatalogController {
     @GetMapping("/timeline")
     public TimelineDto timeline(@ActiveProfile Profile profile,
                                @RequestParam(defaultValue = "date") String groupBy,
-                               @RequestParam(defaultValue = "200") int limit) {
-        return service.timeline(profile, groupBy, limit);
+                               @RequestParam(defaultValue = "0") int page,
+                               @RequestParam(defaultValue = "60") int size) {
+        return service.timeline(profile, groupBy, page, size);
     }
 
     @GetMapping("/genres")

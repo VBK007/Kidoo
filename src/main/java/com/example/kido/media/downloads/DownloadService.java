@@ -18,6 +18,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -59,6 +62,9 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Service
 public class DownloadService {
+
+    /** Ceiling on a requested page size, so one call cannot pull the whole history. */
+    private static final int MAX_PAGE_SIZE = 100;
 
     /** States that count against a profile's queue allowance. */
     private static final List<DownloadJob.State> PENDING_STATES =
@@ -526,10 +532,38 @@ public class DownloadService {
 
     // --- client-facing operations ---
 
+    /**
+     * One page of the Saved list, newest first.
+     *
+     * <p>Paged because this list only grows: cancelled and expired jobs are kept as
+     * history, so a long-lived profile accumulates them indefinitely.
+     */
     @Transactional(readOnly = true)
-    public List<DownloadJob> listFor(Profile profile) {
-        return jobs.findByProfileIdOrderByCreatedAtDesc(profile.getId());
+    public Page<DownloadJob> listFor(Profile profile, int page, int size) {
+        int pageSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
+        return jobs.findByProfileId(profile.getId(),
+                PageRequest.of(Math.max(0, page), pageSize,
+                        Sort.by(Sort.Direction.DESC, "createdAt")));
     }
+
+    /**
+     * Header totals for the Saved list, counted across every page.
+     *
+     * <p>Separate from the page itself on purpose: "3 saved, 12.4 GB" has to describe
+     * the whole list, and deriving it from the visible page would understate it the
+     * moment the list is longer than one page.
+     */
+    @Transactional(readOnly = true)
+    public SavedTotals totalsFor(Profile profile) {
+        return new SavedTotals(
+                jobs.countByProfileIdAndStateIn(profile.getId(),
+                        List.of(DownloadJob.State.READY)),
+                jobs.countByProfileIdAndStateIn(profile.getId(), PENDING_STATES),
+                jobs.sumFileSizeByProfileIdAndState(profile.getId(), DownloadJob.State.READY));
+    }
+
+    /** Totals for the Saved list header. */
+    public record SavedTotals(long readyCount, long inProgressCount, long readyBytes) {}
 
     /** @throws ApiException 404 when the job is unknown or belongs to another profile */
     @Transactional(readOnly = true)
