@@ -142,34 +142,31 @@ public class AdminService {
         ZoneId zone = ZoneId.systemDefault();
         LocalDate today = LocalDate.now(zone);
         LocalDate from = today.minusDays(WATCH_CHART_DAYS - 1L);
-        Instant since = from.atStartOfDay(zone).toInstant();
 
-        Map<LocalDate, Double> secondsByDay = new HashMap<>();
-        for (WatchEvent event : watchEvents.findByOccurredAtGreaterThanEqual(since)) {
-            LocalDate day = event.getOccurredAt().atZone(zone).toLocalDate();
-            secondsByDay.merge(day, event.getSecondsWatched(), Double::sum);
-        }
-
+        // One indexed aggregate per bar, rather than loading the week's events and
+        // bucketing them here. A busy household writes a progress increment every few
+        // seconds, so the in-memory version had to carry thousands of rows to produce
+        // seven numbers.
+        double[] hoursPerDay = new double[WATCH_CHART_DAYS];
         double peakHours = 0;
-        List<double[]> hoursPerDay = new ArrayList<>();
         for (int offset = 0; offset < WATCH_CHART_DAYS; offset++) {
             LocalDate day = from.plusDays(offset);
-            double hours = secondsByDay.getOrDefault(day, 0.0) / 3600.0;
-            peakHours = Math.max(peakHours, hours);
-            hoursPerDay.add(new double[]{offset, hours});
+            Instant dayStart = day.atStartOfDay(zone).toInstant();
+            Instant dayEnd = day.plusDays(1).atStartOfDay(zone).toInstant();
+            hoursPerDay[offset] = watchEvents.sumSecondsBetween(dayStart, dayEnd) / 3600.0;
+            peakHours = Math.max(peakHours, hoursPerDay[offset]);
         }
 
         List<WatchDayDto> chart = new ArrayList<>();
-        for (double[] entry : hoursPerDay) {
-            LocalDate day = from.plusDays((long) entry[0]);
-            double hours = round(entry[1], 2);
+        for (int offset = 0; offset < WATCH_CHART_DAYS; offset++) {
+            LocalDate day = from.plusDays(offset);
             chart.add(new WatchDayDto(
                     day.toString(),
                     day.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
                             .toUpperCase(Locale.ENGLISH),
-                    hours,
+                    round(hoursPerDay[offset], 2),
                     // Only mark a peak that is real; seven zero-hour bars have no peak.
-                    peakHours > 0 && Math.abs(entry[1] - peakHours) < 1e-9));
+                    peakHours > 0 && Math.abs(hoursPerDay[offset] - peakHours) < 1e-9));
         }
         return chart;
     }

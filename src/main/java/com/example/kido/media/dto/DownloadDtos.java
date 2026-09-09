@@ -98,10 +98,21 @@ public final class DownloadDtos {
         }
     }
 
+    /**
+     * A page of the Saved list.
+     *
+     * <p>The counts and byte total describe the whole list rather than the visible
+     * page: "3 saved, 12.4 GB" is a header, and computing it from one page would
+     * understate it as soon as the list is longer than that page.
+     */
     public record DownloadListDto(
             List<DownloadJobDto> items,
-            int readyCount,
-            int inProgressCount,
+            int page,
+            int size,
+            long totalItems,
+            int totalPages,
+            long readyCount,
+            long inProgressCount,
             long readyBytes) {}
 
     /**

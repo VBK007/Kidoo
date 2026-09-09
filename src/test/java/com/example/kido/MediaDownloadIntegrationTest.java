@@ -365,6 +365,49 @@ class MediaDownloadIntegrationTest {
         }
     }
 
+    /**
+     * The Saved list only grows -- cancelled and expired jobs stay as history -- so it
+     * has to be paged, and the header totals have to describe the whole list rather
+     * than the visible page.
+     */
+    @Test
+    void savedListIsPagedWithWholeListTotals() throws Exception {
+        // Two ready copies, so a page size of one splits them.
+        requestDownload(playableId, 1080);
+        MediaItem second = items.save(MediaItem.builder()
+                .type(MediaType.FILM)
+                .filePath(mediaRoot.resolve("Second.2020.720p.mp4").toString())
+                .fileName("Second.2020.720p.mp4")
+                .fileSize(FILE_SIZE)
+                .title("Second Film")
+                .sortTitle("second film")
+                .mediaInfo(MediaInfo.builder()
+                        .container("mov,mp4,m4a").videoCodec("h264").audioCodecs("aac")
+                        .height(720).durationSeconds(600.0).probedAt(Instant.now()).build())
+                .build());
+        Files.write(mediaRoot.resolve("Second.2020.720p.mp4"), new byte[FILE_SIZE]);
+        requestDownload(second.getId(), 1080);
+
+        HttpResponse<String> firstPage = send("GET", "/api/media/downloads?page=0&size=1", null);
+        assertEquals(200, firstPage.statusCode(), firstPage.body());
+        assertTrue(firstPage.body().contains("\"totalItems\":2"), firstPage.body());
+        assertTrue(firstPage.body().contains("\"totalPages\":2"), firstPage.body());
+        // Both ready copies are counted even though only one is on this page.
+        assertTrue(firstPage.body().contains("\"readyCount\":2"), firstPage.body());
+        assertTrue(firstPage.body().contains("\"readyBytes\":" + (FILE_SIZE * 2)),
+                firstPage.body());
+
+        HttpResponse<String> secondPage = send("GET", "/api/media/downloads?page=1&size=1", null);
+        assertTrue(secondPage.body().contains("\"page\":1"), secondPage.body());
+    }
+
+    @Test
+    void savedListPageSizeIsCapped() throws Exception {
+        HttpResponse<String> response = send("GET", "/api/media/downloads?size=9999", null);
+        assertEquals(200, response.statusCode(), response.body());
+        assertTrue(response.body().contains("\"size\":100"), response.body());
+    }
+
     @Test
     void unknownJobIsNotFound() throws Exception {
         assertEquals(404, send("GET", "/api/media/downloads/nope", null).statusCode());

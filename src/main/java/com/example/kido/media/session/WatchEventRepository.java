@@ -14,9 +14,29 @@ import org.springframework.data.repository.query.Param;
  */
 public interface WatchEventRepository extends JpaRepository<WatchEvent, String> {
 
-    List<WatchEvent> findByOccurredAtGreaterThanEqual(Instant since);
+    /**
+     * Seconds watched inside one window, across everyone.
+     *
+     * <p>The seven-day chart asks this once per day rather than loading the week's
+     * events and bucketing them in memory. Each call is an indexed range aggregate
+     * returning a single number, where the in-memory version had to carry every row a
+     * busy household produced — several thousand a week at one report every few
+     * seconds. Seven cheap queries beat one large transfer, and it stays portable
+     * across H2 and PostgreSQL, which disagree on date-truncation functions.
+     */
+    @Query("""
+            select coalesce(sum(e.secondsWatched), 0) from WatchEvent e
+            where e.occurredAt >= :from and e.occurredAt < :to
+            """)
+    double sumSecondsBetween(@Param("from") Instant from, @Param("to") Instant to);
 
-    List<WatchEvent> findByProfileIdAndOccurredAtGreaterThanEqual(String profileId, Instant since);
+    @Query("""
+            select coalesce(sum(e.secondsWatched), 0) from WatchEvent e
+            where e.profileId = :profileId and e.occurredAt >= :from and e.occurredAt < :to
+            """)
+    double sumSecondsForProfileBetween(@Param("profileId") String profileId,
+                                       @Param("from") Instant from,
+                                       @Param("to") Instant to);
 
     @Query("""
             select coalesce(sum(e.secondsWatched), 0) from WatchEvent e

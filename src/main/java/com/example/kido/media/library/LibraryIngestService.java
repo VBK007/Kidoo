@@ -13,6 +13,9 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,6 +48,9 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Service
 public class LibraryIngestService {
+
+    /** Rows per page when reconciling the library against the disk. */
+    private static final int RECONCILE_PAGE_SIZE = 500;
 
     private final MediaProperties props;
     private final MediaItemRepository items;
@@ -174,19 +180,45 @@ public class LibraryIngestService {
     @Transactional
     public int markMissing(Set<String> seenPaths) {
         Set<String> seen = new HashSet<>(seenPaths);
-        List<MediaItem> gone = new ArrayList<>();
-        for (MediaItem item : items.findByMissingFalse()) {
-            if (!seen.contains(item.getFilePath())) {
-                item.setMissing(true);
-                item.setUpdatedAt(Instant.now());
-                gone.add(item);
+        int marked = 0;
+
+        // Walked a page at a time rather than loaded whole. Every indexed row has to be
+        // examined — that is what reconciliation means — but holding a terabyte library
+        // in memory to do it is avoidable. Paging backwards is deliberate: marking a row
+        // missing removes it from this query's result set, so advancing the page number
+        // would skip rows as the set shrinks underneath.
+        int pageNumber = 0;
+        while (true) {
+            Page<MediaItem> page = items.findByMissingFalse(
+                    PageRequest.of(pageNumber, RECONCILE_PAGE_SIZE, Sort.by("id")));
+            if (page.isEmpty()) {
+                break;
+            }
+            List<MediaItem> gone = new ArrayList<>();
+            for (MediaItem item : page.getContent()) {
+                if (!seen.contains(item.getFilePath())) {
+                    item.setMissing(true);
+                    item.setUpdatedAt(Instant.now());
+                    gone.add(item);
+                }
+            }
+            if (!gone.isEmpty()) {
+                items.saveAll(gone);
+                items.flush();
+                marked += gone.size();
+                // Those rows have left the result set, so stay on this page number.
+            } else {
+                pageNumber++;
+            }
+            if (!page.hasNext() && gone.isEmpty()) {
+                break;
             }
         }
-        if (!gone.isEmpty()) {
-            items.saveAll(gone);
-            log.info("Marked {} items as missing", gone.size());
+
+        if (marked > 0) {
+            log.info("Marked {} items as missing", marked);
         }
-        return gone.size();
+        return marked;
     }
 
     /** Probes on demand for a row indexed while {@code probe-on-scan} was off. */

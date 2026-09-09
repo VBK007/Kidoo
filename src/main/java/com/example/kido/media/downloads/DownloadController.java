@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 
+import org.springframework.data.domain.Page;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -81,23 +82,29 @@ public class DownloadController {
                 : ResponseEntity.accepted().body(DownloadJobDto.from(job));
     }
 
-    /** The Saved list. */
+    /**
+     * The Saved list, paged newest first.
+     *
+     * <p>Header totals are counted server-side across every page, so they stay correct
+     * once the history is longer than one page.
+     */
     @GetMapping("/downloads")
-    public DownloadListDto list(@ActiveProfile Profile profile) {
-        List<DownloadJob> jobs = downloads.listFor(profile);
-        List<DownloadJobDto> dtos = jobs.stream().map(DownloadJobDto::from).toList();
+    public DownloadListDto list(@ActiveProfile Profile profile,
+                                @RequestParam(defaultValue = "0") int page,
+                                @RequestParam(defaultValue = "20") int size) {
 
-        int ready = (int) jobs.stream().filter(DownloadJob::isFetchable).count();
-        int inProgress = (int) jobs.stream()
-                .filter(job -> job.getState() == DownloadJob.State.QUEUED
-                        || job.getState() == DownloadJob.State.CONVERTING)
-                .count();
-        long readyBytes = jobs.stream()
-                .filter(DownloadJob::isFetchable)
-                .mapToLong(job -> job.getFileSize() == null ? 0 : job.getFileSize())
-                .sum();
+        Page<DownloadJob> jobs = downloads.listFor(profile, page, size);
+        DownloadService.SavedTotals totals = downloads.totalsFor(profile);
 
-        return new DownloadListDto(dtos, ready, inProgress, readyBytes);
+        return new DownloadListDto(
+                jobs.getContent().stream().map(DownloadJobDto::from).toList(),
+                jobs.getNumber(),
+                jobs.getSize(),
+                jobs.getTotalElements(),
+                jobs.getTotalPages(),
+                totals.readyCount(),
+                totals.inProgressCount(),
+                totals.readyBytes());
     }
 
     /** Polled while a conversion runs, for the percentage on the card. */
