@@ -14,18 +14,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.example.kido.common.ApiException;
-import com.example.kido.media.catalog.Movie;
-import com.example.kido.media.catalog.MovieRepository;
-import com.example.kido.media.dto.CatalogDtos.MovieSummaryDto;
+import com.example.kido.media.catalog.MediaItem;
+import com.example.kido.media.catalog.MediaItemRepository;
+import com.example.kido.media.dto.CatalogDtos.ItemSummaryDto;
 import com.example.kido.media.dto.PlaybackDtos.ContinueWatchingDto;
 import com.example.kido.media.dto.PlaybackDtos.ProgressDto;
 import com.example.kido.media.dto.PlaybackDtos.ProgressRequest;
-import com.example.kido.user.AppUser;
+import com.example.kido.media.dto.PlayerDtos.SubtitleOffsetRequest;
+import com.example.kido.media.dto.PlayerDtos.TrackSelectionRequest;
+import com.example.kido.profile.Profile;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Tracks how far each user has watched, and builds the "continue watching" row.
+ * Tracks how far each profile has watched, and builds the continue-watching row.
  */
 @Slf4j
 @Service
@@ -39,45 +41,39 @@ public class PlaybackService {
     private static final double WATCHED_FRACTION = 0.95;
 
     /**
-     * Below this many seconds nothing is remembered — otherwise every accidental tap
-     * on a poster would litter the continue-watching row.
+     * Below this many seconds nothing is remembered — otherwise every accidental tap on
+     * a poster would litter the continue-watching row.
      */
     private static final double MIN_TRACKED_SECONDS = 30;
 
     private final PlaybackProgressRepository progressRepository;
-    private final MovieRepository movies;
+    private final MediaItemRepository items;
 
-    public PlaybackService(PlaybackProgressRepository progressRepository, MovieRepository movies) {
+    public PlaybackService(PlaybackProgressRepository progressRepository,
+                           MediaItemRepository items) {
         this.progressRepository = progressRepository;
-        this.movies = movies;
+        this.items = items;
     }
 
     /**
      * Records a client-reported position.
      *
      * <p>Positions arrive every few seconds during playback, so this is an upsert on
-     * {@code (user, movie)} rather than an append — the table stays one row per pairing.
+     * {@code (profile, item)} rather than an append — the table stays one row per pairing.
      */
     @Transactional
-    public ProgressDto record(AppUser user, String movieId, ProgressRequest request) {
-        Movie movie = movies.findById(movieId).orElseThrow(
-                () -> new ApiException(HttpStatus.NOT_FOUND, "Movie not found"));
+    public ProgressDto record(Profile profile, String itemId, ProgressRequest request) {
+        MediaItem item = requireItem(itemId);
 
         double position = Math.max(0, request.positionSeconds());
         Double duration = request.durationSeconds() != null && request.durationSeconds() > 0
                 ? request.durationSeconds()
-                : durationFromProbe(movie);
+                : durationFromProbe(item);
 
         boolean finished = Boolean.TRUE.equals(request.finished())
                 || (duration != null && duration > 0 && position >= duration * WATCHED_FRACTION);
 
-        PlaybackProgress progress = progressRepository
-                .findByUserIdAndMovieId(user.getId(), movieId)
-                .orElseGet(() -> PlaybackProgress.builder()
-                        .userId(user.getId())
-                        .movieId(movieId)
-                        .build());
-
+        PlaybackProgress progress = existingOrNew(profile, itemId);
         progress.setPositionSeconds(position);
         if (duration != null) {
             progress.setDurationSeconds(duration);
@@ -85,61 +81,102 @@ public class PlaybackService {
         progress.setWatched(finished);
         progress.setUpdatedAt(Instant.now());
 
-        PlaybackProgress saved = progressRepository.save(progress);
-        return toDto(saved);
+        return toDto(progressRepository.save(progress));
     }
 
     @Transactional(readOnly = true)
-    public Optional<ProgressDto> find(AppUser user, String movieId) {
-        return progressRepository.findByUserIdAndMovieId(user.getId(), movieId)
+    public Optional<ProgressDto> find(Profile profile, String itemId) {
+        return progressRepository.findByProfileIdAndMediaItemId(profile.getId(), itemId)
                 .map(PlaybackService::toDto);
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<PlaybackProgress> findEntity(Profile profile, String itemId) {
+        return progressRepository.findByProfileIdAndMediaItemId(profile.getId(), itemId);
     }
 
     /** Clears resume state so a title starts from the beginning again. */
     @Transactional
-    public void reset(AppUser user, String movieId) {
-        progressRepository.deleteByUserIdAndMovieId(user.getId(), movieId);
+    public void reset(Profile profile, String itemId) {
+        progressRepository.deleteByProfileIdAndMediaItemId(profile.getId(), itemId);
     }
 
     /**
-     * Resume state for a batch of movies, keyed by movie id.
+     * Stores the subtitle sync offset for this profile and file.
+     *
+     * <p>Kept alongside progress rather than in its own table because it is corrected
+     * once per file and then only read when that file is opened.
+     */
+    @Transactional
+    public ProgressDto setSubtitleOffset(Profile profile, String itemId,
+                                         SubtitleOffsetRequest request) {
+        requireItem(itemId);
+        PlaybackProgress progress = existingOrNew(profile, itemId);
+        progress.setSubtitleOffsetSeconds(request.offsetSeconds());
+        progress.setUpdatedAt(Instant.now());
+        return toDto(progressRepository.save(progress));
+    }
+
+    /** Remembers the chosen subtitle and audio tracks so playback resumes with them. */
+    @Transactional
+    public ProgressDto setTracks(Profile profile, String itemId, TrackSelectionRequest request) {
+        requireItem(itemId);
+        PlaybackProgress progress = existingOrNew(profile, itemId);
+        if (request.subtitleTrackIndex() != null) {
+            progress.setSubtitleTrackIndex(request.subtitleTrackIndex());
+        }
+        if (request.audioTrackIndex() != null) {
+            progress.setAudioTrackIndex(request.audioTrackIndex());
+        }
+        progress.setUpdatedAt(Instant.now());
+        return toDto(progressRepository.save(progress));
+    }
+
+    /**
+     * Resume state for a batch of items, keyed by item id.
      *
      * <p>One query for the whole page: doing it per row is the classic N+1 that makes a
-     * catalog grid slow once a library gets large.
+     * catalog grid slow once a library grows.
      */
     @Transactional(readOnly = true)
-    public Map<String, PlaybackProgress> progressByMovieId(AppUser user, Collection<String> movieIds) {
-        if (movieIds.isEmpty()) {
+    public Map<String, PlaybackProgress> progressByItemId(Profile profile,
+                                                          Collection<String> itemIds) {
+        if (itemIds.isEmpty()) {
             return Map.of();
         }
-        Map<String, PlaybackProgress> byMovie = new HashMap<>();
+        Map<String, PlaybackProgress> byItem = new HashMap<>();
         for (PlaybackProgress progress :
-                progressRepository.findByUserIdAndMovieIdIn(user.getId(), movieIds)) {
-            byMovie.put(progress.getMovieId(), progress);
+                progressRepository.findByProfileIdAndMediaItemIdIn(profile.getId(), itemIds)) {
+            byItem.put(progress.getMediaItemId(), progress);
         }
-        return byMovie;
+        return byItem;
     }
 
     /**
-     * Titles the user has started but not finished, newest first.
+     * Titles this profile has started but not finished, newest first.
      *
-     * <p>Rows whose movie has since gone missing from disk are dropped rather than
-     * shown as un-playable entries.
+     * <p>Rows whose file has since gone missing are dropped rather than offered as
+     * un-playable entries.
      */
     @Transactional(readOnly = true)
-    public List<ContinueWatchingDto> continueWatching(AppUser user, int limit) {
+    public List<ContinueWatchingDto> continueWatching(Profile profile, int limit) {
         List<PlaybackProgress> started = progressRepository
-                .findByUserIdAndWatchedFalseAndPositionSecondsGreaterThanOrderByUpdatedAtDesc(
-                        user.getId(), MIN_TRACKED_SECONDS, PageRequest.of(0, Math.max(1, limit)));
+                .findByProfileIdAndWatchedFalseAndPositionSecondsGreaterThanOrderByUpdatedAtDesc(
+                        profile.getId(), MIN_TRACKED_SECONDS,
+                        PageRequest.of(0, Math.max(1, limit)));
 
         List<ContinueWatchingDto> out = new ArrayList<>();
         for (PlaybackProgress progress : started) {
-            Optional<Movie> movie = movies.findById(progress.getMovieId());
-            if (movie.isEmpty() || movie.get().isMissing()) {
+            Optional<MediaItem> item = items.findById(progress.getMediaItemId());
+            if (item.isEmpty() || !item.get().isBrowsable()) {
                 continue;
             }
             out.add(new ContinueWatchingDto(
-                    MovieSummaryDto.from(movie.get(), (int) progress.getPositionSeconds(), false),
+                    ItemSummaryDto.from(
+                            item.get(),
+                            (int) progress.getPositionSeconds(),
+                            false,
+                            progress.percentComplete()),
                     progress.getPositionSeconds(),
                     progress.getDurationSeconds(),
                     progress.percentComplete()));
@@ -147,16 +184,33 @@ public class PlaybackService {
         return out;
     }
 
-    private static Double durationFromProbe(Movie movie) {
-        return movie.getMediaInfo() == null ? null : movie.getMediaInfo().getDurationSeconds();
+    private PlaybackProgress existingOrNew(Profile profile, String itemId) {
+        return progressRepository.findByProfileIdAndMediaItemId(profile.getId(), itemId)
+                .orElseGet(() -> PlaybackProgress.builder()
+                        .profileId(profile.getId())
+                        .mediaItemId(itemId)
+                        .build());
+    }
+
+    private MediaItem requireItem(String itemId) {
+        return items.findById(itemId).orElseThrow(
+                () -> new ApiException(HttpStatus.NOT_FOUND, "Item not found"));
+    }
+
+    private static Double durationFromProbe(MediaItem item) {
+        return item.getMediaInfo() == null ? null : item.getMediaInfo().getDurationSeconds();
     }
 
     private static ProgressDto toDto(PlaybackProgress progress) {
         return new ProgressDto(
-                progress.getMovieId(),
+                progress.getMediaItemId(),
                 progress.getPositionSeconds(),
                 progress.getDurationSeconds(),
                 progress.isWatched(),
+                progress.percentComplete(),
+                progress.getSubtitleOffsetSeconds(),
+                progress.getSubtitleTrackIndex(),
+                progress.getAudioTrackIndex(),
                 progress.getUpdatedAt().toString());
     }
 }

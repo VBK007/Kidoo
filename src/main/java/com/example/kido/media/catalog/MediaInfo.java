@@ -52,6 +52,13 @@ public class MediaInfo {
     @Column(name = "probe_audio_channels")
     private Integer audioChannels;
 
+    /**
+     * Audio tracks as {@code index:codec:language:title} entries, so the player's audio
+     * chip can offer "English 5.1" / "Hindi" rather than just a count.
+     */
+    @Column(name = "probe_audio_tracks", length = 2000)
+    private String audioTracks;
+
     /** Embedded subtitle tracks, as {@code index:codec:language} entries. */
     @Column(name = "probe_subtitles", length = 2000)
     private String embeddedSubtitles;

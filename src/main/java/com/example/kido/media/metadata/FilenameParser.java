@@ -1,9 +1,14 @@
 package com.example.kido.media.metadata;
 
+import java.time.DateTimeException;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -36,6 +41,15 @@ public class FilenameParser {
             "(?i)(bluray|blu-ray|bdrip|brrip|remux|web-dl|webdl|webrip|web|hdrip|dvdrip|hdtv)");
 
     private static final Set<String> LEADING_ARTICLES = Set.of("the", "a", "an");
+
+    /**
+     * A camera/phone capture stamp: {@code 20240102_181500}, {@code 2024-01-02 18.15.00}
+     * or just {@code 2024-01-02}. Time separators are optional because every vendor
+     * picks a different one, and trailing milliseconds are ignored.
+     */
+    private static final Pattern CAPTURE_STAMP = Pattern.compile(
+            "(?<year>(?:19|20)\\d{2})[-_.]?(?<month>\\d{2})[-_.]?(?<day>\\d{2})"
+                    + "(?:[-_.T ]?(?<hour>\\d{2})[-_.:]?(?<minute>\\d{2})[-_.:]?(?<second>\\d{2})?)?");
 
     /**
      * @param baseName filename with the extension already stripped
@@ -105,6 +119,64 @@ public class FilenameParser {
             });
         }
         return parts.isEmpty() ? null : String.join(" ", parts);
+    }
+
+    /**
+     * Extracts a capture timestamp from a camera or phone filename.
+     *
+     * <p>Phones and cameras encode the moment in the name — {@code VID_20240102_181500},
+     * {@code IMG-20231225-WA0003}, {@code PXL_20240102_181500123}, {@code 2024-01-02
+     * 18.15.00} — and that is far more reliable than any filesystem timestamp, which a
+     * copy between disks resets. Only the date part is required; a missing time becomes
+     * midnight.
+     *
+     * <p>Interpreted in the system zone: a home camera writes local wall-clock time with
+     * no zone information, so the server's own zone is the closest available guess.
+     *
+     * @return the capture instant, or empty if the name carries no plausible date
+     */
+    public Optional<Instant> captureInstant(String baseName) {
+        Matcher matcher = CAPTURE_STAMP.matcher(baseName);
+        if (!matcher.find()) {
+            return Optional.empty();
+        }
+        try {
+            int year = Integer.parseInt(matcher.group("year"));
+            int month = Integer.parseInt(matcher.group("month"));
+            int day = Integer.parseInt(matcher.group("day"));
+
+            // Guard against matching an unrelated run of digits.
+            if (year < 1970 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) {
+                return Optional.empty();
+            }
+
+            int hour = optionalInt(matcher.group("hour"));
+            int minute = optionalInt(matcher.group("minute"));
+            int second = optionalInt(matcher.group("second"));
+            if (hour > 23 || minute > 59 || second > 59) {
+                hour = 0;
+                minute = 0;
+                second = 0;
+            }
+
+            return Optional.of(LocalDateTime.of(year, month, day, hour, minute, second)
+                    .atZone(ZoneId.systemDefault())
+                    .toInstant());
+        } catch (NumberFormatException | DateTimeException ex) {
+            // A date-shaped but invalid string, e.g. 20240230.
+            return Optional.empty();
+        }
+    }
+
+    private static int optionalInt(String group) {
+        if (group == null || group.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(group);
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
     }
 
     /**

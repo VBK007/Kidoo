@@ -47,7 +47,7 @@ public final class PlaybackDtos {
 
     /** How the client should play a title, and why. */
     public record PlaybackDecisionDto(
-            String movieId,
+            String mediaItemId,
             Mode mode,
             String url,
             String sessionId,
@@ -70,22 +70,26 @@ public final class PlaybackDtos {
             Boolean finished) {}
 
     public record ProgressDto(
-            String movieId,
+            String mediaItemId,
             double positionSeconds,
             Double durationSeconds,
             boolean watched,
+            Integer percentComplete,
+            Double subtitleOffsetSeconds,
+            Integer subtitleTrackIndex,
+            Integer audioTrackIndex,
             String updatedAt) {}
 
     /** One entry in the "continue watching" row. */
     public record ContinueWatchingDto(
-            CatalogDtos.MovieSummaryDto movie,
+            CatalogDtos.ItemSummaryDto item,
             double positionSeconds,
             Double durationSeconds,
             Integer percentComplete) {}
 
     public record TranscodeSessionDto(
             String sessionId,
-            String movieId,
+            String mediaItemId,
             String playlistUrl,
             double startSeconds,
             int height,

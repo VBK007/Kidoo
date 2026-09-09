@@ -16,47 +16,54 @@ import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.example.kido.media.MediaFiles;
+import com.example.kido.media.MediaPaths;
 import com.example.kido.media.MediaProperties;
-import com.example.kido.media.VideoFiles;
 import com.example.kido.media.catalog.MediaInfo;
+import com.example.kido.media.catalog.MediaItem;
+import com.example.kido.media.catalog.MediaItemRepository;
+import com.example.kido.media.catalog.MediaType;
 import com.example.kido.media.catalog.MetadataSource;
-import com.example.kido.media.catalog.Movie;
-import com.example.kido.media.catalog.MovieRepository;
 import com.example.kido.media.metadata.FilenameParser;
 import com.example.kido.media.metadata.NfoParser;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.metadata.SidecarMetadata;
+import com.example.kido.media.probe.MediaChapter;
+import com.example.kido.media.probe.MediaChapterRepository;
 import com.example.kido.media.probe.MediaProbe;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Reconciles a single file on disk with its {@code movies} row.
+ * Reconciles a single file on disk with its {@code media_items} row.
  *
  * <p>Deliberately a separate bean from {@link LibraryScanner}: {@code @Transactional}
  * is applied by a proxy, so a scanner calling its own annotated method would silently
- * run with no transaction at all. Each file is committed on its own, which also means a
- * scan that dies halfway leaves everything it already indexed intact.
+ * run with no transaction at all. Each file commits on its own, which also means a scan
+ * that dies halfway leaves everything it already indexed intact.
  */
 @Slf4j
 @Service
 public class LibraryIngestService {
 
     private final MediaProperties props;
-    private final MovieRepository movies;
+    private final MediaItemRepository items;
+    private final MediaChapterRepository chapters;
     private final NfoParser nfoParser;
     private final SidecarLocator sidecars;
     private final FilenameParser filenames;
     private final MediaProbe probe;
 
     public LibraryIngestService(MediaProperties props,
-                                MovieRepository movies,
+                                MediaItemRepository items,
+                                MediaChapterRepository chapters,
                                 NfoParser nfoParser,
                                 SidecarLocator sidecars,
                                 FilenameParser filenames,
                                 MediaProbe probe) {
         this.props = props;
-        this.movies = movies;
+        this.items = items;
+        this.chapters = chapters;
         this.nfoParser = nfoParser;
         this.sidecars = sidecars;
         this.filenames = filenames;
@@ -69,53 +76,91 @@ public class LibraryIngestService {
     }
 
     @Transactional
-    public Outcome ingest(Path file) throws IOException {
+    public Outcome ingest(Path file, MediaPaths.LibraryRoot library) throws IOException {
         String fileName = file.getFileName().toString();
-        if (VideoFiles.looksLikeExtra(fileName)) {
+
+        MediaType type = typeFor(file, library);
+        if (type == null) {
             return Outcome.SKIPPED;
         }
-        BasicFileAttributes attrs = Files.readAttributes(file, BasicFileAttributes.class);
-        long minBytes = props.getMinFileSizeMb() * 1024L * 1024L;
-        if (minBytes > 0 && attrs.size() < minBytes) {
-            log.debug("Skipping {} ({} bytes, below configured minimum)", fileName, attrs.size());
+        if (type.isVideo() && MediaFiles.looksLikeExtra(fileName)) {
             return Outcome.SKIPPED;
+        }
+        // Cover art living beside a film must not become a photo library entry.
+        if (type == MediaType.PHOTO && MediaFiles.isArtworkImage(fileName)) {
+            return Outcome.SKIPPED;
+        }
+
+        BasicFileAttributes attrs = Files.readAttributes(file, BasicFileAttributes.class);
+        // Only videos get the size floor: photos and songs are legitimately small.
+        if (type.isVideo() && props.getMinFileSizeMb() > 0) {
+            long minBytes = props.getMinFileSizeMb() * 1024L * 1024L;
+            if (attrs.size() < minBytes) {
+                log.debug("Skipping {} ({} bytes, below configured minimum)", fileName, attrs.size());
+                return Outcome.SKIPPED;
+            }
         }
 
         String absolutePath = file.toAbsolutePath().normalize().toString();
         Instant modifiedAt = attrs.lastModifiedTime().toInstant();
-        Optional<Movie> existing = movies.findByFilePath(absolutePath);
+        Optional<MediaItem> existing = items.findByFilePath(absolutePath);
 
         if (existing.isPresent()) {
-            Movie movie = existing.get();
-            boolean contentUnchanged = movie.getFileSize() == attrs.size()
-                    && modifiedAt.equals(movie.getFileModifiedAt());
+            MediaItem item = existing.get();
+            boolean contentUnchanged = item.getFileSize() == attrs.size()
+                    && modifiedAt.equals(item.getFileModifiedAt());
 
             // The cheap path that makes rescanning a large library viable.
-            if (contentUnchanged && movie.getMetadataSource() != null && !movie.isMissing()) {
+            if (contentUnchanged && item.getMetadataSource() != null && !item.isMissing()) {
                 return Outcome.UNCHANGED;
             }
 
-            applyMetadata(movie, file, attrs.size(), modifiedAt);
+            applyMetadata(item, file, type, library, attrs, modifiedAt);
             if (!contentUnchanged) {
-                // The bytes changed, so the cached probe describes a file that no longer exists.
-                movie.setMediaInfo(new MediaInfo());
+                // The bytes changed, so the cached probe describes a file that is gone.
+                item.setMediaInfo(new MediaInfo());
+                chapters.deleteByMediaItemId(item.getId());
             }
-            probeIfNeeded(movie, file);
-            movie.setMissing(false);
-            movie.setUpdatedAt(Instant.now());
-            movies.save(movie);
+            item.setMissing(false);
+            item.setUpdatedAt(Instant.now());
+            MediaItem saved = items.save(item);
+            probeIfNeeded(saved, file);
             return Outcome.UPDATED;
         }
 
-        Movie movie = Movie.builder()
+        MediaItem item = MediaItem.builder()
+                .type(type)
                 .filePath(absolutePath)
                 .fileName(fileName)
                 .title(fileName)
                 .build();
-        applyMetadata(movie, file, attrs.size(), modifiedAt);
-        probeIfNeeded(movie, file);
-        movies.save(movie);
+        applyMetadata(item, file, type, library, attrs, modifiedAt);
+        MediaItem saved = items.save(item);
+        probeIfNeeded(saved, file);
         return Outcome.ADDED;
+    }
+
+    /**
+     * The type to index a file as, or null to skip it.
+     *
+     * <p>The library's configured type wins, but only when the file's own kind agrees:
+     * a stray MP3 in a film library is indexed as music rather than as a silent film,
+     * and a video dropped into a photo library stays a video.
+     */
+    private static MediaType typeFor(Path file, MediaPaths.LibraryRoot library) {
+        Optional<MediaType.Kind> kind = MediaFiles.kindOf(file);
+        if (kind.isEmpty()) {
+            return null;
+        }
+        if (kind.get() == library.type().kind()) {
+            return library.type();
+        }
+        return switch (kind.get()) {
+            // A video in a photo library is most likely home footage.
+            case VIDEO -> library.type() == MediaType.PHOTO ? MediaType.HOME_VIDEO : MediaType.FILM;
+            case AUDIO -> MediaType.MUSIC;
+            case IMAGE -> MediaType.PHOTO;
+        };
     }
 
     /**
@@ -129,110 +174,238 @@ public class LibraryIngestService {
     @Transactional
     public int markMissing(Set<String> seenPaths) {
         Set<String> seen = new HashSet<>(seenPaths);
-        List<Movie> gone = new ArrayList<>();
-        for (Movie movie : movies.findByMissingFalse()) {
-            if (!seen.contains(movie.getFilePath())) {
-                movie.setMissing(true);
-                movie.setUpdatedAt(Instant.now());
-                gone.add(movie);
+        List<MediaItem> gone = new ArrayList<>();
+        for (MediaItem item : items.findByMissingFalse()) {
+            if (!seen.contains(item.getFilePath())) {
+                item.setMissing(true);
+                item.setUpdatedAt(Instant.now());
+                gone.add(item);
             }
         }
         if (!gone.isEmpty()) {
-            movies.saveAll(gone);
-            log.info("Marked {} movies as missing", gone.size());
+            items.saveAll(gone);
+            log.info("Marked {} items as missing", gone.size());
         }
         return gone.size();
     }
 
     /** Probes on demand for a row indexed while {@code probe-on-scan} was off. */
     @Transactional
-    public Movie ensureProbed(Movie movie, Path file) {
-        if (movie.getMediaInfo() != null && movie.getMediaInfo().isProbed()) {
-            return movie;
+    public MediaItem ensureProbed(MediaItem item, Path file) {
+        if (!item.getType().isVideo()) {
+            return item;
         }
-        Optional<MediaInfo> probed = probe.probe(file);
-        if (probed.isEmpty()) {
-            return movie;
+        if (item.getMediaInfo() != null && item.getMediaInfo().isProbed()) {
+            return item;
         }
-        movie.setMediaInfo(probed.get());
-        movie.setUpdatedAt(Instant.now());
-        return movies.save(movie);
+        return applyProbe(item, file);
     }
 
-    /** Fills descriptive fields from the sidecar when there is one, else from the filename. */
-    private void applyMetadata(Movie movie, Path file, long size, Instant modifiedAt) {
+    /** Runs ffprobe and stores both the stream info and the chapter markers. */
+    private MediaItem applyProbe(MediaItem item, Path file) {
+        Optional<MediaProbe.ProbeResult> probed = probe.probe(file);
+        if (probed.isEmpty()) {
+            return item;
+        }
+        MediaProbe.ProbeResult result = probed.get();
+        item.setMediaInfo(result.info());
+
+        // Duration from the container is more trustworthy than a sidecar's runtime.
+        if (result.info().getDurationSeconds() != null && item.getRuntimeMinutes() == null) {
+            item.setRuntimeMinutes((int) Math.round(result.info().getDurationSeconds() / 60.0));
+        }
+        item.setUpdatedAt(Instant.now());
+        MediaItem saved = items.save(item);
+
+        chapters.deleteByMediaItemId(saved.getId());
+        if (!result.chapters().isEmpty()) {
+            List<MediaChapter> rows = result.chapters().stream()
+                    .map(chapter -> MediaChapter.builder()
+                            .mediaItemId(saved.getId())
+                            .chapterIndex(chapter.index())
+                            .startSeconds(chapter.startSeconds())
+                            .endSeconds(chapter.endSeconds())
+                            .title(chapter.title())
+                            .build())
+                    .toList();
+            chapters.saveAll(rows);
+        }
+        return saved;
+    }
+
+    /** Fills descriptive fields from the sidecar when there is one, else from the file. */
+    private void applyMetadata(MediaItem item,
+                               Path file,
+                               MediaType type,
+                               MediaPaths.LibraryRoot library,
+                               BasicFileAttributes attrs,
+                               Instant modifiedAt) {
+
         String fileName = file.getFileName().toString();
         Path folder = file.getParent();
 
-        movie.setFileName(fileName);
-        movie.setFileSize(size);
-        movie.setFileModifiedAt(modifiedAt);
-        movie.setFolderPath(folder == null ? null : folder.toAbsolutePath().normalize().toString());
+        item.setType(type);
+        item.setLibraryName(library.name());
+        item.setFileName(fileName);
+        item.setFileSize(attrs.size());
+        item.setFileModifiedAt(modifiedAt);
+        item.setFolderPath(folder == null ? null : folder.toAbsolutePath().normalize().toString());
 
-        FilenameParser.Parsed parsed = filenames.parse(VideoFiles.baseName(fileName));
-        movie.setQuality(parsed.quality());
+        if (type.isTimeline()) {
+            applyTimelineMetadata(item, file, attrs);
+            return;
+        }
+        if (type == MediaType.MUSIC) {
+            applyMusicMetadata(item, file);
+            return;
+        }
+        applyVideoMetadata(item, file, fileName);
+    }
+
+    /**
+     * Home footage and photos are described by when and where, not by year and rating.
+     *
+     * <p>Capture time is taken from the filename when it carries a date (phones and
+     * cameras almost always do) and otherwise from the file's creation time. That is a
+     * guess, so it is only used when it predates the modification time — a file copied
+     * between disks has a creation time of when it was copied, which would be wrong.
+     */
+    private void applyTimelineMetadata(MediaItem item, Path file, BasicFileAttributes attrs) {
+        String base = MediaFiles.baseName(file.getFileName().toString());
+        item.setMetadataSource(MetadataSource.FILENAME);
+        item.setTitle(prettifyTimelineTitle(base));
+        item.setSortTitle(FilenameParser.sortTitle(item.getTitle()));
+
+        Optional<Instant> fromName = filenames.captureInstant(base);
+        if (fromName.isPresent()) {
+            item.setCapturedAt(fromName.get());
+        } else {
+            Instant created = attrs.creationTime().toInstant();
+            Instant modified = attrs.lastModifiedTime().toInstant();
+            item.setCapturedAt(created.isBefore(modified) ? created : modified);
+        }
+        // Folder name is the best available guess at a place, e.g. "Goa 2023".
+        Path folder = file.getParent();
+        if (folder != null && folder.getFileName() != null) {
+            item.setPlace(folder.getFileName().toString());
+        }
+        item.setPosterPath(null);
+        item.setBackdropPath(null);
+        replaceStrings(item.getGenres(), Set.of(), item::setGenres);
+    }
+
+    /**
+     * Music metadata comes from the path, not from ID3 tags.
+     *
+     * <p>Reading tags would need another dependency; {@code Artist/Album/01 Track.mp3}
+     * is the near-universal layout and gets the three fields the client shows.
+     */
+    private void applyMusicMetadata(MediaItem item, Path file) {
+        String base = MediaFiles.baseName(file.getFileName().toString());
+        item.setMetadataSource(MetadataSource.FILENAME);
+
+        // Leading track numbers: "01 - Title" or "01. Title".
+        String title = base.replaceFirst("^\\s*(\\d{1,3})\\s*[-._)]?\\s+", "");
+        Integer track = null;
+        if (!title.equals(base)) {
+            try {
+                track = Integer.valueOf(base.trim().split("[^0-9]", 2)[0]);
+            } catch (NumberFormatException ignored) {
+                // Leave the track number unset; the title is still improved.
+            }
+        }
+        item.setTitle(title.isBlank() ? base : title.trim());
+        item.setSortTitle(FilenameParser.sortTitle(item.getTitle()));
+        item.setTrackNumber(track);
+
+        Path folder = file.getParent();
+        if (folder != null && folder.getFileName() != null) {
+            item.setAlbum(folder.getFileName().toString());
+            Path artistFolder = folder.getParent();
+            if (artistFolder != null && artistFolder.getFileName() != null) {
+                item.setArtist(artistFolder.getFileName().toString());
+            }
+        }
+        item.setPosterPath(sidecars.findPoster(file).map(Path::toString).orElse(null));
+    }
+
+    /** Films and anime: sidecar {@code .nfo} first, filename as the fallback. */
+    private void applyVideoMetadata(MediaItem item, Path file, String fileName) {
+        FilenameParser.Parsed parsed = filenames.parse(MediaFiles.baseName(fileName));
+        item.setQuality(parsed.quality());
 
         Optional<SidecarMetadata> sidecar = sidecars.findNfo(file).flatMap(nfoParser::parse);
 
         if (sidecar.isPresent()) {
             SidecarMetadata meta = sidecar.get();
-            movie.setMetadataSource(MetadataSource.NFO);
+            item.setMetadataSource(MetadataSource.NFO);
             // The sidecar wins, but field by field: partial .nfo files are common and
             // must not blank out what the filename could still supply.
-            movie.setTitle(orElse(meta.title(), parsed.title()));
-            movie.setOriginalTitle(meta.originalTitle());
-            movie.setYear(meta.year() != null ? meta.year() : parsed.year());
-            movie.setPlot(meta.plot());
-            movie.setTagline(meta.tagline());
-            movie.setRuntimeMinutes(meta.runtimeMinutes());
-            movie.setRating(meta.rating());
-            movie.setCertification(meta.certification());
-            movie.setStudio(meta.studio());
-            movie.setReleaseDate(meta.releaseDate());
-            movie.setTmdbId(meta.tmdbId());
-            movie.setImdbId(meta.imdbId());
-            movie.setDirectors(joinOrNull(meta.directors(), 1024));
-            movie.setCastMembers(joinOrNull(meta.cast(), 4000));
-            replaceGenres(movie, meta.genres());
+            item.setTitle(orElse(meta.title(), parsed.title()));
+            item.setOriginalTitle(meta.originalTitle());
+            item.setYear(meta.year() != null ? meta.year() : parsed.year());
+            item.setPlot(meta.plot());
+            item.setTagline(meta.tagline());
+            item.setRuntimeMinutes(meta.runtimeMinutes());
+            item.setRating(meta.rating());
+            item.setCertification(meta.certification());
+            item.setStudio(meta.studio());
+            item.setReleaseDate(meta.releaseDate());
+            item.setTmdbId(meta.tmdbId());
+            item.setImdbId(meta.imdbId());
+            item.setDirectors(joinOrNull(meta.directors(), 1024));
+            item.setCastMembers(joinOrNull(meta.cast(), 4000));
+            replaceStrings(item.getGenres(), meta.genres(), item::setGenres);
             String explicitSort = meta.sortTitle() == null
                     ? null
                     : meta.sortTitle().toLowerCase(Locale.ROOT);
-            movie.setSortTitle(orElse(explicitSort, FilenameParser.sortTitle(movie.getTitle())));
+            item.setSortTitle(orElse(explicitSort, FilenameParser.sortTitle(item.getTitle())));
         } else {
-            movie.setMetadataSource(MetadataSource.FILENAME);
-            movie.setTitle(parsed.title());
-            movie.setYear(parsed.year());
-            movie.setSortTitle(FilenameParser.sortTitle(parsed.title()));
-            replaceGenres(movie, Set.of());
+            item.setMetadataSource(MetadataSource.FILENAME);
+            item.setTitle(parsed.title());
+            item.setYear(parsed.year());
+            item.setSortTitle(FilenameParser.sortTitle(parsed.title()));
+            replaceStrings(item.getGenres(), Set.of(), item::setGenres);
         }
 
-        // Re-resolved every time: artwork is often added to a folder after the first scan.
-        movie.setPosterPath(sidecars.findPoster(file).map(Path::toString).orElse(null));
-        movie.setBackdropPath(sidecars.findBackdrop(file).map(Path::toString).orElse(null));
+        // Re-resolved every scan: artwork is often added to a folder afterwards.
+        item.setPosterPath(sidecars.findPoster(file).map(Path::toString).orElse(null));
+        item.setBackdropPath(sidecars.findBackdrop(file).map(Path::toString).orElse(null));
+    }
+
+    /** {@code VID_20240102_181500} and friends read badly as titles. */
+    private static String prettifyTimelineTitle(String base) {
+        String cleaned = base
+                .replaceFirst("^(?i)(VID|IMG|PXL|DSC|MOV|DCIM)[-_]?", "")
+                .replaceAll("[._]+", " ")
+                .replaceAll("\\s{2,}", " ")
+                .trim();
+        return cleaned.isBlank() ? base : cleaned;
     }
 
     /**
      * Mutates the managed collection in place. Assigning a fresh {@code Set} to a
      * Hibernate-owned {@code @ElementCollection} throws once the entity is managed.
      */
-    private static void replaceGenres(Movie movie, Set<String> genres) {
-        Set<String> target = movie.getGenres();
+    private static void replaceStrings(Set<String> target,
+                                       Set<String> values,
+                                       java.util.function.Consumer<Set<String>> setter) {
         if (target == null) {
-            movie.setGenres(new LinkedHashSet<>(genres));
+            setter.accept(new LinkedHashSet<>(values));
             return;
         }
         target.clear();
-        target.addAll(genres);
+        target.addAll(values);
     }
 
-    private void probeIfNeeded(Movie movie, Path file) {
-        if (!props.isProbeOnScan()) {
+    private void probeIfNeeded(MediaItem item, Path file) {
+        if (!props.isProbeOnScan() || !item.getType().isVideo()) {
             return;
         }
-        if (movie.getMediaInfo() != null && movie.getMediaInfo().isProbed()) {
+        if (item.getMediaInfo() != null && item.getMediaInfo().isProbed()) {
             return;
         }
-        probe.probe(file).ifPresent(movie::setMediaInfo);
+        applyProbe(item, file);
     }
 
     private static String orElse(String preferred, String fallback) {

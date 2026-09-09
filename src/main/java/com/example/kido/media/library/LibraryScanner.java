@@ -16,17 +16,18 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import com.example.kido.common.ApiException;
+import com.example.kido.media.MediaFiles;
 import com.example.kido.media.MediaPaths;
-import com.example.kido.media.VideoFiles;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Walks the configured roots and hands each video file to {@link LibraryIngestService}.
+ * Walks the configured libraries and hands each media file to {@link
+ * LibraryIngestService}, tagged with the type of the library it came from.
  *
  * <p>Runs on a single background thread. A scan is IO-bound on a home-server disk and
- * spawns an ffprobe process per new file, so parallel walkers would mostly add
+ * spawns an ffprobe process per new video, so parallel walkers would mostly add
  * contention. Only one scan runs at a time — a concurrent request is rejected rather
  * than queued, since two walks would race on the same rows.
  */
@@ -59,12 +60,12 @@ public class LibraryScanner {
     /**
      * Starts a scan on the background thread and returns immediately.
      *
-     * @throws ApiException 400 if no roots are configured, 409 if a scan is already running
+     * @throws ApiException 400 if no libraries are configured, 409 if a scan is running
      */
     public void startAsync() {
         if (!paths.isConfigured()) {
             throw new ApiException(HttpStatus.BAD_REQUEST,
-                    "No media roots configured — set app.media.roots");
+                    "No media libraries configured — set app.media.libraries");
         }
         synchronized (status) {
             if (status.isRunning()) {
@@ -76,11 +77,11 @@ public class LibraryScanner {
     }
 
     private void runScan() {
-        log.info("Library scan started over {}", paths.roots());
+        log.info("Library scan started over {} libraries", paths.libraryRoots().size());
         try {
             Set<String> seenPaths = new LinkedHashSet<>();
-            for (Path root : paths.roots()) {
-                scanRoot(root, seenPaths);
+            for (MediaPaths.LibraryRoot library : paths.libraryRoots()) {
+                scanLibrary(library, seenPaths);
             }
             status.countMissing(ingest.markMissing(seenPaths));
             status.finish(null);
@@ -95,27 +96,28 @@ public class LibraryScanner {
         }
     }
 
-    private void scanRoot(Path root, Set<String> seenPaths) {
+    private void scanLibrary(MediaPaths.LibraryRoot library, Set<String> seenPaths) {
         // FOLLOW_LINKS is deliberately omitted: a symlink cycle would hang the walk, and
         // MediaPaths would refuse to serve anything a link resolved outside the roots.
-        try (Stream<Path> walk = Files.walk(root, MAX_DEPTH, new FileVisitOption[0])) {
-            List<Path> videoFiles = walk
+        try (Stream<Path> walk = Files.walk(library.path(), MAX_DEPTH, new FileVisitOption[0])) {
+            List<Path> candidates = walk
                     .filter(Files::isRegularFile)
-                    .filter(VideoFiles::isVideo)
+                    .filter(MediaFiles::isMedia)
                     .toList();
 
-            log.info("Found {} video files under {}", videoFiles.size(), root);
+            log.info("Library '{}' [{}]: {} candidate files under {}",
+                    library.name(), library.type(), candidates.size(), library.path());
 
-            for (Path file : videoFiles) {
+            for (Path file : candidates) {
                 status.countSeen();
                 status.setCurrentFile(file.toString());
                 try {
-                    LibraryIngestService.Outcome outcome = ingest.ingest(file);
+                    LibraryIngestService.Outcome outcome = ingest.ingest(file, library);
                     switch (outcome) {
                         case ADDED -> status.countAdded();
                         case UPDATED -> status.countUpdated();
                         case UNCHANGED -> status.countUnchanged();
-                        case SKIPPED -> { /* extras and undersized files are not library entries */ }
+                        case SKIPPED -> { /* extras, artwork and undersized files */ }
                     }
                     if (outcome != LibraryIngestService.Outcome.SKIPPED) {
                         seenPaths.add(file.toAbsolutePath().normalize().toString());
@@ -127,7 +129,8 @@ public class LibraryScanner {
                 }
             }
         } catch (IOException ex) {
-            log.warn("Could not walk root {}: {}", root, ex.getMessage());
+            log.warn("Could not walk library '{}' at {}: {}",
+                    library.name(), library.path(), ex.getMessage());
         }
     }
 

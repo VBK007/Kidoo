@@ -4,22 +4,27 @@ import java.util.List;
 import java.util.Set;
 
 import com.example.kido.media.catalog.MediaInfo;
-import com.example.kido.media.catalog.Movie;
+import com.example.kido.media.catalog.MediaItem;
+import com.example.kido.media.catalog.MediaType;
 
 /**
- * Read models for browsing. Deliberately split in two: a list of 800 movies must not
- * carry every plot summary and cast list, so {@link MovieSummaryDto} holds what a grid
- * cell renders and {@link MovieDetailDto} is fetched only when a title is opened.
+ * Read models for browsing.
  *
- * <p>No absolute filesystem path is ever exposed — artwork and video are addressed by
- * movie id through the API instead.
+ * <p>Deliberately split in two: a grid of several hundred items must not carry every
+ * plot summary and cast list, so {@link ItemSummaryDto} holds what a grid cell renders
+ * and {@link ItemDetailDto} is fetched only when a title is opened.
+ *
+ * <p>No absolute filesystem path is ever exposed — artwork, video and subtitles are
+ * addressed by item id through the API instead.
  */
 public final class CatalogDtos {
 
     private CatalogDtos() {}
 
-    public record MovieSummaryDto(
+    /** What a poster tile needs, and nothing more. */
+    public record ItemSummaryDto(
             String id,
+            String type,
             String title,
             Integer year,
             Integer runtimeMinutes,
@@ -28,22 +33,36 @@ public final class CatalogDtos {
             Set<String> genres,
             boolean hasPoster,
             boolean hasBackdrop,
+            boolean missing,
             Integer resumePositionSeconds,
-            boolean watched) {
+            boolean watched,
+            Integer percentComplete,
+            String capturedAt,
+            String artist,
+            String album) {
 
-        public static MovieSummaryDto from(Movie movie, Integer resumeSeconds, boolean watched) {
-            return new MovieSummaryDto(
-                    movie.getId(),
-                    movie.getTitle(),
-                    movie.getYear(),
-                    movie.getRuntimeMinutes(),
-                    movie.getRating(),
-                    movie.getQuality(),
-                    movie.getGenres(),
-                    movie.hasPoster(),
-                    movie.hasBackdrop(),
+        public static ItemSummaryDto from(MediaItem item,
+                                          Integer resumeSeconds,
+                                          boolean watched,
+                                          Integer percentComplete) {
+            return new ItemSummaryDto(
+                    item.getId(),
+                    item.getType().name(),
+                    item.getTitle(),
+                    item.getYear(),
+                    item.getRuntimeMinutes(),
+                    item.getRating(),
+                    item.getQuality(),
+                    item.getGenres(),
+                    item.hasPoster(),
+                    item.hasBackdrop(),
+                    item.isMissing(),
                     resumeSeconds,
-                    watched);
+                    watched,
+                    percentComplete,
+                    item.getCapturedAt() == null ? null : item.getCapturedAt().toString(),
+                    item.getArtist(),
+                    item.getAlbum());
         }
     }
 
@@ -83,8 +102,10 @@ public final class CatalogDtos {
             boolean hearingImpaired,
             boolean embedded) {}
 
-    public record MovieDetailDto(
+    public record ItemDetailDto(
             String id,
+            String type,
+            String libraryName,
             String title,
             String originalTitle,
             Integer year,
@@ -100,20 +121,59 @@ public final class CatalogDtos {
             String quality,
             String tmdbId,
             String imdbId,
+            String artist,
+            String album,
+            Integer trackNumber,
+            String capturedAt,
+            String place,
+            Set<String> people,
             long fileSize,
+            String fileName,
             boolean hasPoster,
             boolean hasBackdrop,
             MediaInfoDto mediaInfo,
             List<SubtitleTrackDto> subtitles,
+            List<PlayerDtos.AudioTrackDto> audioTracks,
             Integer resumePositionSeconds,
             boolean watched) {}
 
-    public record MoviePageDto(
-            List<MovieSummaryDto> items,
+    public record ItemPageDto(
+            List<ItemSummaryDto> items,
             int page,
             int size,
             long totalItems,
             int totalPages) {}
 
-    public record GenreDto(String name) {}
+    /** One category chip, with the counts the client shows beneath the library title. */
+    public record CategoryDto(String type, String label, long itemCount, long totalBytes) {
+
+        public static CategoryDto from(MediaType type, long itemCount, long totalBytes) {
+            return new CategoryDto(type.name(), type.label(), itemCount, totalBytes);
+        }
+    }
+
+    /** Library header: total count and size, plus per-category breakdown. */
+    public record LibrarySummaryDto(
+            long itemCount,
+            long totalBytes,
+            List<CategoryDto> categories,
+            List<String> genres) {}
+
+    /**
+     * A group on the home-video timeline — one month, one person or one place,
+     * depending on the requested grouping.
+     *
+     * @param key   stable grouping key, e.g. {@code 2024-12}
+     * @param label what the left gutter shows, e.g. {@code DEC / 2024}
+     */
+    public record TimelineGroupDto(
+            String key,
+            String label,
+            long itemCount,
+            List<ItemSummaryDto> items) {}
+
+    public record TimelineDto(
+            String groupBy,
+            List<TimelineGroupDto> groups,
+            long undatedCount) {}
 }

@@ -28,33 +28,54 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
- * One movie file on the home server, plus whatever the sidecar files said about it.
+ * One file on the home server — a film, an anime episode, home footage, a song or a
+ * photograph — plus whatever the sidecar files said about it.
+ *
+ * <p>One table with a {@link MediaType} discriminator rather than a table per type.
+ * The types share almost everything that matters here (path, size, title, artwork,
+ * when it appeared) and the client browses them through a single grid with category
+ * chips, so splitting them would mean unioning five queries to render one screen.
+ * Type-specific fields are nullable columns: {@code artist}/{@code album} are only
+ * populated for music, {@code capturedAt}/{@code place}/{@code people} only for home
+ * footage and photos.
  *
  * <p>The row is keyed on {@link #filePath} because that is the only stable identity a
  * plain disk offers. {@link #fileSize} and {@link #fileModifiedAt} let a rescan skip
- * files that have not changed, which is what keeps a scan of a large library cheap.
+ * files that have not changed, which is what keeps rescanning a large disk cheap.
  */
 @Entity
-@Table(name = "movies",
-        uniqueConstraints = @UniqueConstraint(name = "uk_movie_file_path", columnNames = "file_path"),
+@Table(name = "media_items",
+        uniqueConstraints = @UniqueConstraint(
+                name = "uk_media_item_file_path", columnNames = "file_path"),
         indexes = {
-                @Index(name = "idx_movie_sort_title", columnList = "sort_title"),
-                @Index(name = "idx_movie_missing", columnList = "missing")
+                @Index(name = "idx_media_item_sort_title", columnList = "sort_title"),
+                @Index(name = "idx_media_item_type", columnList = "media_type"),
+                @Index(name = "idx_media_item_missing", columnList = "missing"),
+                @Index(name = "idx_media_item_captured", columnList = "captured_at")
         })
 @Getter
 @Setter
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class Movie {
+public class MediaItem {
 
     @Id
     @UuidGenerator
     private String id;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "media_type", nullable = false, length = 32)
+    @Builder.Default
+    private MediaType type = MediaType.FILM;
+
+    /** Name of the configured library this file was found in. */
+    @Column(name = "library_name", length = 128)
+    private String libraryName;
+
     // --- identity on disk ---
 
-    /** Absolute path. Length-bounded well above any real path to stay portable across DBs. */
+    /** Absolute path, length-bounded well above any real path to stay portable. */
     @Column(name = "file_path", nullable = false, length = 1024)
     private String filePath;
 
@@ -73,11 +94,18 @@ public class Movie {
 
     /**
      * Set when the file has vanished from disk. The row is kept rather than deleted so
-     * that watch progress survives a disk being temporarily unmounted; the catalog
-     * filters these out.
+     * watch progress survives a disk being temporarily unmounted; the catalog filters
+     * these out, and the client greys them rather than hiding them.
      */
     @Builder.Default
     private boolean missing = false;
+
+    /**
+     * Set when the owner has said the metadata guess was wrong and chosen to leave the
+     * item unmatched. Hidden from browsing but still on disk and still rescanned.
+     */
+    @Builder.Default
+    private boolean hidden = false;
 
     // --- descriptive metadata ---
 
@@ -92,8 +120,8 @@ public class Movie {
     private String sortTitle;
 
     /**
-     * Explicitly named: {@code year} is a reserved word in H2 (and a function in several
-     * other engines), so the default column name fails to create the table.
+     * Explicitly named: {@code year} is a reserved word in H2 (and a function in
+     * several other engines), so the default column name fails to create the table.
      */
     @Column(name = "release_year")
     private Integer year;
@@ -107,7 +135,7 @@ public class Movie {
     @Column(name = "runtime_minutes")
     private Integer runtimeMinutes;
 
-    /** 0–10, as written by the scraper that produced the {@code .nfo}. */
+    /** 0–10, as written by whichever scraper produced the sidecar. */
     private Double rating;
 
     /** Age rating, e.g. {@code PG-13} or {@code U/A 13+}. */
@@ -115,9 +143,9 @@ public class Movie {
     private String certification;
 
     @ElementCollection(fetch = FetchType.EAGER)
-    @CollectionTable(name = "movie_genres",
-            joinColumns = @JoinColumn(name = "movie_id"),
-            indexes = @Index(name = "idx_movie_genre", columnList = "genre"))
+    @CollectionTable(name = "media_item_genres",
+            joinColumns = @JoinColumn(name = "media_item_id"),
+            indexes = @Index(name = "idx_media_item_genre", columnList = "genre"))
     @Column(name = "genre", length = 128)
     @Builder.Default
     private Set<String> genres = new LinkedHashSet<>();
@@ -149,6 +177,39 @@ public class Movie {
     @Column(name = "metadata_source", length = 32)
     private MetadataSource metadataSource;
 
+    // --- music ---
+
+    @Column(length = 512)
+    private String artist;
+
+    @Column(length = 512)
+    private String album;
+
+    @Column(name = "track_number")
+    private Integer trackNumber;
+
+    // --- home video and photos ---
+
+    /**
+     * When the footage was shot, as opposed to when the file appeared on the server.
+     * Drives the home-video timeline; null is what the client's "9 clips have no date —
+     * tag them?" nudge counts.
+     */
+    @Column(name = "captured_at")
+    private Instant capturedAt;
+
+    @Column(length = 256)
+    private String place;
+
+    /** Tagged people, used by the timeline's "By person" view. */
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "media_item_people",
+            joinColumns = @JoinColumn(name = "media_item_id"),
+            indexes = @Index(name = "idx_media_item_person", columnList = "person"))
+    @Column(name = "person", length = 128)
+    @Builder.Default
+    private Set<String> people = new LinkedHashSet<>();
+
     // --- sidecar artwork (absolute paths, re-validated before every read) ---
 
     @Column(name = "poster_path", length = 1024)
@@ -179,5 +240,10 @@ public class Movie {
 
     public boolean hasBackdrop() {
         return backdropPath != null && !backdropPath.isBlank();
+    }
+
+    /** Browsable means indexed, present on disk and not deliberately hidden. */
+    public boolean isBrowsable() {
+        return !missing && !hidden;
     }
 }

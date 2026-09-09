@@ -16,9 +16,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.common.ApiException;
 import com.example.kido.media.MediaPaths;
-import com.example.kido.media.VideoFiles;
+import com.example.kido.media.MediaFiles;
 import com.example.kido.media.catalog.CatalogService;
-import com.example.kido.media.catalog.Movie;
+import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.dto.CatalogDtos.MediaInfoDto;
 import com.example.kido.media.dto.PlaybackDtos.ClientCapabilitiesRequest;
 import com.example.kido.media.dto.PlaybackDtos.PlaybackDecisionDto;
@@ -40,7 +40,7 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/media/movies/{id}")
+@RequestMapping("/api/media/items/{id}")
 public class StreamController {
 
     /** Direct-play responses are cached briefly; the bytes never change for a given file. */
@@ -84,20 +84,20 @@ public class StreamController {
                                       @RequestParam(defaultValue = "0") double startSeconds,
                                       @Valid @RequestBody ClientCapabilitiesRequest capabilities) {
 
-        Movie movie = catalog.require(id);
-        Path file = paths.requireWithinRoots(movie.getFilePath());
-        movie = ingest.ensureProbed(movie, file);
+        MediaItem item = catalog.require(id);
+        Path file = paths.requireWithinRoots(item.getFilePath());
+        item = ingest.ensureProbed(item, file);
 
-        PlaybackDecisionService.Decision decision = decisions.decide(movie, capabilities);
+        PlaybackDecisionService.Decision decision = decisions.decide(item, capabilities);
 
         if (decision.directPlay()) {
             return new PlaybackDecisionDto(
-                    movie.getId(),
+                    item.getId(),
                     PlaybackDecisionDto.Mode.DIRECT,
-                    "/api/media/movies/" + movie.getId() + "/stream",
+                    "/api/media/items/" + item.getId() + "/stream",
                     null,
                     startSeconds,
-                    MediaInfoDto.from(movie.getMediaInfo()),
+                    MediaInfoDto.from(item.getMediaInfo()),
                     decision.reasons());
         }
 
@@ -108,15 +108,15 @@ public class StreamController {
         }
 
         TranscodeSession session = transcodes.start(
-                movie, file, Math.max(0, startSeconds), decision.targetHeight());
+                item, file, Math.max(0, startSeconds), decision.targetHeight());
 
         return new PlaybackDecisionDto(
-                movie.getId(),
+                item.getId(),
                 PlaybackDecisionDto.Mode.TRANSCODE,
                 "/api/media/transcode/" + session.getId() + "/index.m3u8",
                 session.getId(),
                 startSeconds,
-                MediaInfoDto.from(movie.getMediaInfo()),
+                MediaInfoDto.from(item.getMediaInfo()),
                 decision.reasons());
     }
 
@@ -132,18 +132,18 @@ public class StreamController {
                        HttpServletRequest request,
                        HttpServletResponse response) throws IOException {
 
-        Movie movie = catalog.require(id);
-        Path file = paths.requireWithinRoots(movie.getFilePath());
-        streamer.serve(file, VideoFiles.contentType(movie.getFileName()),
+        MediaItem item = catalog.require(id);
+        Path file = paths.requireWithinRoots(item.getFilePath());
+        streamer.serve(file, MediaFiles.contentType(item.getFileName()),
                 VIDEO_CACHE_SECONDS, request, response);
     }
 
     /** Diagnostics for the app's debug screen: what the server thinks is inside the file. */
     @GetMapping("/media-info")
     public MediaInfoDto mediaInfo(@AuthenticationPrincipal AppUser user, @PathVariable String id) {
-        Movie movie = catalog.require(id);
-        Path file = paths.requireWithinRoots(movie.getFilePath());
-        return MediaInfoDto.from(ingest.ensureProbed(movie, file).getMediaInfo());
+        MediaItem item = catalog.require(id);
+        Path file = paths.requireWithinRoots(item.getFilePath());
+        return MediaInfoDto.from(ingest.ensureProbed(item, file).getMediaInfo());
     }
 
     /**
@@ -158,13 +158,13 @@ public class StreamController {
     public List<String> explain(@AuthenticationPrincipal AppUser user,
                                 @PathVariable String id,
                                 @Valid @RequestBody ClientCapabilitiesRequest capabilities) {
-        Movie movie = catalog.require(id);
+        MediaItem item = catalog.require(id);
         try {
-            movie = ingest.ensureProbed(movie, paths.requireWithinRoots(movie.getFilePath()));
+            item = ingest.ensureProbed(item, paths.requireWithinRoots(item.getFilePath()));
         } catch (ApiException ex) {
             // Unreachable file: fall through and explain from what is already known.
             log.debug("Explaining {} without disk access: {}", id, ex.getMessage());
         }
-        return decisions.decide(movie, capabilities).reasons();
+        return decisions.decide(item, capabilities).reasons();
     }
 }

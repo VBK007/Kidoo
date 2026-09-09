@@ -21,31 +21,33 @@ import com.example.kido.media.catalog.MediaInfo;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Wraps {@code ffprobe} to read the codecs and dimensions inside a container.
+ * Wraps {@code ffprobe} to read what is inside a container: codecs, dimensions,
+ * embedded tracks and chapter markers.
  *
- * <p>This is the input to every playback decision: a filename says nothing reliable
+ * <p>This is the input to every playback decision. A filename says nothing reliable
  * about whether a phone can decode the file, and the extension says little more — an
  * {@code .mp4} may hold HEVC that an older Android cannot play.
  *
  * <p>Output is requested in ffprobe's flat {@code default} writer format rather than
  * JSON, deliberately. It is a stable, trivially parsed {@code key=value} format, and
  * using it keeps this class independent of whichever Jackson major version Spring Boot
- * currently ships — the databind package name and node accessors changed between
- * Jackson 2 and 3, and a probe is not worth that coupling.
+ * ships — the databind package and node accessors both changed between Jackson 2
+ * and 3, and a probe is not worth that coupling.
  *
- * <p>The process is bounded by {@code app.media.probe-timeout-seconds} and destroyed on
- * timeout, since a truncated or corrupt file can otherwise make ffprobe hang and stall
- * an entire library scan.
+ * <p>Streams and chapters come back from a single invocation: two would double the
+ * process spawns across a whole-library scan for no benefit.
  */
 @Slf4j
 @Component
 public class MediaProbe {
 
-    /** Exactly the fields the playback decision needs — nothing else is worth parsing. */
+    /** Exactly the fields that are used — nothing else is worth parsing. */
     private static final String ENTRIES =
             "format=format_name,duration,bit_rate,size"
                     + ":stream=index,codec_type,codec_name,profile,width,height,channels,bit_rate"
-                    + ":stream_tags=language";
+                    + ":stream_tags=language,title"
+                    + ":chapter=id,start_time,end_time"
+                    + ":chapter_tags=title";
 
     private final MediaProperties props;
 
@@ -54,10 +56,11 @@ public class MediaProbe {
     }
 
     /** @return probe results, or empty if ffprobe is unavailable, timed out or failed */
-    public Optional<MediaInfo> probe(Path file) {
+    public Optional<ProbeResult> probe(Path file) {
         List<String> command = List.of(
                 props.getFfprobePath(),
                 "-v", "error",
+                "-show_chapters",
                 "-show_entries", ENTRIES,
                 "-of", "default",
                 file.toString());
@@ -85,7 +88,7 @@ public class MediaProbe {
             if (sections.format.isEmpty() && sections.streams.isEmpty()) {
                 return Optional.empty();
             }
-            return Optional.of(toMediaInfo(sections));
+            return Optional.of(new ProbeResult(toMediaInfo(sections), toChapters(sections)));
 
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -109,6 +112,10 @@ public class MediaProbe {
      * codec_type=video
      * TAG:language=eng
      * [/STREAM]
+     * [CHAPTER]
+     * start_time=0.000000
+     * TAG:title=Opening
+     * [/CHAPTER]
      * [FORMAT]
      * duration=8580.123000
      * [/FORMAT]
@@ -126,14 +133,22 @@ public class MediaProbe {
                 if (trimmed.isEmpty()) {
                     continue;
                 }
-                if (trimmed.equals("[STREAM]")) {
-                    current = new HashMap<>();
-                    sections.streams.add(current);
-                    continue;
-                }
-                if (trimmed.equals("[FORMAT]")) {
-                    current = sections.format;
-                    continue;
+                switch (trimmed) {
+                    case "[STREAM]" -> {
+                        current = new HashMap<>();
+                        sections.streams.add(current);
+                        continue;
+                    }
+                    case "[CHAPTER]" -> {
+                        current = new HashMap<>();
+                        sections.chapters.add(current);
+                        continue;
+                    }
+                    case "[FORMAT]" -> {
+                        current = sections.format;
+                        continue;
+                    }
+                    default -> { /* fall through to key=value or a closing tag */ }
                 }
                 if (trimmed.startsWith("[/")) {
                     current = null;
@@ -154,6 +169,7 @@ public class MediaProbe {
     private MediaInfo toMediaInfo(Sections sections) {
         Map<String, String> video = null;
         List<String> audioCodecs = new ArrayList<>();
+        List<String> audioTracks = new ArrayList<>();
         Integer audioChannels = null;
         List<String> subtitles = new ArrayList<>();
 
@@ -169,6 +185,10 @@ public class MediaProbe {
                 }
                 case "audio" -> {
                     audioCodecs.add(stream.getOrDefault("codec_name", "unknown"));
+                    audioTracks.add(stream.getOrDefault("index", "-1")
+                            + ":" + stream.getOrDefault("codec_name", "unknown")
+                            + ":" + stream.getOrDefault("TAG:language", "und")
+                            + ":" + sanitise(stream.getOrDefault("TAG:title", "")));
                     if (audioChannels == null) {
                         audioChannels = intOf(stream.get("channels"));
                     }
@@ -193,6 +213,9 @@ public class MediaProbe {
                 .bitrate(bitrate)
                 .audioCodecs(audioCodecs.isEmpty() ? null : String.join(",", audioCodecs))
                 .audioChannels(audioChannels)
+                .audioTracks(audioTracks.isEmpty()
+                        ? null
+                        : truncate(String.join(";", audioTracks), 2000))
                 .embeddedSubtitles(subtitles.isEmpty()
                         ? null
                         : truncate(String.join(";", subtitles), 2000))
@@ -205,6 +228,28 @@ public class MediaProbe {
                     .height(intOf(video.get("height")));
         }
         return builder.build();
+    }
+
+    private List<ChapterData> toChapters(Sections sections) {
+        List<ChapterData> chapters = new ArrayList<>();
+        int index = 0;
+        for (Map<String, String> raw : sections.chapters) {
+            Double start = doubleOfAllowingZero(raw.get("start_time"));
+            if (start == null) {
+                continue;
+            }
+            chapters.add(new ChapterData(
+                    index++,
+                    start,
+                    doubleOfAllowingZero(raw.get("end_time")),
+                    blankToNull(raw.get("TAG:title"))));
+        }
+        return chapters;
+    }
+
+    /** Track titles land in a delimited string, so the delimiters must not survive. */
+    private static String sanitise(String value) {
+        return value.replace(':', ' ').replace(';', ' ').trim();
     }
 
     /** ffprobe writes "N/A" for fields it could not determine. */
@@ -242,13 +287,19 @@ public class MediaProbe {
     }
 
     private static Double doubleOf(String raw) {
+        Double value = doubleOfAllowingZero(raw);
+        return value != null && value > 0 ? value : null;
+    }
+
+    /** Chapter starts are legitimately zero, so they need a parse that keeps it. */
+    private static Double doubleOfAllowingZero(String raw) {
         String value = blankToNull(raw);
         if (value == null) {
             return null;
         }
         try {
             double parsed = Double.parseDouble(value.trim());
-            return parsed > 0 ? parsed : null;
+            return parsed >= 0 ? parsed : null;
         } catch (NumberFormatException ex) {
             return null;
         }
@@ -258,9 +309,16 @@ public class MediaProbe {
         return value.length() <= max ? value : value.substring(0, max);
     }
 
-    /** One {@code [FORMAT]} block and any number of {@code [STREAM]} blocks. */
+    /** One {@code [FORMAT]} block plus any number of stream and chapter blocks. */
     private static final class Sections {
         private final Map<String, String> format = new HashMap<>();
         private final List<Map<String, String>> streams = new ArrayList<>();
+        private final List<Map<String, String>> chapters = new ArrayList<>();
     }
+
+    /** Everything one ffprobe run yielded. */
+    public record ProbeResult(MediaInfo info, List<ChapterData> chapters) {}
+
+    /** A chapter before it is attached to an item. */
+    public record ChapterData(int index, double startSeconds, Double endSeconds, String title) {}
 }

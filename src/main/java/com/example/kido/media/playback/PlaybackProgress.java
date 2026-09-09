@@ -17,18 +17,21 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
- * Where one user got to in one movie.
+ * Where one profile got to in one item.
  *
- * <p>Stored per user rather than per device so resume works when someone moves from
- * the phone to a tablet. The movie is referenced by id rather than by a JPA
- * association: progress must survive a movie row being marked missing, and nothing
- * here needs to navigate to the movie itself.
+ * <p>Keyed on profile rather than account: a household shares a login, but a resume
+ * point is personal, and the kids-mode "keep going" card must not offer what a parent
+ * was halfway through.
+ *
+ * <p>The item is referenced by id rather than a JPA association, so progress survives
+ * an item being marked missing when a disk is unmounted.
  */
 @Entity
-@Table(name = "movie_playback_progress",
+@Table(name = "media_playback_progress",
         uniqueConstraints = @UniqueConstraint(
-                name = "uk_progress_user_movie", columnNames = {"user_id", "movie_id"}),
-        indexes = @Index(name = "idx_progress_user_updated", columnList = "user_id, updated_at"))
+                name = "uk_progress_profile_item", columnNames = {"profile_id", "media_item_id"}),
+        indexes = @Index(name = "idx_progress_profile_updated",
+                columnList = "profile_id, updated_at"))
 @Getter
 @Setter
 @Builder
@@ -40,21 +43,36 @@ public class PlaybackProgress {
     @UuidGenerator
     private String id;
 
-    @Column(name = "user_id", nullable = false)
-    private String userId;
+    @Column(name = "profile_id", nullable = false)
+    private String profileId;
 
-    @Column(name = "movie_id", nullable = false)
-    private String movieId;
+    @Column(name = "media_item_id", nullable = false)
+    private String mediaItemId;
 
     @Column(name = "position_seconds", nullable = false)
     private double positionSeconds;
 
-    /** Copied from the client so "how far through" can be shown without a probe. */
+    /** Copied from the client so progress can be shown without probing the file. */
     @Column(name = "duration_seconds")
     private Double durationSeconds;
 
     @Builder.Default
     private boolean watched = false;
+
+    /**
+     * Subtitle sync offset in seconds for this profile and file, as set by the client's
+     * offset tuner. Persisted per file because the mismatch is a property of the file.
+     */
+    @Column(name = "subtitle_offset_seconds")
+    private Double subtitleOffsetSeconds;
+
+    /** Index of the subtitle track last chosen, so playback resumes with it selected. */
+    @Column(name = "subtitle_track_index")
+    private Integer subtitleTrackIndex;
+
+    /** Index of the audio track last chosen, for multi-audio files. */
+    @Column(name = "audio_track_index")
+    private Integer audioTrackIndex;
 
     @Column(name = "updated_at", nullable = false)
     @Builder.Default

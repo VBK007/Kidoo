@@ -30,8 +30,9 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import com.example.kido.media.catalog.MediaInfo;
-import com.example.kido.media.catalog.Movie;
-import com.example.kido.media.catalog.MovieRepository;
+import com.example.kido.media.catalog.MediaItem;
+import com.example.kido.media.catalog.MediaItemRepository;
+import com.example.kido.media.catalog.MediaType;
 
 /**
  * End-to-end test of the byte-serving layer against a real file inside a real,
@@ -101,11 +102,12 @@ class MediaStreamingIntegrationTest {
     int port;
 
     @Autowired
-    MovieRepository movies;
+    MediaItemRepository items;
 
     private final HttpClient http = HttpClient.newHttpClient();
     private String token;
-    private String movieId;
+    private String profileId;
+    private String itemId;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -118,10 +120,17 @@ class MediaStreamingIntegrationTest {
         token = extract(registered.body(), "token");
         assertNotNull(token);
 
+        // Detail and player-state are profile-scoped, so the account needs one.
+        HttpResponse<String> profile = sendString("POST", "/api/profiles",
+                "{\"name\":\"Tester\",\"ageMode\":\"OLDER\"}", token);
+        assertEquals(201, profile.statusCode(), profile.body());
+        profileId = extract(profile.body(), "id");
+
         // Find-or-create: file_path is unique and the fixture file is shared by every
         // test in this class, so a plain insert would collide after the first one.
         String path = movieFile.toAbsolutePath().normalize().toString();
-        Movie movie = movies.findByFilePath(path).orElseGet(() -> movies.save(Movie.builder()
+        MediaItem item = items.findByFilePath(path).orElseGet(() -> items.save(MediaItem.builder()
+                .type(MediaType.FILM)
                 .filePath(path)
                 .fileName(movieFile.getFileName().toString())
                 .folderPath(movieFile.getParent().toString())
@@ -141,7 +150,7 @@ class MediaStreamingIntegrationTest {
                         .probedAt(Instant.now())
                         .build())
                 .build()));
-        movieId = movie.getId();
+        itemId = item.getId();
     }
 
     private HttpResponse<String> sendString(String method, String path, String json, String bearer)
@@ -169,6 +178,10 @@ class MediaStreamingIntegrationTest {
         if (range != null) {
             builder.header("Range", range);
         }
+        // Harmless on the endpoints that do not read it, required by the profile-scoped ones.
+        if (profileId != null) {
+            builder.header("X-Profile-Id", profileId);
+        }
         builder.method(method, json == null
                 ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofString(json));
@@ -188,14 +201,14 @@ class MediaStreamingIntegrationTest {
     @Test
     void decidesDirectPlayAndReturnsStreamUrl() throws Exception {
         HttpResponse<String> response = sendString("POST",
-                "/api/media/movies/" + movieId + "/playback-decision", """
+                "/api/media/items/" + itemId + "/playback-decision", """
                         {"videoCodecs":["h264"],"audioCodecs":["aac"],
                          "containers":["mp4"],"maxHeight":1080,"supportsHls":true}
                         """, token);
 
         assertEquals(200, response.statusCode(), response.body());
         assertTrue(response.body().contains("\"DIRECT\""), response.body());
-        assertTrue(response.body().contains("/api/media/movies/" + movieId + "/stream"),
+        assertTrue(response.body().contains("/api/media/items/" + itemId + "/stream"),
                 response.body());
     }
 
@@ -203,7 +216,7 @@ class MediaStreamingIntegrationTest {
 
     @Test
     void servesWholeFileWithoutRangeHeader() throws Exception {
-        HttpResponse<byte[]> response = sendBytes("GET", "/api/media/movies/" + movieId + "/stream", null);
+        HttpResponse<byte[]> response = sendBytes("GET", "/api/media/items/" + itemId + "/stream", null);
 
         assertEquals(200, response.statusCode());
         assertEquals(FILE_SIZE, response.body().length);
@@ -215,7 +228,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void servesExactByteRange() throws Exception {
         HttpResponse<byte[]> response =
-                sendBytes("GET", "/api/media/movies/" + movieId + "/stream", "bytes=100-199");
+                sendBytes("GET", "/api/media/items/" + itemId + "/stream", "bytes=100-199");
 
         assertEquals(206, response.statusCode());
         assertEquals("bytes 100-199/" + FILE_SIZE,
@@ -228,7 +241,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void servesOpenEndedRangeToEndOfFile() throws Exception {
         HttpResponse<byte[]> response =
-                sendBytes("GET", "/api/media/movies/" + movieId + "/stream", "bytes=4900-");
+                sendBytes("GET", "/api/media/items/" + itemId + "/stream", "bytes=4900-");
 
         assertEquals(206, response.statusCode());
         assertEquals("bytes 4900-4999/" + FILE_SIZE,
@@ -239,7 +252,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void servesSuffixRange() throws Exception {
         HttpResponse<byte[]> response =
-                sendBytes("GET", "/api/media/movies/" + movieId + "/stream", "bytes=-50");
+                sendBytes("GET", "/api/media/items/" + itemId + "/stream", "bytes=-50");
 
         assertEquals(206, response.statusCode());
         assertEquals(50, response.body().length);
@@ -250,7 +263,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void clampsRangeEndBeyondFileSize() throws Exception {
         HttpResponse<byte[]> response =
-                sendBytes("GET", "/api/media/movies/" + movieId + "/stream", "bytes=4990-99999");
+                sendBytes("GET", "/api/media/items/" + itemId + "/stream", "bytes=4990-99999");
 
         assertEquals(206, response.statusCode());
         assertEquals("bytes 4990-4999/" + FILE_SIZE,
@@ -262,7 +275,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void rejectsRangeStartingBeyondFileSize() throws Exception {
         HttpResponse<byte[]> response =
-                sendBytes("GET", "/api/media/movies/" + movieId + "/stream", "bytes=99999-");
+                sendBytes("GET", "/api/media/items/" + itemId + "/stream", "bytes=99999-");
 
         assertEquals(416, response.statusCode());
         assertEquals("bytes */" + FILE_SIZE,
@@ -272,7 +285,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void treatsMalformedRangeAsAbsent() throws Exception {
         HttpResponse<byte[]> response =
-                sendBytes("GET", "/api/media/movies/" + movieId + "/stream", "bytes=abc-def");
+                sendBytes("GET", "/api/media/items/" + itemId + "/stream", "bytes=abc-def");
 
         assertEquals(200, response.statusCode());
         assertEquals(FILE_SIZE, response.body().length);
@@ -283,7 +296,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void servesSidecarPoster() throws Exception {
         HttpResponse<byte[]> response =
-                sendBytes("GET", "/api/media/movies/" + movieId + "/poster", null);
+                sendBytes("GET", "/api/media/items/" + itemId + "/poster", null);
 
         assertEquals(200, response.statusCode());
         assertEquals("FAKE-POSTER-BYTES", new String(response.body(), StandardCharsets.UTF_8));
@@ -293,7 +306,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void convertsSidecarSubtitleToWebVtt() throws Exception {
         HttpResponse<String> response =
-                sendString("GET", "/api/media/movies/" + movieId + "/subtitles/0", null, token);
+                sendString("GET", "/api/media/items/" + itemId + "/subtitles/0", null, token);
 
         assertEquals(200, response.statusCode(), response.body());
         assertTrue(response.body().startsWith("WEBVTT"), response.body());
@@ -305,7 +318,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void listsSubtitleTrackInDetailResponse() throws Exception {
         HttpResponse<String> response =
-                sendString("GET", "/api/media/movies/" + movieId, null, token);
+                sendString("GET", "/api/media/items/" + itemId, null, token);
 
         assertEquals(200, response.statusCode(), response.body());
         assertTrue(response.body().contains("\"language\":\"en\""), response.body());
@@ -315,7 +328,7 @@ class MediaStreamingIntegrationTest {
     @Test
     void streamStillRequiresAuthentication() throws Exception {
         HttpResponse<String> response =
-                sendString("GET", "/api/media/movies/" + movieId + "/stream", null, null);
+                sendString("GET", "/api/media/items/" + itemId + "/stream", null, null);
         assertEquals(403, response.statusCode());
     }
 

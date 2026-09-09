@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
@@ -70,6 +72,48 @@ class MediaMetadataTest {
     void stripsLeadingArticleForSorting() {
         assertEquals("matrix", FilenameParser.sortTitle("The Matrix"));
         assertEquals("inception", FilenameParser.sortTitle("Inception"));
+    }
+
+    // --- capture dates, which drive the home-video timeline ---
+
+    @Test
+    void readsCaptureStampFromPhoneFilenames() {
+        // The three dominant conventions: Android, WhatsApp, Pixel.
+        assertEquals("2024-01-02", localDate(filenames.captureInstant("VID_20240102_181500")));
+        assertEquals("2023-12-25", localDate(filenames.captureInstant("IMG-20231225-WA0003")));
+        assertEquals("2024-01-02", localDate(filenames.captureInstant("PXL_20240102_181500123")));
+    }
+
+    @Test
+    void readsCaptureStampFromDashedAndDottedForms() {
+        assertEquals("2024-03-14", localDate(filenames.captureInstant("2024-03-14 18.15.00")));
+        assertEquals("2024-03-14", localDate(filenames.captureInstant("2024-03-14")));
+    }
+
+    @Test
+    void ignoresFilenamesWithNoDate() {
+        assertTrue(filenames.captureInstant("Holiday clip").isEmpty());
+        assertTrue(filenames.captureInstant("Inception.2010.1080p").isEmpty(),
+                "a bare release year is not a capture stamp");
+    }
+
+    /** A date-shaped but impossible string must not become a wrong timestamp. */
+    @Test
+    void rejectsImpossibleDates() {
+        assertTrue(filenames.captureInstant("VID_20240230_120000").isEmpty());
+        assertTrue(filenames.captureInstant("VID_20241340_120000").isEmpty());
+    }
+
+    /** An out-of-range time falls back to midnight rather than discarding the date. */
+    @Test
+    void keepsDateWhenTimeIsNonsense() {
+        Optional<Instant> parsed = filenames.captureInstant("VID_20240102_995500");
+        assertEquals("2024-01-02", localDate(parsed));
+    }
+
+    private static String localDate(Optional<Instant> instant) {
+        return instant.map(value -> value.atZone(ZoneId.systemDefault()).toLocalDate().toString())
+                .orElse("absent");
     }
 
     // --- .nfo parsing ---

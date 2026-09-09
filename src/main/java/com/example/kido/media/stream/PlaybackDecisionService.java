@@ -8,7 +8,7 @@ import java.util.Set;
 import org.springframework.stereotype.Service;
 
 import com.example.kido.media.catalog.MediaInfo;
-import com.example.kido.media.catalog.Movie;
+import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.dto.PlaybackDtos.ClientCapabilitiesRequest;
 
 /**
@@ -52,12 +52,12 @@ public class PlaybackDecisionService {
     }
 
     /**
-     * @param movie a movie whose {@link MediaInfo} has ideally been probed
+     * @param item an item whose {@link MediaInfo} has ideally been probed
      * @return the decision plus the human-readable reasons behind it
      */
-    public Decision decide(Movie movie, ClientCapabilitiesRequest caps) {
+    public Decision decide(MediaItem item, ClientCapabilitiesRequest caps) {
         List<String> reasons = new ArrayList<>();
-        MediaInfo info = movie.getMediaInfo();
+        MediaInfo info = item.getMediaInfo();
 
         if (info == null || !info.isProbed()) {
             // Without a probe there is nothing to compare against. Transcoding produces

@@ -12,12 +12,12 @@ import java.util.stream.Stream;
 
 import org.springframework.stereotype.Component;
 
-import com.example.kido.media.VideoFiles;
+import com.example.kido.media.MediaFiles;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Finds the files that sit beside a movie: its {@code .nfo}, its artwork and its
+ * Finds the files that sit beside a media file: its {@code .nfo}, its artwork and its
  * external subtitle tracks.
  *
  * <p>Naming is not standardised across Kodi, Plex, Radarr and Emby, so each lookup
@@ -51,7 +51,7 @@ public class SidecarLocator {
         if (folder == null) {
             return Optional.empty();
         }
-        String base = VideoFiles.baseName(videoFile.getFileName().toString());
+        String base = MediaFiles.baseName(videoFile.getFileName().toString());
         return firstExisting(
                 folder.resolve(base + ".nfo"),
                 folder.resolve("movie.nfo"),
@@ -71,7 +71,7 @@ public class SidecarLocator {
         if (folder == null) {
             return Optional.empty();
         }
-        String base = VideoFiles.baseName(videoFile.getFileName().toString());
+        String base = MediaFiles.baseName(videoFile.getFileName().toString());
         List<Path> candidates = new ArrayList<>();
 
         // Movie-specific first: "Inception-poster.jpg", "Inception.jpg".
@@ -101,7 +101,7 @@ public class SidecarLocator {
         if (folder == null) {
             return List.of();
         }
-        String base = VideoFiles.baseName(videoFile.getFileName().toString());
+        String base = MediaFiles.baseName(videoFile.getFileName().toString());
         List<SubtitleTrack> tracks = new ArrayList<>();
 
         collectSubtitles(folder, base, true, tracks);
@@ -120,7 +120,7 @@ public class SidecarLocator {
         try (Stream<Path> entries = Files.list(folder)) {
             entries.filter(Files::isRegularFile).forEach(path -> {
                 String name = path.getFileName().toString();
-                String extension = VideoFiles.extension(name);
+                String extension = MediaFiles.extension(name);
                 if (!SUBTITLE_EXTENSIONS.contains(extension)) {
                     return;
                 }
@@ -129,7 +129,7 @@ public class SidecarLocator {
                 }
                 out.add(new SubtitleTrack(
                         path.toAbsolutePath().normalize().toString(),
-                        languageOf(VideoFiles.baseName(name), base),
+                        languageOf(MediaFiles.baseName(name), base),
                         extension,
                         name.toLowerCase(Locale.ROOT).contains("forced"),
                         name.toLowerCase(Locale.ROOT).contains("sdh")));

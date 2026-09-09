@@ -21,7 +21,7 @@ import org.springframework.stereotype.Service;
 
 import com.example.kido.common.ApiException;
 import com.example.kido.media.MediaProperties;
-import com.example.kido.media.catalog.Movie;
+import com.example.kido.media.catalog.MediaItem;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -97,7 +97,7 @@ public class TranscodeSessionManager {
      *                     starts at zero, so the client applies this offset itself
      * @throws ApiException 429 when all session slots are busy, 500 if ffmpeg will not start
      */
-    public TranscodeSession start(Movie movie, Path file, double startSeconds, int height) {
+    public TranscodeSession start(MediaItem item, Path file, double startSeconds, int height) {
         evictFinishedSessions();
         if (sessions.size() >= props.getMaxTranscodeSessions()) {
             // Better an explicit refusal than thrashing the CPU and stalling every stream.
@@ -116,8 +116,8 @@ public class TranscodeSessionManager {
         }
 
         List<String> command = buildCommand(file, directory, startSeconds, height);
-        log.info("Starting transcode session={} movie={} start={}s height={}p",
-                sessionId, movie.getId(), startSeconds, height);
+        log.info("Starting transcode session={} item={} start={}s height={}p",
+                sessionId, item.getId(), startSeconds, height);
         log.debug("ffmpeg command: {}", String.join(" ", command));
 
         Process process;
@@ -135,7 +135,7 @@ public class TranscodeSessionManager {
         }
 
         TranscodeSession session =
-                new TranscodeSession(sessionId, movie.getId(), directory, startSeconds, height, process);
+                new TranscodeSession(sessionId, item.getId(), directory, startSeconds, height, process);
         sessions.put(sessionId, session);
 
         if (!awaitFirstSegment(session)) {

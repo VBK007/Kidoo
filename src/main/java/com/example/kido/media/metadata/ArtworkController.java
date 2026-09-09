@@ -16,9 +16,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.common.ApiException;
 import com.example.kido.media.MediaPaths;
-import com.example.kido.media.VideoFiles;
+import com.example.kido.media.MediaFiles;
 import com.example.kido.media.catalog.CatalogService;
-import com.example.kido.media.catalog.Movie;
+import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.stream.FileStreamer;
 import com.example.kido.user.AppUser;
 
@@ -26,15 +26,15 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Serves sidecar artwork and subtitles by movie id.
+ * Serves sidecar artwork and subtitles by item id.
  *
  * <p>Filesystem paths are never exposed to or accepted from the client: the poster for
- * a movie is addressed as {@code /movies/{id}/poster} and the path is looked up from
+ * an item is addressed as {@code /movies/{id}/poster} and the path is looked up from
  * the row, then re-validated against the media roots. Subtitles are addressed by the
  * positional index the detail response handed out.
  */
 @RestController
-@RequestMapping("/api/media/movies/{id}")
+@RequestMapping("/api/media/items/{id}")
 public class ArtworkController {
 
     /** Artwork is effectively immutable, and re-fetching it on every scroll is wasteful. */
@@ -60,8 +60,8 @@ public class ArtworkController {
                        @PathVariable String id,
                        HttpServletRequest request,
                        HttpServletResponse response) throws IOException {
-        Movie movie = catalog.require(id);
-        serveImage(movie.getPosterPath(), "poster", request, response);
+        MediaItem item = catalog.require(id);
+        serveImage(item.getPosterPath(), "poster", request, response);
     }
 
     @GetMapping("/backdrop")
@@ -69,15 +69,15 @@ public class ArtworkController {
                          @PathVariable String id,
                          HttpServletRequest request,
                          HttpServletResponse response) throws IOException {
-        Movie movie = catalog.require(id);
-        serveImage(movie.getBackdropPath(), "backdrop", request, response);
+        MediaItem item = catalog.require(id);
+        serveImage(item.getBackdropPath(), "backdrop", request, response);
     }
 
     private void serveImage(String storedPath, String what,
                             HttpServletRequest request, HttpServletResponse response)
             throws IOException {
         if (storedPath == null || storedPath.isBlank()) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "No " + what + " for this movie");
+            throw new ApiException(HttpStatus.NOT_FOUND, "No " + what + " for this item");
         }
         Path file = paths.requireWithinRoots(storedPath);
         streamer.serve(file, imageContentType(file), ARTWORK_CACHE_SECONDS, request, response);
@@ -95,8 +95,8 @@ public class ArtworkController {
     public ResponseEntity<byte[]> subtitle(@AuthenticationPrincipal AppUser user,
                                            @PathVariable String id,
                                            @PathVariable int index) throws IOException {
-        Movie movie = catalog.require(id);
-        List<SidecarLocator.SubtitleTrack> tracks = catalog.externalSubtitles(movie);
+        MediaItem item = catalog.require(id);
+        List<SidecarLocator.SubtitleTrack> tracks = catalog.externalSubtitles(item);
 
         if (index < 0) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Subtitle index must not be negative");
@@ -121,7 +121,7 @@ public class ArtworkController {
 
     /** Derived from the extension; artwork is only ever one of a few image types. */
     private static String imageContentType(Path file) {
-        String extension = VideoFiles.extension(file.getFileName().toString());
+        String extension = MediaFiles.extension(file.getFileName().toString());
         return switch (extension) {
             case "png" -> MediaType.IMAGE_PNG_VALUE;
             case "webp" -> "image/webp";

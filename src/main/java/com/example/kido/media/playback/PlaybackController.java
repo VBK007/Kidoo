@@ -4,7 +4,6 @@ import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -18,11 +17,14 @@ import com.example.kido.common.ApiException;
 import com.example.kido.media.dto.PlaybackDtos.ContinueWatchingDto;
 import com.example.kido.media.dto.PlaybackDtos.ProgressDto;
 import com.example.kido.media.dto.PlaybackDtos.ProgressRequest;
-import com.example.kido.user.AppUser;
+import com.example.kido.media.dto.PlayerDtos.SubtitleOffsetRequest;
+import com.example.kido.media.dto.PlayerDtos.TrackSelectionRequest;
+import com.example.kido.media.web.ActiveProfile;
+import com.example.kido.profile.Profile;
 
 import jakarta.validation.Valid;
 
-/** Resume points and the continue-watching row. */
+/** Resume points, track choices and the continue-watching row, all scoped to a profile. */
 @RestController
 @RequestMapping("/api/media")
 public class PlaybackController {
@@ -34,34 +36,51 @@ public class PlaybackController {
     }
 
     /**
-     * Upserts the caller's position in a title.
+     * Upserts the profile's position in a title.
      *
      * <p>Idempotent by design: the client posts this every few seconds during playback
      * and again on pause and stop, and each call replaces the single stored row.
      */
-    @PutMapping("/movies/{id}/progress")
-    public ProgressDto record(@AuthenticationPrincipal AppUser user,
+    @PutMapping("/items/{id}/progress")
+    public ProgressDto record(@ActiveProfile Profile profile,
                               @PathVariable String id,
                               @Valid @RequestBody ProgressRequest request) {
-        return service.record(user, id, request);
+        return service.record(profile, id, request);
     }
 
-    @GetMapping("/movies/{id}/progress")
-    public ProgressDto get(@AuthenticationPrincipal AppUser user, @PathVariable String id) {
-        return service.find(user, id).orElseThrow(
-                () -> new ApiException(HttpStatus.NOT_FOUND, "No progress recorded for this movie"));
+    @GetMapping("/items/{id}/progress")
+    public ProgressDto get(@ActiveProfile Profile profile, @PathVariable String id) {
+        return service.find(profile, id).orElseThrow(() -> new ApiException(
+                HttpStatus.NOT_FOUND, "No progress recorded for this item"));
     }
 
     /** Forgets the resume point so the title starts from the beginning. */
-    @DeleteMapping("/movies/{id}/progress")
-    public ResponseEntity<Void> reset(@AuthenticationPrincipal AppUser user, @PathVariable String id) {
-        service.reset(user, id);
+    @DeleteMapping("/items/{id}/progress")
+    public ResponseEntity<Void> reset(@ActiveProfile Profile profile, @PathVariable String id) {
+        service.reset(profile, id);
         return ResponseEntity.noContent().build();
     }
 
+    /** Subtitle timing correction, saved per profile and file. */
+    @PutMapping("/items/{id}/subtitle-offset")
+    public ProgressDto setSubtitleOffset(@ActiveProfile Profile profile,
+                                         @PathVariable String id,
+                                         @Valid @RequestBody SubtitleOffsetRequest request) {
+        return service.setSubtitleOffset(profile, id, request);
+    }
+
+    /** Remembers the chosen subtitle and audio tracks for next time. */
+    @PutMapping("/items/{id}/tracks")
+    public ProgressDto setTracks(@ActiveProfile Profile profile,
+                                 @PathVariable String id,
+                                 @Valid @RequestBody TrackSelectionRequest request) {
+        return service.setTracks(profile, id, request);
+    }
+
     @GetMapping("/continue-watching")
-    public List<ContinueWatchingDto> continueWatching(@AuthenticationPrincipal AppUser user,
-                                                      @RequestParam(defaultValue = "20") int limit) {
-        return service.continueWatching(user, Math.min(limit, 50));
+    public List<ContinueWatchingDto> continueWatching(
+            @ActiveProfile Profile profile,
+            @RequestParam(defaultValue = "20") int limit) {
+        return service.continueWatching(profile, Math.min(limit, 50));
     }
 }
