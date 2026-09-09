@@ -1,0 +1,1275 @@
+<title>Tower API Reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Archivo+Narrow:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  /*
+   * Single-theme dark, deliberately. Tower is specified as a dark-only app
+   * ("custom dark-only theme, do not use dynamic color"), so its own reference
+   * is set in its own palette. Every colour is painted explicitly so the page
+   * holds on either host ground.
+   */
+  :root {
+    --ink: #0a0a0c;
+    --surface-1: #131317;
+    --surface-2: #17171c;
+    --sheet: #111116;
+    --on-ink: #f6f3ec;
+    --on-ink-muted: rgba(246, 243, 236, 0.62);
+    --on-ink-faint: rgba(246, 243, 236, 0.45);
+    --hairline: rgba(255, 255, 255, 0.09);
+    --hairline-strong: rgba(255, 255, 255, 0.16);
+    --amber: #e8b34a;
+    --amber-ink: #1a1204;
+    --amber-dim: rgba(232, 179, 74, 0.14);
+    --direct: #7ee2a8;
+    --direct-dim: rgba(126, 226, 168, 0.13);
+    --blue: #6a8fd4;
+    --pink: #b06a8f;
+
+    --measure: 68ch;
+    --gap: 22px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--on-ink);
+    font: 400 15px/1.62 Archivo, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 56px 24px 120px;
+  }
+
+  /* --- type scale --- */
+
+  h1 {
+    font: 700 clamp(34px, 6vw, 52px)/1.04 'Archivo Narrow', Archivo, sans-serif;
+    letter-spacing: -0.015em;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+
+  h2 {
+    font: 700 clamp(21px, 3vw, 27px)/1.18 'Archivo Narrow', Archivo, sans-serif;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+
+  h3 {
+    font: 600 17px/1.3 Archivo, sans-serif;
+    margin: 0 0 6px;
+  }
+
+  p { margin: 0 0 14px; max-width: var(--measure); color: var(--on-ink-muted); }
+  p strong { color: var(--on-ink); font-weight: 600; }
+  a { color: var(--amber); text-decoration: none; border-bottom: 1px solid var(--amber-dim); }
+  a:hover { border-bottom-color: var(--amber); }
+  a:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; border-radius: 2px; }
+
+  /*
+   * The mono/prose split is Tower's own rule, applied to this document:
+   * Archivo for anything a human wrote, IBM Plex Mono for anything the server
+   * measured or named — paths, fields, types, states.
+   */
+  code, .mono {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  code {
+    font-size: 0.88em;
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+    border-radius: 5px;
+    padding: 1px 5px;
+    color: #f0dfb6;
+  }
+
+  .eyebrow {
+    font: 600 10.5px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--on-ink-faint);
+    margin: 0 0 12px;
+  }
+
+  section { padding-top: 52px; }
+
+  section > .eyebrow { color: var(--amber); }
+
+  .lede { font-size: 17px; max-width: 62ch; color: var(--on-ink-muted); }
+
+  /* --- masthead --- */
+
+  header {
+    padding-bottom: 34px;
+    border-bottom: 1px solid var(--hairline-strong);
+  }
+
+  .status-line {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font: 600 10.5px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.14em;
+    color: var(--direct);
+    margin: 0 0 18px;
+  }
+
+  .dot {
+    width: 6px; height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+    flex: 0 0 auto;
+  }
+
+  .base-url {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 14px;
+    margin-top: 26px;
+    padding: 14px 16px;
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+  }
+
+  .base-url .k {
+    font: 600 10px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--on-ink-faint);
+  }
+
+  .base-url .v {
+    font: 500 14px/1.4 'IBM Plex Mono', monospace;
+    color: var(--on-ink);
+  }
+
+  /* --- hairline lists, per Tower's own rule: dividers, not cards --- */
+
+  .rows { border-top: 1px solid var(--hairline); }
+
+  .row {
+    display: grid;
+    grid-template-columns: 26px 1fr auto;
+    gap: 4px 14px;
+    align-items: start;
+    padding: 15px 2px;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .row .num {
+    font: 600 11px/1.7 'IBM Plex Mono', monospace;
+    color: var(--on-ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .row .body h3 { margin-bottom: 3px; }
+  .row .body p { margin: 0 0 9px; font-size: 13.5px; max-width: 58ch; }
+
+  .calls { display: flex; flex-direction: column; gap: 3px; }
+
+  .call {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    font: 400 12px/1.5 'IBM Plex Mono', monospace;
+    color: var(--on-ink-muted);
+    flex-wrap: wrap;
+  }
+
+  .call .path { color: var(--on-ink); }
+
+  /* verb chips: amber for anything that mutates, faint for a read */
+  .verb {
+    font: 600 9.5px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.1em;
+    padding: 4px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--hairline-strong);
+    color: var(--on-ink-faint);
+    flex: 0 0 auto;
+    min-width: 46px;
+    text-align: center;
+  }
+
+  .verb.write {
+    color: var(--amber);
+    border-color: rgba(232, 179, 74, 0.42);
+    background: var(--amber-dim);
+  }
+
+  /* coverage: green = ready, amber = needs work, grey = unavailable */
+  .state {
+    font: 600 9.5px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 4px;
+  }
+
+  .state.done { color: var(--direct); }
+  .state.part { color: var(--amber); }
+  .state.none { color: var(--on-ink-faint); }
+
+  .gap-note {
+    font: 400 12.5px/1.5 Archivo, sans-serif;
+    color: var(--amber);
+    margin: 6px 0 0;
+    max-width: 56ch;
+  }
+
+  .gap-note.none-note { color: var(--on-ink-faint); }
+
+  /* --- endpoint reference --- */
+
+  .group { margin-bottom: 34px; }
+  .group > h3 {
+    font: 600 10.5px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--amber);
+    padding-bottom: 9px;
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 0;
+  }
+
+  .ep {
+    padding: 13px 2px;
+    border-bottom: 1px solid var(--hairline);
+    display: grid;
+    grid-template-columns: 54px 1fr;
+    gap: 3px 12px;
+    align-items: start;
+  }
+
+  .ep .sig {
+    font: 500 12.5px/1.5 'IBM Plex Mono', monospace;
+    color: var(--on-ink);
+    word-break: break-word;
+  }
+
+  .ep .desc {
+    grid-column: 2;
+    font-size: 13px;
+    color: var(--on-ink-muted);
+    margin: 0;
+    max-width: 60ch;
+  }
+
+  .ep .meta {
+    grid-column: 2;
+    font: 400 11.5px/1.6 'IBM Plex Mono', monospace;
+    color: var(--on-ink-faint);
+    margin-top: 3px;
+  }
+
+  .ep .meta b {
+    color: var(--on-ink-muted);
+    font-weight: 500;
+  }
+
+  /* --- distinct objects get a card; nothing else does --- */
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 20px 22px;
+  }
+
+  .card.attention {
+    border-color: rgba(232, 179, 74, 0.32);
+    background: linear-gradient(180deg, var(--amber-dim), var(--surface-1) 70%);
+  }
+
+  .cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(248px, 1fr)); }
+
+  .card h3 { margin-bottom: 7px; }
+  .card p { font-size: 13.5px; margin-bottom: 0; max-width: none; }
+  .card p + p { margin-top: 10px; }
+
+  dl.headers { margin: 0; display: grid; gap: 16px; }
+  dl.headers > div { display: grid; gap: 4px; }
+  dl.headers dt {
+    font: 500 12.5px/1.4 'IBM Plex Mono', monospace;
+    color: var(--amber);
+  }
+  dl.headers dd { margin: 0; font-size: 13.5px; color: var(--on-ink-muted); max-width: 62ch; }
+
+  pre {
+    background: var(--sheet);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 15px 17px;
+    overflow-x: auto;
+    margin: 0 0 16px;
+  }
+
+  pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: 12px;
+    line-height: 1.72;
+    color: #d8e0c9;
+    white-space: pre;
+  }
+
+  /* --- playback flow --- */
+
+  .flow {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: 1fr;
+    margin-bottom: 18px;
+  }
+
+  @media (min-width: 720px) {
+    .flow { grid-template-columns: 1fr 1fr; }
+    .flow .step-decide { grid-column: 1 / -1; }
+  }
+
+  .step {
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 15px 17px;
+    background: var(--surface-1);
+  }
+
+  .step.direct { border-color: rgba(126, 226, 168, 0.34); background: linear-gradient(180deg, var(--direct-dim), var(--surface-1) 70%); }
+  .step.transcode { border-color: rgba(232, 179, 74, 0.3); background: linear-gradient(180deg, var(--amber-dim), var(--surface-1) 70%); }
+
+  .step .tag {
+    font: 600 9.5px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.11em;
+    display: flex; align-items: center; gap: 6px;
+    margin-bottom: 9px;
+  }
+  .step.direct .tag { color: var(--direct); }
+  .step.transcode .tag { color: var(--amber); }
+  .step.step-decide .tag { color: var(--on-ink-faint); }
+
+  .step p { font-size: 13px; margin: 0; color: var(--on-ink-muted); max-width: none; }
+  .step .mono-line {
+    font: 400 11.5px/1.6 'IBM Plex Mono', monospace;
+    color: var(--on-ink-faint);
+    margin-top: 9px;
+    word-break: break-word;
+  }
+
+  /* --- footnote --- */
+
+  footer {
+    margin-top: 64px;
+    padding-top: 22px;
+    border-top: 1px solid var(--hairline);
+    font-size: 13px;
+    color: var(--on-ink-faint);
+    max-width: var(--measure);
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin: 18px 0 0;
+    padding: 0;
+    list-style: none;
+    font: 600 9.5px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.1em;
+  }
+  .legend li { display: flex; align-items: center; gap: 7px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .status-line .dot { animation: pulse 2.6s ease-in-out infinite; }
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="status-line"><span class="dot"></span>TOWER · BACKEND CONTRACT</p>
+    <h1>Tower API Reference</h1>
+    <p class="lede">
+      What the Android client calls, screen by screen. Written against the
+      running Spring Boot server so the client has a concrete contract instead of
+      an assumption — and so the gaps are visible before they become surprises.
+    </p>
+
+    <div class="base-url">
+      <span class="k">Base</span>
+      <span class="v">http://192.168.29.122:8080</span>
+      <span class="k">Library</span>
+      <span class="v">E:/Entertainment</span>
+      <span class="k">Profile</span>
+      <span class="v">--spring.profiles.active=server</span>
+    </div>
+  </header>
+
+  <section>
+    <p class="eyebrow">Correction to the brief</p>
+    <h2>This is not a Jellyfin server</h2>
+    <p>
+      The build prompt says <em>"Jellyfin-style REST assumed"</em> and shows
+      <code>http://192.168.1.__:8096</code>. That is the one line to change: this
+      server speaks its own API on <strong>port 8080</strong> under
+      <code>/api/media</code>, shaped for these screens rather than bent to fit
+      another product's schema. The brief already isolates transport in
+      <code>data/remote</code>, so it is a one-file change on the client.
+    </p>
+    <p>
+      Everything below is real and tested. Where a screen needs something that
+      does not exist yet, it says so rather than inventing an endpoint.
+    </p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Every request</p>
+    <h2>Three headers</h2>
+    <div class="card">
+      <dl class="headers">
+        <div>
+          <dt>Authorization: Bearer &lt;jwt&gt;</dt>
+          <dd>
+            Everything except <code>/api/health</code>,
+            <code>/api/auth/register</code> and <code>/api/auth/login</code>.
+            Register returns <strong>201</strong> with a token; the account needs
+            <code>"role":"PARENT"</code> to reach anything under
+            <code>/admin</code>.
+          </dd>
+        </div>
+        <div>
+          <dt>X-Profile-Id: &lt;profileId&gt;</dt>
+          <dd>
+            Selects which family member is acting. Resume points, downloads,
+            settings and unwatched marks are all per profile, not per account.
+            Omit it and the account's first profile is used — convenient for
+            curl, but the client should always send it. A profile id from another
+            household returns <strong>404</strong>, never someone else's data.
+          </dd>
+        </div>
+        <div>
+          <dt>X-Admin-Key: &lt;key&gt;</dt>
+          <dd>
+            Required by <code>/api/media/admin/**</code> and the library scan,
+            <em>in addition to</em> a PARENT account. Both checks, because the key
+            alone would let a child's device act as owner if it ever leaked into a
+            shared client build. Failure is <strong>403</strong> either way, so the
+            response cannot confirm a guessed key.
+          </dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Shapes you will meet everywhere</p>
+    <h2>Errors and pages</h2>
+    <p>
+      Every failure is the same envelope, so the client needs one error path, not
+      one per call:
+    </p>
+<pre><code>{ "timestamp": "2026-09-10T04:12:33Z",
+  "status": 410,
+  "error": "Gone",
+  "message": "File is no longer on disk" }</code></pre>
+    <p>
+      Two status codes carry meaning worth handling separately.
+      <strong>410</strong> means the row exists but the bytes do not — the drive is
+      unplugged, not the title deleted, so say "disk offline" rather than "not
+      found". <strong>429</strong> from a playback decision means every transcode
+      slot is busy; the message names the limit.
+    </p>
+    <p>
+      Paged endpoints all return the same four fields alongside their items, and
+      cap <code>size</code> at <strong>100</strong>:
+    </p>
+<pre><code>{ "items": [ ... ], "page": 0, "size": 40,
+  "totalItems": 214, "totalPages": 6 }</code></pre>
+  </section>
+
+  <section>
+    <p class="eyebrow">The central flow</p>
+    <h2>Never guess whether a file will play</h2>
+    <p>
+      <code>DIRECT PLAY</code> versus <code>WILL TRANSCODE</code> is the brief's
+      main motif, and the server decides it — not the client. Post the device's
+      real codec support and use whichever URL comes back.
+    </p>
+
+    <div class="flow">
+      <div class="step step-decide">
+        <p class="tag"><span class="dot"></span>STEP 1 · ASK</p>
+        <p>
+          The server probes the file if it never has, compares it against what the
+          device declared, opens a playback session, and starts ffmpeg if a
+          transcode is needed — so the playlist is already serving segments by the
+          time you request it.
+        </p>
+        <p class="mono-line">POST /api/media/items/{id}/playback-decision?startSeconds=76</p>
+      </div>
+
+      <div class="step direct">
+        <p class="tag"><span class="dot"></span>MODE · DIRECT</p>
+        <p>
+          Original bytes, byte-range served. Instant seeking, no server CPU. Keep
+          the <code>session</code> parameter on the URL — it is what makes the
+          stream visible in the admin panel and stoppable from it.
+        </p>
+        <p class="mono-line">GET …/stream?session=&lt;sessionId&gt;</p>
+      </div>
+
+      <div class="step transcode">
+        <p class="tag"><span class="dot"></span>MODE · TRANSCODE</p>
+        <p>
+          HLS, seeked to <code>startSeconds</code>. The stream itself starts at
+          zero, so apply the offset client-side. Seeking past the transcoded
+          region means asking for a new decision.
+        </p>
+        <p class="mono-line">GET /api/media/transcode/{sessionId}/index.m3u8</p>
+      </div>
+    </div>
+
+    <p>
+      <code>reasons</code> comes back as plain English on both paths — that is the
+      sentence the playback plan card shows, and the debug view can print the
+      whole list. <code>/playback-decision/explain</code> is the same logic with
+      no session and no ffmpeg, and it works when the disk is offline, which is
+      exactly when someone is asking why a title will not play.
+    </p>
+<pre><code>POST /api/media/items/{id}/playback-decision
+{ "deviceName": "Arun's Pixel",
+  "videoCodecs": ["h264", "hevc"], "audioCodecs": ["aac"],
+  "containers": ["mp4", "mkv"], "maxHeight": 1080,
+  "maxBitrate": 20000000, "supportsHls": true }
+
+200 { "mediaItemId": "…", "mode": "DIRECT",
+      "url": "/api/media/items/…/stream?session=9f3c…",
+      "sessionId": "9f3c…", "startSeconds": 76,
+      "mediaInfo": { "container": "mov,mp4,m4a", "videoCodec": "h264",
+                     "width": 1920, "height": 1080, "bitrate": 8000000,
+                     "durationSeconds": 8880.0, "probed": true },
+      "reasons": ["Direct play: container and codecs match client capabilities"] }</code></pre>
+    <p>
+      A field left <code>null</code> in the request counts as unknown, and every
+      unknown resolves toward transcoding. That is deliberate: wasting CPU is
+      recoverable, a black screen is not.
+    </p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Screen by screen</p>
+    <h2>What each screen calls</h2>
+    <p>
+      Numbered as the build prompt numbers them, so this reads alongside it.
+      Status is honest: green is built and tested, amber works but is missing
+      something the screen asks for, grey has no backend at all.
+    </p>
+
+    <div class="rows">
+
+      <div class="row">
+        <span class="num">01</span>
+        <div class="body">
+          <h3>Home</h3>
+          <p>Status line, continue watching, recently added, camera-roll rail.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/continue-watching?limit=20</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/recently-added?types=FILM,ANIME&amp;limit=20</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/recently-added?types=PHOTO,HOME_VIDEO</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/library-summary</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/health</span></div>
+          </div>
+        </div>
+        <span class="state done"><span class="dot"></span>BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">02</span>
+        <div class="body">
+          <h3>Library</h3>
+          <p>Category chips, filter chips, poster grid, unwatched dots.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items?category=ours&amp;unwatched=true&amp;minHeight=2160&amp;sort=title&amp;page=0</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/library-summary</span></div>
+          </div>
+          <p class="gap-note" style="color: var(--on-ink-faint)">
+            <code>category</code> accepts the chip labels directly:
+            <code>all</code>, <code>films</code>, <code>anime</code>,
+            <code>ours</code>, <code>music</code>, <code>photos</code>.
+            <code>minHeight=2160</code> is the 4K ONLY chip.
+          </p>
+        </div>
+        <span class="state done"><span class="dot"></span>BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">03</span>
+        <div class="body">
+          <h3>Search</h3>
+          <p>Searches the disk. Matches title, sort title and filename.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items?q=inception</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/people</span></div>
+          </div>
+          <p class="gap-note">
+            No <code>NEEDS TRANSCODE</code> hint on results — that needs device
+            capabilities at browse time, which only the decision endpoint takes
+            today. No folder "Jump to" facet either.
+          </p>
+        </div>
+        <span class="state part"><span class="dot"></span>PARTIAL</span>
+      </div>
+
+      <div class="row">
+        <span class="num">04</span>
+        <div class="body">
+          <h3>Movie detail</h3>
+          <p>Hero, resume pill, playback plan card, spec row, track chips.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items/{id}</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items/{id}/backdrop</span></div>
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/media/items/{id}/playback-decision</span></div>
+          </div>
+          <p class="gap-note">
+            "Also on the disk" has no related-items endpoint. The cast button has
+            no backend at all — see screen 11.
+          </p>
+        </div>
+        <span class="state part"><span class="dot"></span>PARTIAL</span>
+      </div>
+
+      <div class="row">
+        <span class="num">05</span>
+        <div class="body">
+          <h3>Player · portrait</h3>
+          <p>One call restores everything: position, tracks, offset, chapters, scrub frames.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items/{id}/player-state</span></div>
+            <div class="call"><span class="verb write">PUT</span><span class="path">/api/media/items/{id}/progress</span></div>
+            <div class="call"><span class="verb write">PUT</span><span class="path">/api/media/items/{id}/tracks</span></div>
+          </div>
+          <p class="gap-note" style="color: var(--on-ink-faint)">
+            Post progress every few seconds and on pause/stop. It upserts, so
+            repeats are free — and the increments are what the admin watch-hours
+            chart is built from.
+          </p>
+        </div>
+        <span class="state done"><span class="dot"></span>BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">06</span>
+        <div class="body">
+          <h3>Player · landscape</h3>
+          <p>Gestures and chrome are entirely client-side; same endpoints as portrait.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items/{id}/player-state</span></div>
+          </div>
+        </div>
+        <span class="state done"><span class="dot"></span>BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">07</span>
+        <div class="body">
+          <h3>Thumbnail scrubbing</h3>
+          <p>Sprite sheets, cropped locally — no request per frame.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items/{id}/trickplay</span></div>
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/media/items/{id}/trickplay</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items/{id}/trickplay/sheet_0003.jpg</span></div>
+          </div>
+          <p class="gap-note" style="color: var(--on-ink-faint)">
+            <strong>404</strong> until generated — fall back to a plain scrubber
+            rather than treating it as an error. POST returns <strong>202</strong>
+            and a <code>GENERATING</code> manifest to poll. The arithmetic for
+            timecode → sheet and tile is in the manifest section below.
+          </p>
+        </div>
+        <span class="state done"><span class="dot"></span>BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">08</span>
+        <div class="body">
+          <h3>Downloads / Saved</h3>
+          <p>Prepared copies, conversion percentage, the saved-only toggle.</p>
+          <div class="calls">
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/media/items/{id}/download</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/downloads?page=0&amp;size=20</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/downloads/{jobId}/file</span></div>
+            <div class="call"><span class="verb write">DELETE</span><span class="path">/api/media/downloads/{jobId}</span></div>
+            <div class="call"><span class="verb write">PUT</span><span class="path">/api/media/settings</span></div>
+          </div>
+          <p class="gap-note">
+            Free space is the phone's, so the client supplies it. The
+            category-coloured usage bar needs each job's media type, which
+            <code>DownloadJobDto</code> does not carry yet.
+          </p>
+        </div>
+        <span class="state part"><span class="dot"></span>PARTIAL</span>
+      </div>
+
+      <div class="row">
+        <span class="num">09</span>
+        <div class="body">
+          <h3>Connect server</h3>
+          <p>Discovery, pairing, QR.</p>
+          <p class="gap-note none-note">
+            Nothing exists. No mDNS/SSDP advertisement, no pairing handshake, no
+            QR payload. The manual-IP path works today —
+            <code>http://192.168.29.122:8080</code> plus register or login — so
+            build that field first and treat auto-discovery as a later screen.
+          </p>
+        </div>
+        <span class="state none"><span class="dot"></span>NOT BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">10</span>
+        <div class="body">
+          <h3>Profiles &amp; settings</h3>
+          <p>Avatar row, playback and server groups, technical-badges toggle.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/profiles</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/settings</span></div>
+            <div class="call"><span class="verb write">PUT</span><span class="path">/api/media/settings</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/library/status</span></div>
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/media/library/scan</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/admin/matches</span></div>
+          </div>
+          <p class="gap-note">
+            <code>showTechnicalBadges</code> is stored server-side so it follows a
+            person between devices. Missing: preferred subtitle language, and
+            separate Wi-Fi versus mobile quality — there is one
+            <code>awayMaxHeight</code> today, not a pair.
+          </p>
+        </div>
+        <span class="state part"><span class="dot"></span>PARTIAL</span>
+      </div>
+
+      <div class="row">
+        <span class="num">11</span>
+        <div class="body">
+          <h3>Cast to TV</h3>
+          <p>Device rows stating the consequence per device.</p>
+          <p class="gap-note none-note">
+            No device registry and no per-device capability store, so
+            <code>DIRECT PLAY · 4K CAPABLE</code> cannot be computed for anything
+            but the phone making the request. The decision engine would serve this
+            unchanged once devices can be registered.
+          </p>
+        </div>
+        <span class="state none"><span class="dot"></span>NOT BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">12</span>
+        <div class="body">
+          <h3>Fix wrong metadata</h3>
+          <p>Queue, candidates with match percentages, both escape hatches.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/admin/matches?page=0</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/admin/matches/{id}?q=arrival</span></div>
+            <div class="call"><span class="verb write">PUT</span><span class="path">/api/media/admin/matches/{id}</span></div>
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/media/admin/matches/{id}/reclassify</span></div>
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/media/admin/matches/{id}/unmatch</span></div>
+          </div>
+          <p class="gap-note" style="color: var(--on-ink-faint)">
+            The screen's promise is served from the backend as
+            <code>reassurance</code>, so client copy cannot drift from what the
+            server does. <code>remaining</code> is the
+            <code>N MORE MISMATCHES QUEUED</code> line. This is the only endpoint
+            that returns real filesystem paths, because identifying a file is what
+            it asks the owner to do.
+          </p>
+        </div>
+        <span class="state done"><span class="dot"></span>BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">13</span>
+        <div class="body">
+          <h3>Home-video timeline</h3>
+          <p>Grouped by month, person or place, with the undated nudge.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/timeline?groupBy=date&amp;page=0&amp;size=60</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/people</span></div>
+          </div>
+          <p class="gap-note">
+            Read-only. <code>undatedCount</code> powers "9 clips have no date —
+            tag them?" but there is no endpoint to <em>do</em> the tagging: capture
+            date, place and people cannot be written yet. Groups span pages;
+            merge them client-side on <code>key</code>.
+          </p>
+        </div>
+        <span class="state part"><span class="dot"></span>PARTIAL</span>
+      </div>
+
+      <div class="row">
+        <span class="num">14</span>
+        <div class="body">
+          <h3>Degraded states</h3>
+          <p>Away from home is built. Server-asleep is not.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/reachability</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items/{id}/playback-cost?height=720</span></div>
+          </div>
+          <p class="gap-note">
+            The server answers "am I at home?" by comparing your address against
+            its own interface prefixes — the client cannot, since Android reports
+            Wi-Fi without knowing whose. No sleep detection and no wake-on-LAN, so
+            <code>TOWER · SLEEPING</code> and "Wake the server" have nothing behind
+            them.
+          </p>
+        </div>
+        <span class="state part"><span class="dot"></span>PARTIAL</span>
+      </div>
+
+      <div class="row">
+        <span class="num">15</span>
+        <div class="body">
+          <h3>Phone → TV handoff</h3>
+          <p class="gap-note none-note">
+            Depends on screen 11. Session transfer and phone-as-remote need a
+            device registry first.
+          </p>
+        </div>
+        <span class="state none"><span class="dot"></span>NOT BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">16</span>
+        <div class="body">
+          <h3>Watch together</h3>
+          <p class="gap-note none-note">
+            Needs a push channel — WebSocket or SSE — which the stack does not
+            have yet. One server clock, per-device readiness and reactions are all
+            realtime, not REST. Worth deciding the transport before starting, since
+            handoff and cast would use the same one.
+          </p>
+        </div>
+        <span class="state none"><span class="dot"></span>NOT BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">17</span>
+        <div class="body">
+          <h3>Requests</h3>
+          <p class="gap-note none-note">
+            Nothing built, and the cheapest remaining feature: a request row, a
+            status, and an owner inbox. No streaming, no realtime, no ffmpeg.
+          </p>
+        </div>
+        <span class="state none"><span class="dot"></span>NOT BUILT</span>
+      </div>
+
+      <div class="row">
+        <span class="num">18</span>
+        <div class="body">
+          <h3>Subtitles</h3>
+          <p>External tracks convert to WebVTT; the offset tuner persists per file.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/items/{id}/subtitles/{index}</span></div>
+            <div class="call"><span class="verb write">PUT</span><span class="path">/api/media/items/{id}/subtitle-offset</span></div>
+          </div>
+          <p class="gap-note">
+            Embedded tracks are <em>listed</em> in item detail but not servable —
+            requesting one returns <strong>501</strong>, since extraction needs an
+            ffmpeg pass that is not wired up. No line counts, and no online search
+            by file hash.
+          </p>
+        </div>
+        <span class="state part"><span class="dot"></span>PARTIAL</span>
+      </div>
+
+      <div class="row">
+        <span class="num">19</span>
+        <div class="body">
+          <h3>Kids mode</h3>
+          <p>Profiles exist; the two things that make it kids mode do not.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/profiles</span></div>
+          </div>
+          <p class="gap-note">
+            No approved-title list and no daily time limit, so the 2×2 grid has
+            nothing to filter by and <code>45 MIN LEFT TODAY</code> has nothing to
+            count. The parent app already has a screen-time concept that is not
+            wired to media.
+          </p>
+        </div>
+        <span class="state part"><span class="dot"></span>PARTIAL</span>
+      </div>
+
+      <div class="row">
+        <span class="num">20</span>
+        <div class="body">
+          <h3>Admin panel</h3>
+          <p>All three tabs, plus ending someone else's stream.</p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/admin/health</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/admin/people</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/admin/disk?biggestFiles=20</span></div>
+            <div class="call"><span class="verb write">DELETE</span><span class="path">/api/media/admin/sessions/{sessionId}</span></div>
+            <div class="call"><span class="verb write">DELETE</span><span class="path">/api/media/admin/disk/caches</span></div>
+          </div>
+          <p class="gap-note" style="color: var(--on-ink-faint)">
+            <code>watchWeek</code> arrives with the peak day already flagged, so
+            the chart does not have to scan for which bar to paint solid.
+            <code>needsALook</code> suppresses every zero-count row — an empty
+            list means a healthy server, not a missing feature.
+          </p>
+        </div>
+        <span class="state done"><span class="dot"></span>BUILT</span>
+      </div>
+
+    </div>
+
+    <ul class="legend">
+      <li><span class="dot" style="color: var(--direct)"></span><span style="color: var(--direct)">BUILT &amp; TESTED</span></li>
+      <li><span class="dot" style="color: var(--amber)"></span><span style="color: var(--amber)">WORKS, SOMETHING MISSING</span></li>
+      <li><span class="dot" style="color: var(--on-ink-faint)"></span><span style="color: var(--on-ink-faint)">NO BACKEND</span></li>
+    </ul>
+  </section>
+
+  <section>
+    <p class="eyebrow">Full endpoint list</p>
+    <h2>Reference</h2>
+
+    <div class="group">
+      <h3>Catalog</h3>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items</span>
+        <p class="desc">Paged browse and search. The one endpoint behind both the Library grid and the Search screen.</p>
+        <p class="meta"><b>query</b> category · q · genre · unwatched · minHeight · sort(title|added|captured|year|rating) · page · size<br><b>→</b> ItemPageDto { items[ItemSummaryDto], page, size, totalItems, totalPages }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}</span>
+        <p class="desc">Everything the detail screen renders, including subtitle and audio track lists.</p>
+        <p class="meta"><b>→</b> ItemDetailDto { …, mediaInfo, subtitles[], audioTracks[], resumePositionSeconds, watched }<br><b>410</b> when the file has gone from disk</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/recently-added</span>
+        <p class="desc">A rail, not a list — capped at 50 and unpaged by design.</p>
+        <p class="meta"><b>query</b> types (comma-separated MediaType) · limit<br><b>→</b> ItemSummaryDto[]</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/library-summary</span>
+        <p class="desc">Count, total bytes, per-category breakdown and the genre facet list.</p>
+        <p class="meta"><b>→</b> { itemCount, totalBytes, categories[{ type, label, itemCount, totalBytes }], genres[] }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/timeline</span>
+        <p class="desc">Home footage and photos, grouped. Items are paged then grouped, so groups can span pages.</p>
+        <p class="meta"><b>query</b> groupBy(date|person|place) · page · size<br><b>→</b> { groupBy, groups[{ key, label, itemCount, items[] }], undatedCount, page, size, totalItems, totalPages, hasMore }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/genres · /api/media/people</span>
+        <p class="desc">Facet lists. Bounded by the domain, so neither is paged.</p>
+        <p class="meta"><b>→</b> String[]</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}/poster · /backdrop</span>
+        <p class="desc">Sidecar artwork by item id. Paths are never exposed; cached a day.</p>
+        <p class="meta"><b>→</b> image/jpeg | image/png | image/webp · <b>404</b> when the item has none</p>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Playback</h3>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/media/items/{id}/playback-decision</span>
+        <p class="desc">Decide, open a session, start ffmpeg if needed. Call this before playing or casting.</p>
+        <p class="meta"><b>query</b> startSeconds<br><b>body</b> ClientCapabilitiesRequest { deviceName, videoCodecs[], audioCodecs[], containers[], maxHeight, maxBitrate, supportsHls }<br><b>→</b> PlaybackDecisionDto { mediaItemId, mode(DIRECT|TRANSCODE), url, sessionId, startSeconds, mediaInfo, reasons[] }<br><b>429</b> all transcode slots busy · <b>415</b> needs transcoding but client declared no HLS</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">…/playback-decision/explain</span>
+        <p class="desc">Same reasoning, nothing started. Works with the disk offline, which is when you need it.</p>
+        <p class="meta"><b>→</b> String[] of reasons</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}/stream</span>
+        <p class="desc">Original bytes with full Range support. Honours 206 and 416 exactly, so seeking works.</p>
+        <p class="meta"><b>query</b> session (from the decision)<br><b>→</b> video/* · <b>403</b> if the owner ended that session</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/transcode/{sessionId}/index.m3u8</span>
+        <p class="desc">Growing HLS playlist. Segment names resolve relative to it, so no rewriting is needed.</p>
+        <p class="meta"><b>→</b> application/vnd.apple.mpegurl (never cached)</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/transcode/{sessionId}/seg_00001.ts</span>
+        <p class="desc">One segment. A 404 means ffmpeg has not produced it yet — retry rather than fail.</p>
+        <p class="meta"><b>→</b> video/mp2t</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">DELETE</span>
+        <span class="sig">/api/media/transcode/{sessionId}</span>
+        <p class="desc">Frees a transcode slot immediately. Worth calling on stop; the reaper handles clients that vanish.</p>
+        <p class="meta"><b>→</b> 204</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}/media-info</span>
+        <p class="desc">Probe results alone, for a debug screen.</p>
+        <p class="meta"><b>→</b> MediaInfoDto</p>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Player state</h3>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}/player-state</span>
+        <p class="desc">One round trip instead of four. The player opens on a tap, and every extra request is visible as delay before the first frame.</p>
+        <p class="meta"><b>→</b> { mediaItemId, positionSeconds, durationSeconds, watched, subtitleOffsetSeconds, subtitleTrackIndex, audioTrackIndex, chapters[], trickplay }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}/chapters</span>
+        <p class="desc">Container chapter markers for the 2dp scrubber ticks. Empty is normal.</p>
+        <p class="meta"><b>→</b> [{ index, startSeconds, endSeconds, title }]</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}/trickplay</span>
+        <p class="desc">Sprite-sheet manifest. Compute frame, sheet and tile locally — no request per frame.</p>
+        <p class="meta"><b>→</b> { state, intervalSeconds, tileWidth, tileHeight, columns, rows, framesPerSheet, frameCount, sheetCount, sheetUrlTemplate }</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/media/items/{id}/trickplay</span>
+        <p class="desc">Queue generation. Decodes the whole file, so it runs on one low-priority thread and never blocks playback.</p>
+        <p class="meta"><b>→</b> 202 GENERATING · 200 if already READY</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">PUT</span>
+        <span class="sig">/api/media/items/{id}/progress</span>
+        <p class="desc">Upsert the resume point. Post every few seconds and on pause/stop.</p>
+        <p class="meta"><b>body</b> { positionSeconds, durationSeconds, finished }<br><b>→</b> ProgressDto { …, percentComplete, subtitleOffsetSeconds, subtitleTrackIndex, audioTrackIndex, updatedAt }</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">PUT</span>
+        <span class="sig">…/subtitle-offset · …/tracks</span>
+        <p class="desc">Offset tuner and remembered track choices, saved per profile and file.</p>
+        <p class="meta"><b>body</b> { offsetSeconds } · { subtitleTrackIndex, audioTrackIndex }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/continue-watching</span>
+        <p class="desc">Started, unfinished, newest first. Under 30 seconds is not remembered, so a mis-tap does not litter the row.</p>
+        <p class="meta"><b>→</b> [{ item: ItemSummaryDto, positionSeconds, durationSeconds, percentComplete }]</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}/subtitles/{index}</span>
+        <p class="desc">External track converted to WebVTT, including a Windows-1252 fallback for legacy files.</p>
+        <p class="meta"><b>→</b> text/vtt · <b>501</b> for an embedded track</p>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Offline &amp; away</h3>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/media/items/{id}/download</span>
+        <p class="desc">Prepare an offline copy. A file the device can already play at that size is handed over untouched.</p>
+        <p class="meta"><b>body</b> { height, capabilities }<br><b>→</b> 200 READY (passthrough) · 202 queued for conversion</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/downloads</span>
+        <p class="desc">Paged Saved list. Header totals count the whole list, not the page.</p>
+        <p class="meta"><b>query</b> page · size<br><b>→</b> { items[DownloadJobDto], page, size, totalItems, totalPages, readyCount, inProgressCount, readyBytes }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/downloads/{jobId}</span>
+        <p class="desc">Poll while converting. <code>label</code> is the ready-made mono line.</p>
+        <p class="meta"><b>→</b> { jobId, state(QUEUED|CONVERTING|READY|FAILED|CANCELLED|EXPIRED), mode, percent, sourceHeight, targetHeight, bytes, ready, fileUrl, label, error, expiresAt }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/downloads/{jobId}/file</span>
+        <p class="desc">Range-capable, so an interrupted download resumes instead of restarting. Sent as an attachment named from the title.</p>
+        <p class="meta"><b>→</b> video/mp4 · <b>409</b> not ready · <b>410</b> prepared copy expired</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/reachability</span>
+        <p class="desc">Home or away, decided from the request's own address against the server's interfaces.</p>
+        <p class="meta"><b>→</b> { atHome, location(HOME|AWAY), clientAddress, explanation, uploadBitsPerSecond, suggestedHeight }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/items/{id}/playback-cost</span>
+        <p class="desc">Original size versus a connection-sized estimate — the numbers the away-from-home sheet quotes.</p>
+        <p class="meta"><b>query</b> height<br><b>→</b> { atHome, originalBytes, transcodedBytes, transcodeHeight, uploadBitsPerSecond, originalFitsUpload, explanation }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/settings</span>
+        <p class="desc">Per-profile preferences. Server-side so they follow a person between devices.</p>
+        <p class="meta"><b>→</b> { profileId, awayBehaviour(ASK|SAVED_ONLY|STREAM), downloadHeight, awayMaxHeight, showTechnicalBadges }</p>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Owner only · admin key + PARENT</h3>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/admin/health</span>
+        <p class="desc">Uptime, streams, Mbps out, transcode load, the seven-day chart and the attention list.</p>
+        <p class="meta"><b>→</b> { startedAt, uptimeSeconds, activeStreams, profileCount, totalMegabitsPerSecond, transcodeLoad{ activeTranscodes, maxTranscodes, atCapacity, sessions[] }, watchWeek[{ date, label, hours, peak }], needsALook[{ kind, headline, detail, count, severity, action }], itemCount, libraryBytes, librariesConfigured, ffmpegConfigured }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/admin/people</span>
+        <p class="desc">Live sessions, per-person hours with a plain-English habit line, and a suggestion only when there is evidence for one.</p>
+        <p class="meta"><b>→</b> { liveSessions[], usageThisMonth[{ profileName, hoursThisMonth, sharePercent, habitLine }], totalHoursThisMonth, peakConcurrentStreams, suggestion|null }</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">DELETE</span>
+        <span class="sig">/api/media/admin/sessions/{sessionId}</span>
+        <p class="desc">End someone's stream. A transcode dies at once; a direct play stops on its next range request, which for a player is effectively immediate.</p>
+        <p class="meta"><b>→</b> 204 · <b>404</b> unknown session</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/admin/disk</span>
+        <p class="desc">Category usage, live free space per volume, biggest files with a note, and reclaimable space split into caches versus judgement calls.</p>
+        <p class="meta"><b>query</b> biggestFiles<br><b>→</b> { categories[], volumes[], biggestFiles[{ …, alwaysTranscodes, neverWatched, note }], reclaimable{ transcodeCacheBytes, trickplayCacheBytes, downloadCacheBytes, watchedByEveryoneBytes, watchedByEveryoneCount, totalBytes } }</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">DELETE</span>
+        <span class="sig">/api/media/admin/disk/caches</span>
+        <p class="desc">Deletes only scratch caches, which regenerate. No endpoint anywhere can delete a media file.</p>
+        <p class="meta"><b>→</b> { freedBytes, detail }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/admin/matches/{id}</span>
+        <p class="desc">The fix screen: real path, current guess, and candidates ranked by match percentage.</p>
+        <p class="meta"><b>query</b> q · limit<br><b>→</b> { item{ …, fileName, folderPath }, candidates[{ id, title, year, origin, reason, matchPercent }], candidateSource, reassurance, remaining }</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">PUT</span>
+        <span class="sig">/api/media/admin/matches/{id}</span>
+        <p class="desc">Apply a correction and lock it, so the next rescan cannot undo it. Nothing on disk is renamed.</p>
+        <p class="meta"><b>body</b> { candidateId } or { title, year }<br><b>→</b> FixResultDto · <b>409</b> stale candidateId — reload and choose again</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/media/library/scan</span>
+        <p class="desc">Walks the libraries in the background. Poll <code>/library/status</code> for progress.</p>
+        <p class="meta"><b>→</b> 202 ScanStatusDto · <b>409</b> a scan is already running</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Thumbnail scrubbing</p>
+    <h2>Turning a timecode into a tile</h2>
+    <p>
+      The manifest gives the client everything it needs to crop a preview frame
+      locally, which is what makes dragging the scrubber cost nothing. The
+      six-frame filmstrip usually comes from a sheet already in memory.
+    </p>
+<pre><code>frame        = floor(seconds / intervalSeconds)
+sheetIndex   = frame / framesPerSheet
+indexInSheet = frame % framesPerSheet
+column       = indexInSheet % columns
+row          = indexInSheet / columns
+
+sheet URL    = sheetUrlTemplate with {sheet} as the
+               zero-padded 4-digit sheetIndex
+crop         = (column * tileWidth, row * tileHeight,
+                tileWidth, tileHeight)</code></pre>
+    <p>
+      <code>tileHeight</code> is <code>0</code> when the file was never probed —
+      read it from the first sheet you load instead.
+    </p>
+  </section>
+
+  <section>
+    <p class="eyebrow">First run</p>
+    <h2>Getting from nothing to a playing film</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>1 · Account and profile</h3>
+        <p>
+          <code>POST /api/auth/register</code> with
+          <code>role: "PARENT"</code>, then <code>POST /api/profiles</code> for
+          each family member. Keep the returned profile ids — every media call
+          wants one.
+        </p>
+      </div>
+      <div class="card">
+        <h3>2 · Index the disk</h3>
+        <p>
+          <code>POST /api/media/library/scan</code> with the admin key, then poll
+          <code>/api/media/library/status</code>. First scan runs ffprobe per
+          file, so it takes a while.
+        </p>
+      </div>
+      <div class="card">
+        <h3>3 · Check the guesses</h3>
+        <p>
+          <code>GET /api/media/admin/matches</code> shows what the filename
+          parser got wrong. On this library that was 24 titles — worth fixing
+          before anyone browses.
+        </p>
+      </div>
+      <div class="card attention">
+        <h3>4 · Confirm ffmpeg</h3>
+        <p>
+          Run <code>ffprobe -version</code> on the server first. Without it every
+          title reports "not probed" and falls back to transcoding — and
+          transcoding will not work either.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      Generated from the running backend at commit <code>58d00e7</code> — 161
+      passing tests. Endpoint shapes are read from the Java DTOs rather than
+      written from memory, so field names match the wire exactly.
+    </p>
+    <p>
+      Not yet exercised against real media: ffmpeg transcoding, download
+      conversion and sprite generation are all tested up to the point of invoking
+      the binary. The first real scan of <code>E:/Entertainment</code> is what
+      will confirm them.
+    </p>
+  </footer>
+
+</div>
