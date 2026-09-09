@@ -244,18 +244,35 @@ public class LibraryIngestService {
         String fileName = file.getFileName().toString();
         Path folder = file.getParent();
 
-        item.setType(type);
+        // Facts about the file always refresh — they describe the bytes, not the guess.
         item.setLibraryName(library.name());
         item.setFileName(fileName);
         item.setFileSize(attrs.size());
         item.setFileModifiedAt(modifiedAt);
         item.setFolderPath(folder == null ? null : folder.toAbsolutePath().normalize().toString());
 
-        if (type.isTimeline()) {
+        // A hand-set type outlives the library root it was found under.
+        if (!item.isTypeLocked()) {
+            item.setType(type);
+        }
+
+        // A correction the owner made by hand must outlast the scanner that got it
+        // wrong. Without this, fixing a title would be undone by the next rescan.
+        if (!item.isMetadataScannerOwned()) {
+            log.debug("Keeping manual metadata for {}", fileName);
+            return;
+        }
+
+        // The item's own type, not the derived one: a locked reclassify decides which
+        // shape of metadata this file gets, so a clip moved to "Ours" is described by
+        // capture date rather than being re-parsed as a film release name.
+        MediaType effectiveType = item.getType();
+
+        if (effectiveType.isTimeline()) {
             applyTimelineMetadata(item, file, attrs);
             return;
         }
-        if (type == MediaType.MUSIC) {
+        if (effectiveType == MediaType.MUSIC) {
             applyMusicMetadata(item, file);
             return;
         }

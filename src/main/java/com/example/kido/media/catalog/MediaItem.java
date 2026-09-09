@@ -177,6 +177,23 @@ public class MediaItem {
     @Column(name = "metadata_source", length = 32)
     private MetadataSource metadataSource;
 
+    /**
+     * Set when the owner has reclassified this item by hand.
+     *
+     * <p>Separate from {@link MetadataSource#MANUAL} because the two corrections are
+     * independent: "this is a home video, not a film" says nothing about whether the
+     * title is right. Without the flag a rescan would put the item straight back into
+     * whatever type its library root implies.
+     */
+    @Column(name = "type_locked", nullable = false)
+    @Builder.Default
+    private boolean typeLocked = false;
+
+    /** True when a scan may replace the descriptive fields. */
+    public boolean isMetadataScannerOwned() {
+        return metadataSource == null || metadataSource.isScannerOwned();
+    }
+
     // --- music ---
 
     @Column(length = 512)

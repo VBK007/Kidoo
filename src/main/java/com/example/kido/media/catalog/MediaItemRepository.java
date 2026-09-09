@@ -67,6 +67,10 @@ public interface MediaItemRepository
 
     long countByMissingTrue();
 
+    /** Items whose metadata is trustworthy, as candidate sources for fixing others. */
+    List<MediaItem> findByMetadataSourceInAndMissingFalseAndHiddenFalse(
+            List<MetadataSource> sources, Pageable pageable);
+
     /** Biggest files on disk, for the admin panel. */
     List<MediaItem> findByMissingFalseAndHiddenFalseOrderByFileSizeDesc(Pageable pageable);
 
