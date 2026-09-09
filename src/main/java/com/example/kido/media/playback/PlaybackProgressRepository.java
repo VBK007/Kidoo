@@ -34,7 +34,15 @@ public interface PlaybackProgressRepository extends JpaRepository<PlaybackProgre
             """)
     List<Object[]> secondsWatchedByProfileSince(@Param("since") java.time.Instant since);
 
-    /** Items nobody has ever finished — the admin panel's "never watched" flag. */
+    /** Items at least one profile has finished — the "never watched" flag inverts it. */
     @Query("select distinct p.mediaItemId from PlaybackProgress p where p.watched = true")
     List<String> findWatchedItemIds();
+
+    /** How many profiles have finished each item, for the "everyone has seen it" check. */
+    @Query("""
+            select p.mediaItemId, count(p) from PlaybackProgress p
+            where p.watched = true
+            group by p.mediaItemId
+            """)
+    List<Object[]> countWatchedByItem();
 }

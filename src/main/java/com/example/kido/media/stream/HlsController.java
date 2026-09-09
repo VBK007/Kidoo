@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.media.dto.PlaybackDtos.TranscodeSessionDto;
+import com.example.kido.media.session.PlaybackSessionRegistry;
 import com.example.kido.user.AppUser;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -42,10 +43,14 @@ public class HlsController {
 
     private final TranscodeSessionManager sessions;
     private final FileStreamer streamer;
+    private final PlaybackSessionRegistry playbackSessions;
 
-    public HlsController(TranscodeSessionManager sessions, FileStreamer streamer) {
+    public HlsController(TranscodeSessionManager sessions,
+                         FileStreamer streamer,
+                         PlaybackSessionRegistry playbackSessions) {
         this.sessions = sessions;
         this.streamer = streamer;
+        this.playbackSessions = playbackSessions;
     }
 
     @GetMapping("/index.m3u8")
@@ -71,7 +76,10 @@ public class HlsController {
                         HttpServletResponse response) throws IOException {
 
         Path file = sessions.segmentFile(sessionId, segment);
-        streamer.serve(file, "video/mp2t", SEGMENT_CACHE_SECONDS, request, response);
+        long written = streamer.serve(file, "video/mp2t", SEGMENT_CACHE_SECONDS, request, response);
+        // Metered against the playback session so the admin panel can report the real
+        // outbound rate of a transcode, not just of direct plays.
+        playbackSessions.recordBytesForTranscode(sessionId, written);
     }
 
     /**

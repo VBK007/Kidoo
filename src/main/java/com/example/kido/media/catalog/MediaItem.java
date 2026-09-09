@@ -224,6 +224,39 @@ public class MediaItem {
     @Builder.Default
     private MediaInfo mediaInfo = new MediaInfo();
 
+    // --- playback statistics, for the admin panel ---
+
+    /**
+     * How often this file has been served as-is versus re-encoded.
+     *
+     * <p>Counted rather than inferred, because "this title always transcodes" is only
+     * knowable from history: the same file direct-plays to one device and not another,
+     * so its codecs alone do not say whether it is a problem in practice.
+     */
+    @Column(name = "direct_play_count", nullable = false)
+    @Builder.Default
+    private long directPlayCount = 0;
+
+    @Column(name = "transcode_count", nullable = false)
+    @Builder.Default
+    private long transcodeCount = 0;
+
+    @Column(name = "last_played_at")
+    private Instant lastPlayedAt;
+
+    /**
+     * True for a file that has been played and has never once direct-played — the
+     * admin panel's "always transcodes" note, and the strongest candidate for
+     * re-encoding once so it stops costing CPU on every view.
+     */
+    public boolean alwaysTranscodes() {
+        return transcodeCount > 0 && directPlayCount == 0;
+    }
+
+    public long playCount() {
+        return directPlayCount + transcodeCount;
+    }
+
     // --- bookkeeping ---
 
     @Column(name = "added_at")

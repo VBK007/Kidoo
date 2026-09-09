@@ -21,6 +21,13 @@ public final class PlaybackDtos {
      * pushes the decision toward transcoding rather than a stall on the user's device.
      */
     public record ClientCapabilitiesRequest(
+            /**
+             * Human-readable device label, e.g. "Arun's iPad". The admin panel names
+             * the device that is costing CPU, which is only possible if the client says
+             * who it is; there is nothing in an HTTP request that reliably identifies a
+             * phone.
+             */
+            String deviceName,
             List<String> videoCodecs,
             List<String> audioCodecs,
             List<String> containers,

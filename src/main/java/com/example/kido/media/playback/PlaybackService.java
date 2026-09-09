@@ -22,6 +22,9 @@ import com.example.kido.media.dto.PlaybackDtos.ProgressDto;
 import com.example.kido.media.dto.PlaybackDtos.ProgressRequest;
 import com.example.kido.media.dto.PlayerDtos.SubtitleOffsetRequest;
 import com.example.kido.media.dto.PlayerDtos.TrackSelectionRequest;
+import com.example.kido.media.session.PlaybackSessionRegistry;
+import com.example.kido.media.session.WatchEvent;
+import com.example.kido.media.session.WatchEventRepository;
 import com.example.kido.profile.Profile;
 
 import lombok.extern.slf4j.Slf4j;
@@ -46,13 +49,29 @@ public class PlaybackService {
      */
     private static final double MIN_TRACKED_SECONDS = 30;
 
+    /**
+     * Headroom over wall-clock time when crediting watch seconds. The player offers
+     * long-press 2x playback, so a report can legitimately advance faster than
+     * real time.
+     */
+    private static final double MAX_SPEED_MULTIPLIER = 2.5;
+
+    /** Absolute ceiling per report, for an app suspended for hours then resumed. */
+    private static final double MAX_INCREMENT_SECONDS = 600;
+
     private final PlaybackProgressRepository progressRepository;
     private final MediaItemRepository items;
+    private final WatchEventRepository watchEvents;
+    private final PlaybackSessionRegistry sessions;
 
     public PlaybackService(PlaybackProgressRepository progressRepository,
-                           MediaItemRepository items) {
+                           MediaItemRepository items,
+                           WatchEventRepository watchEvents,
+                           PlaybackSessionRegistry sessions) {
         this.progressRepository = progressRepository;
         this.items = items;
+        this.watchEvents = watchEvents;
+        this.sessions = sessions;
     }
 
     /**
@@ -74,14 +93,63 @@ public class PlaybackService {
                 || (duration != null && duration > 0 && position >= duration * WATCHED_FRACTION);
 
         PlaybackProgress progress = existingOrNew(profile, itemId);
+        Instant now = Instant.now();
+
+        // Append the increment before overwriting the position, since the delta is the
+        // only place real watch time can be observed.
+        recordWatchIncrement(profile, itemId, progress, position, now);
+
         progress.setPositionSeconds(position);
         if (duration != null) {
             progress.setDurationSeconds(duration);
         }
         progress.setWatched(finished);
-        progress.setUpdatedAt(Instant.now());
+        progress.setUpdatedAt(now);
+
+        // Keeps the admin panel's live view in step with what the player reports.
+        sessions.recordProgress(profile.getId(), itemId, position, duration);
 
         return toDto(progressRepository.save(progress));
+    }
+
+    /**
+     * Appends the seconds genuinely watched since the previous report.
+     *
+     * <p>The raw position delta is not usable on its own: a forward seek produces a
+     * large jump that was never watched. So the increment is bounded by how much
+     * wall-clock time actually passed, with headroom for the 2x speed the player
+     * offers, and by an absolute ceiling for the case where an app was suspended for
+     * hours and resumed somewhere else in the file.
+     */
+    private void recordWatchIncrement(Profile profile,
+                                      String itemId,
+                                      PlaybackProgress previous,
+                                      double newPosition,
+                                      Instant now) {
+
+        if (previous.getUpdatedAt() == null || previous.getId() == null) {
+            // First report for this pairing: there is no previous position to diff.
+            return;
+        }
+        double delta = newPosition - previous.getPositionSeconds();
+        if (delta <= 0) {
+            // Paused, or rewound. Neither is newly watched time.
+            return;
+        }
+        double wallSeconds = Math.max(0,
+                (now.toEpochMilli() - previous.getUpdatedAt().toEpochMilli()) / 1000.0);
+
+        double credited = Math.min(delta, Math.min(wallSeconds * MAX_SPEED_MULTIPLIER + 5,
+                MAX_INCREMENT_SECONDS));
+        if (credited < 0.5) {
+            return;
+        }
+        watchEvents.save(WatchEvent.builder()
+                .profileId(profile.getId())
+                .mediaItemId(itemId)
+                .secondsWatched(credited)
+                .occurredAt(now)
+                .build());
     }
 
     @Transactional(readOnly = true)

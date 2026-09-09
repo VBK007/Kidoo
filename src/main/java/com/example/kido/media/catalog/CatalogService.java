@@ -473,4 +473,24 @@ public class CatalogService {
     public Optional<MediaItem> find(String itemId) {
         return items.findById(itemId);
     }
+
+    /**
+     * Counts how a title was played, for the admin panel's "always transcodes" note.
+     *
+     * <p>One small write per playback start. Worth it: whether a file is a recurring
+     * CPU cost cannot be derived from its codecs, only from what devices have actually
+     * done with it.
+     */
+    @Transactional
+    public void recordPlaybackDecision(String itemId, boolean directPlay) {
+        items.findById(itemId).ifPresent(item -> {
+            if (directPlay) {
+                item.setDirectPlayCount(item.getDirectPlayCount() + 1);
+            } else {
+                item.setTranscodeCount(item.getTranscodeCount() + 1);
+            }
+            item.setLastPlayedAt(Instant.now());
+            items.save(item);
+        });
+    }
 }

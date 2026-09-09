@@ -35,7 +35,7 @@ public class FileStreamer {
     /**
      * @param cacheSeconds seconds to allow caching; zero or less sends {@code no-store}
      */
-    public void serve(Path file, String contentType, long cacheSeconds,
+    public long serve(Path file, String contentType, long cacheSeconds,
                       HttpServletRequest request, HttpServletResponse response) throws IOException {
 
         long length = Files.size(file);
@@ -49,8 +49,7 @@ public class FileStreamer {
         if (range == null) {
             response.setStatus(HttpStatus.OK.value());
             response.setContentLengthLong(length);
-            copy(file, 0, length, response);
-            return;
+            return copy(file, 0, length, response);
         }
 
         if (!range.satisfiable()) {
@@ -58,7 +57,7 @@ public class FileStreamer {
             response.setStatus(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE.value());
             response.setHeader(HttpHeaders.CONTENT_RANGE, "bytes */" + length);
             response.setContentLength(0);
-            return;
+            return 0;
         }
 
         long count = range.end() - range.start() + 1;
@@ -66,7 +65,7 @@ public class FileStreamer {
         response.setHeader(HttpHeaders.CONTENT_RANGE,
                 "bytes " + range.start() + "-" + range.end() + "/" + length);
         response.setContentLengthLong(count);
-        copy(file, range.start(), count, response);
+        return copy(file, range.start(), count, response);
     }
 
     /**
@@ -120,9 +119,12 @@ public class FileStreamer {
         }
     }
 
-    private void copy(Path file, long start, long count, HttpServletResponse response) throws IOException {
+    /** @return payload bytes actually written, which is what the session meter counts */
+    private long copy(Path file, long start, long count, HttpServletResponse response)
+            throws IOException {
         byte[] buffer = new byte[BUFFER_BYTES];
         long remaining = count;
+        long written = 0;
         try (InputStream in = Files.newInputStream(file)) {
             if (start > 0) {
                 in.skipNBytes(start);
@@ -135,6 +137,7 @@ public class FileStreamer {
                 }
                 out.write(buffer, 0, read);
                 remaining -= read;
+                written += read;
             }
             out.flush();
         } catch (IOException ex) {
@@ -143,6 +146,7 @@ public class FileStreamer {
             // the global handler, which would try to write a JSON body onto a dead socket.
             log.debug("Client aborted transfer of {}: {}", file.getFileName(), ex.getMessage());
         }
+        return written;
     }
 
     /** {@code end < 0} marks a range that cannot be satisfied against the current file. */

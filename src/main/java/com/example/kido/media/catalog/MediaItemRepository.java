@@ -65,7 +65,25 @@ public interface MediaItemRepository
             """)
     List<MediaItem> findUnprobed(@Param("types") List<MediaType> types);
 
-    /** Timeline items still lacking a capture date — the client's tagging nudge. */
+    long countByMissingTrue();
+
+    /** Biggest files on disk, for the admin panel. */
+    List<MediaItem> findByMissingFalseAndHiddenFalseOrderByFileSizeDesc(Pageable pageable);
+
+    /** Items whose metadata was guessed from the filename, so likely mismatched. */
+    long countByMetadataSourceAndMissingFalseAndHiddenFalse(MetadataSource source);
+
+    List<MediaItem> findByMetadataSourceAndMissingFalseAndHiddenFalse(
+            MetadataSource source, Pageable pageable);
+
+    /** Files that have played but never once direct-played. */
+    long countByTranscodeCountGreaterThanAndDirectPlayCountAndMissingFalse(
+            long minTranscodes, long directPlays);
+
+    List<MediaItem> findByTranscodeCountGreaterThanAndDirectPlayCountAndMissingFalseOrderByTranscodeCountDesc(
+            long minTranscodes, long directPlays, Pageable pageable);
+
+    /** Timeline items still lacking a capture date — the client tagging nudge. */
     long countByTypeInAndCapturedAtIsNullAndMissingFalseAndHiddenFalse(List<MediaType> types);
 
     List<MediaItem> findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDesc(
