@@ -20,6 +20,9 @@ import com.example.kido.profile.Profile;
 import com.example.kido.profile.ProfileRepository;
 import com.example.kido.user.AppUser;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Service
 public class ActivityService {
 
@@ -39,6 +42,7 @@ public class ActivityService {
                 .seconds(req.seconds())
                 .at(Instant.now())
                 .build());
+        log.debug("Logged activity profile={} world='{}' seconds={}", profileId, req.world(), req.seconds());
     }
 
     public DashboardDto dashboard(AppUser owner, String profileId, String range) {

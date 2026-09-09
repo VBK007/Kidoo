@@ -18,6 +18,9 @@ import com.example.kido.user.AccountSettings;
 import com.example.kido.user.AppUser;
 import com.example.kido.user.UserRepository;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Service
 public class SettingsService {
 
@@ -42,6 +45,7 @@ public class SettingsService {
         if (dto.readingLevel() != null) p.setAgeMode(parseAge(dto.readingLevel()));
         if (dto.narration() != null) p.setNarration(dto.narration());
         if (dto.chessHints() != null) p.setChessHints(dto.chessHints());
+        log.info("Updated profile settings for profile={}", profileId);
         return ProfileSettingsDto.from(profiles.save(p));
     }
 
@@ -58,6 +62,7 @@ public class SettingsService {
         if (dto.dailyScreenTimeMin() != null) s.setDailyScreenTimeMin(dto.dailyScreenTimeMin());
         if (dto.askBeforePurchases() != null) s.setAskBeforePurchases(dto.askBeforePurchases());
         if (dto.weeklyEmailSummary() != null) s.setWeeklyEmailSummary(dto.weeklyEmailSummary());
+        log.info("Updated account settings for account={}", owner.getId());
         return AccountSettingsDto.from(users.save(u));
     }
 
