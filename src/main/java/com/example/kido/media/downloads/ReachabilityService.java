@@ -9,6 +9,7 @@ import java.util.List;
 
 import org.springframework.stereotype.Service;
 
+import com.example.kido.common.ClientAddress;
 import com.example.kido.media.catalog.MediaInfo;
 import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.dto.DownloadDtos.PlaybackCostDto;
@@ -47,7 +48,9 @@ public class ReachabilityService {
      * @param request the live request, whose remote address is the evidence
      */
     public ReachabilityDto assess(HttpServletRequest request) {
-        String remote = request.getRemoteAddr();
+        // request.getRemoteAddr() would return caddy/cloudflared's own address here —
+        // this app sits behind a reverse proxy on every path in.
+        String remote = ClientAddress.resolve(request);
         boolean loopback = isLoopback(remote);
         boolean privateAddress = isPrivateAddress(remote);
         boolean sameSubnet = privateAddress && isOnALocalInterface(remote);
