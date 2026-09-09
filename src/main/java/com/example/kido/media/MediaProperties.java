@@ -90,6 +90,52 @@ public class MediaProperties {
     @Setter
     private Trickplay trickplay = new Trickplay();
 
+    @Getter
+    @Setter
+    private Downloads downloads = new Downloads();
+
+    /**
+     * Offline copies prepared for a device to take away.
+     *
+     * <p>Distinct settings from live transcoding on purpose. A download is not played
+     * as it is produced, so it can afford a slower preset for a materially smaller
+     * file — which is the whole point when the destination is a phone with finite
+     * storage on a finite data plan.
+     */
+    @Getter
+    @Setter
+    public static class Downloads {
+
+        private boolean enabled = true;
+
+        /** Where prepared copies are written. Never inside a media library. */
+        private String dir = System.getProperty("java.io.tmpdir") + "/kido-downloads";
+
+        /**
+         * A prepared copy is deleted this long after it was made. The client is
+         * expected to fetch it promptly; the file is only a staging artifact.
+         */
+        private int retentionHours = 72;
+
+        /** Jobs a single profile may have outstanding, to stop one device hogging the queue. */
+        private int maxQueuedPerProfile = 5;
+
+        /**
+         * Slower than the live-transcode preset and worth it: nothing is waiting on
+         * this frame-by-frame, and a smaller file is the entire deliverable.
+         */
+        private String preset = "medium";
+
+        /** Slightly higher CRF than live playback, since the target is a phone screen. */
+        private int crf = 23;
+
+        /** A long film on a slow preset legitimately takes a while. */
+        private int timeoutMinutes = 240;
+
+        /** Default vertical resolution when the client does not ask for one. */
+        private int defaultHeight = 720;
+    }
+
     /** One configured library root. */
     @Getter
     @Setter

@@ -158,6 +158,7 @@ public final class AdminDtos {
     public record ReclaimableDto(
             long transcodeCacheBytes,
             long trickplayCacheBytes,
+            long downloadCacheBytes,
             long watchedByEveryoneBytes,
             int watchedByEveryoneCount,
             long totalBytes) {}

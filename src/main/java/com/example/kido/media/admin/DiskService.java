@@ -189,6 +189,8 @@ public class DiskService {
     public ReclaimableDto reclaimable() {
         long transcodeCache = directorySize(Path.of(props.getTranscodeDir()));
         long trickplayCache = directorySize(Path.of(props.getTrickplay().getCacheDir()));
+        // Prepared downloads expire on their own, but they are cache all the same.
+        long downloadCache = directorySize(Path.of(props.getDownloads().getDir()));
 
         long profileCount = profiles.count();
         Instant cutoff = Instant.now().minus(STALE_AFTER_MONTHS * 30L, ChronoUnit.DAYS);
@@ -217,9 +219,10 @@ public class DiskService {
         return new ReclaimableDto(
                 transcodeCache,
                 trickplayCache,
+                downloadCache,
                 staleBytes,
                 staleCount,
-                transcodeCache + trickplayCache + staleBytes);
+                transcodeCache + trickplayCache + downloadCache + staleBytes);
     }
 
     /**
