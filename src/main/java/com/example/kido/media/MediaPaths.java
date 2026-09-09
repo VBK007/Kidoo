@@ -52,7 +52,7 @@ public class MediaPaths {
         this.roots = List.copyOf(resolved);
 
         if (this.roots.isEmpty()) {
-            log.info("No media libraries configured — the library is disabled");
+            log.info("No media libraries configured - the library is disabled");
         } else {
             for (LibraryRoot root : this.roots) {
                 log.info("Media library '{}' [{}] at {}", root.name(), root.type(), root.path());
