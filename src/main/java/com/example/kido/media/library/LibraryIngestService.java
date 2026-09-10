@@ -221,6 +221,47 @@ public class LibraryIngestService {
         return marked;
     }
 
+    /**
+     * Re-derives artwork for every video that still has none.
+     *
+     * <p>{@link #ingest} only resolves {@code posterPath}/{@code backdropPath} for a
+     * file it treats as new or changed — a file whose size and modified time already
+     * match its row takes the cheap {@link Outcome#UNCHANGED} path and skips metadata
+     * entirely, artwork included. That means an improvement to how artwork is matched
+     * never reaches an already-indexed file on its own, so the scanner calls this once
+     * at the end of every pass: cheap for a home library (one filesystem check per
+     * posterless row) and it means a looser match — or artwork simply added to a folder
+     * after the fact — catches up within one scan interval instead of needing a manual
+     * trigger.
+     *
+     * @return how many items gained artwork
+     */
+    @Transactional
+    public int backfillArtwork() {
+        List<MediaItem> updated = new ArrayList<>();
+        for (MediaItem item : items.findByMissingFalse()) {
+            if (!item.getType().isVideo() || item.hasPoster()) {
+                continue;
+            }
+            Path file = Path.of(item.getFilePath());
+            String poster = sidecars.findPoster(file).map(Path::toString).orElse(null);
+            String backdrop = sidecars.findBackdrop(file).map(Path::toString).orElse(null);
+            if (poster == null && backdrop == null) {
+                continue;
+            }
+            if (poster != null) {
+                item.setPosterPath(poster);
+            }
+            if (backdrop != null) {
+                item.setBackdropPath(backdrop);
+            }
+            item.setUpdatedAt(Instant.now());
+            updated.add(item);
+        }
+        items.saveAll(updated);
+        return updated.size();
+    }
+
     /** Probes on demand for a row indexed while {@code probe-on-scan} was off. */
     @Transactional
     public MediaItem ensureProbed(MediaItem item, Path file) {

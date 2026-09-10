@@ -59,7 +59,8 @@ public class SidecarLocator {
     }
 
     public Optional<Path> findPoster(Path videoFile) {
-        return findArtwork(videoFile, POSTER_NAMES);
+        Optional<Path> conventional = findArtwork(videoFile, POSTER_NAMES);
+        return conventional.isPresent() ? conventional : findLooseMatch(videoFile);
     }
 
     public Optional<Path> findBackdrop(Path videoFile) {
@@ -90,6 +91,106 @@ public class SidecarLocator {
             }
         }
         return firstExisting(candidates.toArray(Path[]::new));
+    }
+
+    /** Below this, a "match" is more likely coincidence than a real thumbnail. */
+    private static final double LOOSE_MATCH_THRESHOLD = 0.5;
+
+    /** A slug too short to be specific to one title (e.g. "img", "a"). */
+    private static final int LOOSE_MATCH_MIN_KEY_LENGTH = 5;
+
+    /**
+     * Last-resort poster lookup for a folder that holds several videos and images with
+     * no naming convention linking them — a quickly-made thumbnail is often just the
+     * title with the spaces dropped ({@code Anbe Diana} to {@code anabediana.jpg}), which
+     * matches nothing {@link #findArtwork} looks for.
+     *
+     * <p>Scored against every image directly in the folder (not recursively, same as the
+     * conventional lookup) rather than paired up front, so a wrong guess for one video
+     * cannot cost its neighbour the right image — each video independently finds its own
+     * best-scoring image, and unrelated filenames score too low to be picked at all.
+     */
+    private Optional<Path> findLooseMatch(Path videoFile) {
+        Path folder = videoFile.getParent();
+        if (folder == null) {
+            return Optional.empty();
+        }
+        String videoKey = alnumKey(MediaFiles.baseName(videoFile.getFileName().toString()));
+        if (videoKey.isBlank()) {
+            return Optional.empty();
+        }
+
+        Path best = null;
+        double bestScore = 0;
+        try (Stream<Path> entries = Files.list(folder)) {
+            for (Path path : entries.filter(Files::isRegularFile).toList()) {
+                String name = path.getFileName().toString();
+                if (!IMAGE_EXTENSIONS.contains(MediaFiles.extension(name))) {
+                    continue;
+                }
+                String imageKey = alnumKey(MediaFiles.baseName(name));
+                if (imageKey.length() < LOOSE_MATCH_MIN_KEY_LENGTH) {
+                    continue;
+                }
+                double score = loosePrefixSimilarity(videoKey, imageKey);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = path;
+                }
+            }
+        } catch (IOException ex) {
+            log.debug("Could not list images in {}: {}", folder, ex.getMessage());
+        }
+
+        if (best == null || bestScore < LOOSE_MATCH_THRESHOLD) {
+            return Optional.empty();
+        }
+        log.debug("Loose poster match for {}: {} (score {})",
+                videoFile.getFileName(), best.getFileName(), bestScore);
+        return Optional.of(best.toAbsolutePath().normalize());
+    }
+
+    /** Lower-cased letters and digits only, so separators never count as a difference. */
+    private static String alnumKey(String raw) {
+        return raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    /**
+     * How well {@code imageKey} matches the start of {@code videoKey}, as similarity in
+     * {@code [0, 1]}.
+     *
+     * <p>Only the video key's own leading window — the image key's length plus a little
+     * slack for a dropped or doubled letter — is compared, and edit distance is
+     * normalised against the (short) image key rather than the (long, release-tag-laden)
+     * video key. Comparing the full video key directly would drown a perfect match for
+     * the title in the length of everything typed after it.
+     */
+    private static double loosePrefixSimilarity(String videoKey, String imageKey) {
+        int windowLength = Math.min(videoKey.length(), imageKey.length() + 2);
+        String window = videoKey.substring(0, windowLength);
+        int distance = levenshtein(window, imageKey);
+        return 1.0 - ((double) distance / imageKey.length());
+    }
+
+    /** Two-row Levenshtein; these keys are short, so the quadratic cost is irrelevant. */
+    private static int levenshtein(String a, String b) {
+        int[] previous = new int[b.length() + 1];
+        int[] current = new int[b.length() + 1];
+
+        for (int j = 0; j <= b.length(); j++) {
+            previous[j] = j;
+        }
+        for (int i = 1; i <= a.length(); i++) {
+            current[0] = i;
+            for (int j = 1; j <= b.length(); j++) {
+                int substitution = previous[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1);
+                current[j] = Math.min(substitution, Math.min(previous[j] + 1, current[j - 1] + 1));
+            }
+            int[] swap = previous;
+            previous = current;
+            current = swap;
+        }
+        return previous[b.length()];
     }
 
     /**

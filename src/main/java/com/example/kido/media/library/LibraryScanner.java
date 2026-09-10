@@ -84,12 +84,13 @@ public class LibraryScanner {
                 scanLibrary(library, seenPaths);
             }
             status.countMissing(ingest.markMissing(seenPaths));
+            int backfilled = ingest.backfillArtwork();
             status.finish(null);
             log.info("Library scan finished: {} seen, {} added, {} updated, {} unchanged, "
-                            + "{} missing, {} failed",
+                            + "{} missing, {} failed, {} backfilled artwork",
                     status.getFilesSeen().get(), status.getAdded().get(), status.getUpdated().get(),
                     status.getUnchanged().get(), status.getMarkedMissing().get(),
-                    status.getFailed().get());
+                    status.getFailed().get(), backfilled);
         } catch (Exception ex) {
             log.error("Library scan failed", ex);
             status.finish(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
