@@ -54,6 +54,8 @@ public interface MediaItemRepository
 
     long countByTypeAndMissingFalseAndHiddenFalse(MediaType type);
 
+    List<MediaItem> findByTypeAndMissingFalseAndHiddenFalse(MediaType type);
+
     /** Recently added rail on the client's home screen. */
     List<MediaItem> findByTypeInAndMissingFalseAndHiddenFalseOrderByAddedAtDesc(
             List<MediaType> types, Pageable pageable);

@@ -14,12 +14,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.example.kido.media.MediaPaths;
 import com.example.kido.media.MediaProperties;
+import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.catalog.MediaItemRepository;
 import com.example.kido.media.catalog.MediaType;
 import com.example.kido.media.catalog.MetadataSource;
@@ -27,10 +29,12 @@ import com.example.kido.media.dto.AdminDtos.AttentionItemDto;
 import com.example.kido.media.dto.AdminDtos.HealthTabDto;
 import com.example.kido.media.dto.AdminDtos.PeopleTabDto;
 import com.example.kido.media.dto.AdminDtos.PersonUsageDto;
+import com.example.kido.media.dto.AdminDtos.SeedResultDto;
 import com.example.kido.media.dto.AdminDtos.SessionDto;
 import com.example.kido.media.dto.AdminDtos.SuggestionDto;
 import com.example.kido.media.dto.AdminDtos.TranscodeLoadDto;
 import com.example.kido.media.dto.AdminDtos.WatchDayDto;
+import com.example.kido.media.library.LibraryIngestService;
 import com.example.kido.media.dto.PlaybackDtos.PlaybackDecisionDto.Mode;
 import com.example.kido.media.session.PlaybackSession;
 import com.example.kido.media.session.PlaybackSessionRegistry;
@@ -72,6 +76,7 @@ public class AdminService {
     private final DiskService disk;
     private final MediaPaths paths;
     private final MediaProperties props;
+    private final LibraryIngestService ingest;
 
     /**
      * Process start, for the uptime line. Taken at construction rather than from
@@ -86,13 +91,15 @@ public class AdminService {
                         ProfileRepository profiles,
                         DiskService disk,
                         MediaPaths paths,
-                        MediaProperties props) {
+                        MediaProperties props,
+                        LibraryIngestService ingest) {
         this.sessions = sessions;
         this.watchEvents = watchEvents;
         this.items = items;
         this.profiles = profiles;
         this.disk = disk;
         this.paths = paths;
+        this.ingest = ingest;
         this.props = props;
     }
 
@@ -328,6 +335,65 @@ public class AdminService {
                             + "so beyond that everyone's playback starts to stutter."));
         }
         return Optional.empty();
+    }
+
+    // --- Demo data ---
+
+    /**
+     * Backfills a random rating and view count onto movies that have neither — a fresh
+     * library has no ratings until someone finds sidecars for it, and no plays until the
+     * household actually watches something, so the home screen's popularity rail has
+     * nothing to rank by. Never touches an item that already has a real rating or has
+     * actually been played; run again after adding more movies and only the new ones
+     * change.
+     */
+    @Transactional
+    public SeedResultDto seedDemoAnalytics() {
+        List<MediaItem> movies = items.findByTypeAndMissingFalseAndHiddenFalse(MediaType.FILM);
+        List<MediaItem> updated = new ArrayList<>();
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+
+        for (MediaItem movie : movies) {
+            boolean changed = false;
+            if (movie.getRating() == null) {
+                // Skewed toward the upper half of 0-10: a home library is mostly films
+                // someone chose to keep, not a random sample of everything ever made.
+                movie.setRating(round(4.0 + random.nextDouble() * 5.5, 1));
+                changed = true;
+            }
+            if (movie.playCount() == 0) {
+                movie.setDirectPlayCount(random.nextInt(1, 501));
+                changed = true;
+            }
+            if (changed) {
+                updated.add(movie);
+            }
+        }
+        items.saveAll(updated);
+
+        log.info("Seeded demo rating/view data for {} of {} movies", updated.size(), movies.size());
+        return new SeedResultDto(updated.size(),
+                updated.isEmpty()
+                        ? "Every movie already had a rating and a view count — nothing to do"
+                        : updated.size() + " of " + movies.size()
+                                + " movies were missing a rating or a view count and got a random one");
+    }
+
+    /**
+     * Re-derives artwork for videos that still have none, on the owner's explicit
+     * request. Runs automatically at the end of every scan too — see
+     * {@link com.example.kido.media.library.LibraryIngestService#backfillArtwork()} for
+     * why a scan alone does not always catch it — so this endpoint exists for someone
+     * who does not want to wait for the next scan interval.
+     */
+    @Transactional
+    public SeedResultDto backfillArtwork() {
+        int updated = ingest.backfillArtwork();
+        log.info("Backfilled artwork for {} items (on-demand)", updated);
+        return new SeedResultDto(updated,
+                updated == 0
+                        ? "No posterless video had a matching image on disk"
+                        : "Found artwork for " + updated + " video(s) that had none");
     }
 
     /** Ends a live stream on the owner's instruction. */

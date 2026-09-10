@@ -171,4 +171,7 @@ public final class AdminDtos {
 
     /** What a cache purge actually removed. */
     public record PurgeResultDto(long freedBytes, String detail) {}
+
+    /** Result of backfilling demo rating/view numbers onto movies that had none. */
+    public record SeedResultDto(long moviesUpdated, String detail) {}
 }

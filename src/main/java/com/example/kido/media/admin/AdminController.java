@@ -9,6 +9,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -19,6 +20,7 @@ import com.example.kido.media.dto.AdminDtos.DiskTabDto;
 import com.example.kido.media.dto.AdminDtos.HealthTabDto;
 import com.example.kido.media.dto.AdminDtos.PeopleTabDto;
 import com.example.kido.media.dto.AdminDtos.PurgeResultDto;
+import com.example.kido.media.dto.AdminDtos.SeedResultDto;
 import com.example.kido.media.dto.AdminDtos.SessionDto;
 import com.example.kido.user.AppUser;
 import com.example.kido.user.Role;
@@ -96,6 +98,32 @@ public class AdminController {
             throw new ApiException(HttpStatus.NOT_FOUND, "No such session");
         }
         return ResponseEntity.noContent().build();
+    }
+
+    // --- Demo data ---
+
+    /**
+     * Gives every movie without a real rating or view count a random one, so the home
+     * screen's popularity ranking has something to sort by. Real ratings (from a
+     * sidecar) and real play counts (from actual playback) are never overwritten.
+     */
+    @PostMapping("/seed-analytics")
+    public SeedResultDto seedAnalytics(@AuthenticationPrincipal AppUser user,
+                                       @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        requireOwner(user, key);
+        return admin.seedDemoAnalytics();
+    }
+
+    /**
+     * Re-checks every posterless video against what {@link com.example.kido.media
+     * .metadata.SidecarLocator} can find today. Run this after a matching improvement —
+     * a normal scan only re-resolves artwork for files it treats as changed.
+     */
+    @PostMapping("/backfill-artwork")
+    public SeedResultDto backfillArtwork(@AuthenticationPrincipal AppUser user,
+                                         @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        requireOwner(user, key);
+        return admin.backfillArtwork();
     }
 
     // --- Disk tab ---
