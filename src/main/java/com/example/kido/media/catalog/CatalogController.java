@@ -42,8 +42,10 @@ public class CatalogController {
      * @param q        optional title or filename search
      * @param unwatched restrict to unfinished items, for the {@code UNWATCHED} chip
      * @param minHeight minimum vertical resolution, for the {@code 4K ONLY} chip (2160)
-     * @param sort     {@code title} (default), {@code added}, {@code captured},
-     *                 {@code year} or {@code rating}
+     * @param sort     {@code added} (default, newest first — so a movie just dropped
+     *                 onto the disk is on the first page instead of buried
+     *                 alphabetically), {@code title}, {@code captured}, {@code year} or
+     *                 {@code rating}
      */
     @GetMapping("/items")
     public ItemPageDto browse(@ActiveProfile Profile profile,
@@ -52,7 +54,7 @@ public class CatalogController {
                               @RequestParam(required = false) String genre,
                               @RequestParam(defaultValue = "false") boolean unwatched,
                               @RequestParam(required = false) Integer minHeight,
-                              @RequestParam(defaultValue = "title") String sort,
+                              @RequestParam(defaultValue = "added") String sort,
                               @RequestParam(defaultValue = "0") int page,
                               @RequestParam(defaultValue = "40") int size) {
         return service.browse(profile, category, q, genre, sort, unwatched, minHeight, page, size);
