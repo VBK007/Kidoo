@@ -586,13 +586,21 @@
         <span class="num">01</span>
         <div class="body">
           <h3>Home</h3>
-          <p>Status line, continue watching, recently added, camera-roll rail.</p>
+          <p>Status line, continue watching, the ranked rails, camera-roll rail.</p>
           <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/home?types=FILM,ANIME&amp;limit=20</span></div>
+            <div class="call"><span class="verb">GET</span><span class="path">/api/health</span></div>
+          </div>
+          <p class="gap-note" style="color: var(--on-ink-faint)">
+            One call returns the whole screen. The rails it composes are still
+            available separately, for a client that refreshes one row on its own:
+          </p>
+          <div class="calls">
+            <div class="call"><span class="verb">GET</span><span class="path">/api/media/home/popular?limit=20</span></div>
             <div class="call"><span class="verb">GET</span><span class="path">/api/media/continue-watching?limit=20</span></div>
             <div class="call"><span class="verb">GET</span><span class="path">/api/media/recently-added?types=FILM,ANIME&amp;limit=20</span></div>
             <div class="call"><span class="verb">GET</span><span class="path">/api/media/recently-added?types=PHOTO,HOME_VIDEO</span></div>
             <div class="call"><span class="verb">GET</span><span class="path">/api/media/library-summary</span></div>
-            <div class="call"><span class="verb">GET</span><span class="path">/api/health</span></div>
           </div>
         </div>
         <span class="state done"><span class="dot"></span>BUILT</span>
@@ -957,13 +965,14 @@
         <span class="verb">GET</span>
         <span class="sig">/api/media/items</span>
         <p class="desc">Paged browse and search. The one endpoint behind both the Library grid and the Search screen.</p>
-        <p class="meta"><b>query</b> category · q · genre · unwatched · minHeight · sort(title|added|captured|year|rating) · page · size<br><b>→</b> ItemPageDto { items[ItemSummaryDto], page, size, totalItems, totalPages }</p>
+        <p class="meta"><b>query</b> category · q · genre · unwatched · minHeight · sort(title|added|captured|year|rating|likes) · page · size<br><b>→</b> ItemPageDto { items[ItemSummaryDto], page, size, totalItems, totalPages }</p>
+        <p class="desc">No <code>sort=views</code>: a play count is the sum of two columns, which a JPA Sort cannot express. Most-watched ordering is the home screen's rail.</p>
       </div>
       <div class="ep">
         <span class="verb">GET</span>
         <span class="sig">/api/media/items/{id}</span>
         <p class="desc">Everything the detail screen renders, including subtitle and audio track lists.</p>
-        <p class="meta"><b>→</b> ItemDetailDto { …, mediaInfo, subtitles[], audioTracks[], resumePositionSeconds, watched }<br><b>410</b> when the file has gone from disk</p>
+        <p class="meta"><b>→</b> ItemDetailDto { …, mediaInfo, subtitles[], audioTracks[], resumePositionSeconds, watched, viewCount, likeCount, liked }<br><b>410</b> when the file has gone from disk</p>
       </div>
       <div class="ep">
         <span class="verb">GET</span>
@@ -976,6 +985,26 @@
         <span class="sig">/api/media/library-summary</span>
         <p class="desc">Count, total bytes, per-category breakdown and the genre facet list.</p>
         <p class="meta"><b>→</b> { itemCount, totalBytes, categories[{ type, label, itemCount, totalBytes }], genres[] }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/home</span>
+        <p class="desc">The whole home screen in one call: the continue-watching row, the ranked rails and the library header, built from one consistent read of the library.</p>
+        <p class="meta"><b>query</b> types (comma-separated MediaType, default FILM,ANIME) · limit (per rail, capped at 50)<br><b>→</b> { continueWatching[], rails[{ key, title, rankedBy, items[{ item, score, reason }] }], library, weights{ rating, views, likes }, generatedAt }</p>
+        <p class="desc">Rails in render order — <code>popular</code> (the blend), <code>top-rated</code>, <code>most-watched</code>, <code>most-liked</code>, <code>recently-added</code>. An empty rail is omitted rather than sent as a bare heading, so a fresh library returns <code>rails: []</code>. <code>score</code> is 0–1 and present only on <code>popular</code>; <code>reason</code> is the subtitle naming why a title is there.</p>
+        <p class="desc">The blend normalises each signal to 0–1 and weights it 0.40 rating, 0.35 views, 0.25 likes. Rating leads because it is the only signal that exists before anyone has watched anything. Counts are normalised on a log curve against the library's own maximum, so one endlessly-rewatched favourite cannot flatten the rest of the rail into a rating sort. An unrated title is scored at the library mean, not zero, so footage the scraper never matched can still surface.</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/media/home/popular</span>
+        <p class="desc">The blended rail alone, for a client that refreshes it on its own.</p>
+        <p class="meta"><b>query</b> types · limit<br><b>→</b> { key, title, rankedBy, items[{ item, score, reason }] }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">PUT · DELETE · GET</span>
+        <span class="sig">/api/media/items/{id}/like</span>
+        <p class="desc">The heart on a poster, per profile — each member of a household likes for themselves, while the count is the household's. Both write verbs are idempotent, so a retry on a flaky connection cannot double-count or toggle back. An item whose file is currently missing still accepts a like: the opinion is about the title, and an unplugged disk should not lose it.</p>
+        <p class="meta"><b>→</b> { mediaItemId, liked, likeCount } · <b>404</b> when the item is unknown</p>
       </div>
       <div class="ep">
         <span class="verb">GET</span>

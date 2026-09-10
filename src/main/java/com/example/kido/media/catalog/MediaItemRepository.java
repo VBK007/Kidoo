@@ -58,6 +58,54 @@ public interface MediaItemRepository
     List<MediaItem> findByTypeInAndMissingFalseAndHiddenFalseOrderByAddedAtDesc(
             List<MediaType> types, Pageable pageable);
 
+    // --- home-screen ranking ---
+    //
+    // Three separate top-N queries rather than one scored ORDER BY. The blended score
+    // normalises each signal against the library's own maximum, which SQL cannot
+    // express without a second pass, and the window functions that could differ
+    // between H2 and PostgreSQL. Each of these is an indexed sort truncated by the
+    // pageable, and the ranker unions and scores the small pool they return.
+
+    /** Best-rated titles. Unrated items are excluded rather than sorted last. */
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.rating is not null
+              and m.type in :types
+            order by m.rating desc, m.sortTitle asc
+            """)
+    List<MediaItem> findTopRated(@Param("types") List<MediaType> types, Pageable pageable);
+
+    /**
+     * Most-played titles, counting both ways a file can be served — how a title reached
+     * the screen says nothing about how popular it is.
+     */
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and (m.directPlayCount + m.transcodeCount) > 0
+            order by (m.directPlayCount + m.transcodeCount) desc, m.sortTitle asc
+            """)
+    List<MediaItem> findMostPlayed(@Param("types") List<MediaType> types, Pageable pageable);
+
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.likeCount > 0
+            order by m.likeCount desc, m.sortTitle asc
+            """)
+    List<MediaItem> findMostLiked(@Param("types") List<MediaType> types, Pageable pageable);
+
+    /**
+     * Library-wide mean rating, the prior an unrated title is scored with so that
+     * having no sidecar rating neither rewards nor punishes it.
+     */
+    @Query("""
+            select avg(m.rating) from MediaItem m
+            where m.missing = false and m.hidden = false and m.rating is not null
+              and m.type in :types
+            """)
+    Double averageRating(@Param("types") List<MediaType> types);
+
     @Query("""
             select distinct g from MediaItem m join m.genres g
             where m.missing = false and m.hidden = false
