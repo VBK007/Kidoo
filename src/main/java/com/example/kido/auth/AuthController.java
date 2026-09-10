@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.auth.dto.AuthResponse;
+import com.example.kido.auth.dto.FirebaseLoginRequest;
 import com.example.kido.auth.dto.LoginRequest;
 import com.example.kido.auth.dto.RegisterRequest;
 import com.example.kido.auth.dto.UserDto;
@@ -35,6 +36,20 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request) {
         return ResponseEntity.ok(authService.login(request));
+    }
+
+    /**
+     * Signs in with a Firebase ID token and returns this server's own JWT.
+     *
+     * <p>The client authenticates against Google, not against us; we verify the
+     * resulting token and issue the same {@link AuthResponse} the password login
+     * returns, so everything downstream — profiles, media, the admin panel — is
+     * unchanged and unaware of how the session began.
+     */
+    @PostMapping("/firebase")
+    public ResponseEntity<AuthResponse> firebase(
+            @Valid @RequestBody FirebaseLoginRequest request) {
+        return ResponseEntity.ok(authService.loginWithFirebase(request));
     }
 
     @GetMapping("/me")

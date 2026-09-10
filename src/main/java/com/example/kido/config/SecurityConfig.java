@@ -36,7 +36,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // Only registration and login are public; everything else
                         // (including /api/auth/me) requires a valid token.
-                        .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login", "/api/auth/firebase").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
                         // Content reads and the plans catalog are public so the app can
                         // fetch/cache offline-first before a parent signs in.
