@@ -7,11 +7,13 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.example.kido.common.ApiException;
+import com.example.kido.media.MediaProperties;
 import com.example.kido.media.catalog.CatalogService;
 import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.catalog.MediaItemRepository;
@@ -86,6 +88,23 @@ public class WatchPartyService {
     private final JwtService jwt;
     private final SecureRandom random = new SecureRandom();
 
+    /**
+     * Seats when the client does not ask for a number.
+     *
+     * <p>Configured rather than compiled in, because the right value is a property of
+     * one machine's upstream link and cannot be known here. See
+     * {@code app.parties.max-members}, where the arithmetic is written down.
+     */
+    private final int defaultMaxMembers;
+
+    /**
+     * Concurrent ffmpeg processes this server allows.
+     *
+     * <p>Read only to warn with: for a title that will not direct play, this is the
+     * real ceiling on a party regardless of how many seats it has.
+     */
+    private final int maxTranscodeSessions;
+
     public WatchPartyService(WatchPartyRepository parties,
                              WatchPartyMemberRepository members,
                              CatalogService catalog,
@@ -93,7 +112,9 @@ public class WatchPartyService {
                              WatchPartyRegistry registry,
                              PlaybackSessionRegistry playbackSessions,
                              GuestJoinThrottle throttle,
-                             JwtService jwt) {
+                             JwtService jwt,
+                             MediaProperties mediaProperties,
+                             @Value("${app.parties.max-members:4}") int defaultMaxMembers) {
         this.parties = parties;
         this.members = members;
         this.catalog = catalog;
@@ -102,6 +123,8 @@ public class WatchPartyService {
         this.playbackSessions = playbackSessions;
         this.throttle = throttle;
         this.jwt = jwt;
+        this.defaultMaxMembers = defaultMaxMembers;
+        this.maxTranscodeSessions = mediaProperties.getMaxTranscodeSessions();
     }
 
     /**
@@ -150,7 +173,7 @@ public class WatchPartyService {
                 .hostProfileId(profile.getId())
                 .mediaItemId(item.getId())
                 .maxMembers(request.maxMembers() == null
-                        ? WatchParty.DEFAULT_MAX_MEMBERS
+                        ? defaultMaxMembers
                         : request.maxMembers())
                 .requireApprovalForGuests(request.requireApprovalForGuests() == null
                         || request.requireApprovalForGuests())
@@ -537,12 +560,18 @@ public class WatchPartyService {
      * been played and has never once direct-played is the one case where the warning is
      * certain rather than a guess.
      */
-    private static String capacityWarning(WatchParty party, MediaItem item) {
+    private String capacityWarning(WatchParty party, MediaItem item) {
         if (item == null || !item.alwaysTranscodes()) {
             return null;
         }
-        return "This title has always needed transcoding, so each of the "
-                + party.getMaxMembers() + " seats costs its own ffmpeg process.";
+        // For a title like this the ffmpeg cap binds long before bandwidth does, and
+        // the seats past it do not queue — a playback decision with no slot free is a
+        // 429. Better to say so while the host is still choosing what to watch.
+        int workable = Math.min(party.getMaxMembers(), maxTranscodeSessions);
+        return "This title has always needed transcoding, so every seat costs its own "
+                + "ffmpeg process and this server runs at most " + maxTranscodeSessions
+                + " at once. Expect " + workable + " of the " + party.getMaxMembers()
+                + " seats to play; the rest will be refused rather than queued.";
     }
 
     private String mintCode() {

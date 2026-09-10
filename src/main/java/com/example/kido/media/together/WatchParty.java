@@ -51,7 +51,13 @@ import lombok.Setter;
 @AllArgsConstructor
 public class WatchParty {
 
-    /** How many people may be admitted at once when the creator does not say. */
+    /**
+     * Fallback seat count for a row built without one.
+     *
+     * <p>Not the value a new party actually gets — {@code WatchPartyService} takes that
+     * from {@code app.parties.max-members}, because the right number is a property of
+     * one machine's upstream link rather than of this code.
+     */
     public static final int DEFAULT_MAX_MEMBERS = 4;
 
     @Id

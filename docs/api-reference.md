@@ -487,9 +487,21 @@ restart ends every party — which is honest, because the sockets holding them
 together are gone too.
 
 **`POST /api/parties`** — body `{ mediaItemId, maxMembers?, requireApprovalForGuests? }`
-→ **201** `PartyDto`. `maxMembers` defaults to **4**, capped at 8: every seat is
-an independent stream off one box. Opening a second party retires the first —
-tapping "watch together" again means the first attempt reached nobody.
+→ **201** `PartyDto`. Opening a second party retires the first — tapping "watch
+together" again means the first attempt reached nobody.
+
+`maxMembers` is capped at 8 and defaults to `app.parties.max-members`, **4** on
+this server. That number is upstream bandwidth, not preference:
+
+```
+40 Mbps up, less headroom for the rest of the house    ~32 Mbps usable
+a 1080p title in this library                             8 Mbps
+                                                        4 streams
+```
+
+So four total with a host watching from elsewhere, or three friends plus a host
+on the LAN, who costs no upstream at all. A library of high-bitrate remuxes
+(nearer 20 Mbps) fits two. Change the property, not the client.
 
 ```
 partyId, code, mediaItemId, itemTitle, live, maxMembers, youAreHost,
@@ -502,8 +514,12 @@ capacityWarning
 `role` is `HOST` `MEMBER` `GUEST`. `online` is not the same as being in the
 party — someone in a tunnel keeps their seat. `pending` is empty for everyone
 but the host. `clock` is null until the host's player reports a position.
-`capacityWarning` is set when the title has never once direct-played, meaning
-each seat costs its own ffmpeg process; advisory only, the party opens anyway.
+`capacityWarning` is set when the title has never once direct-played. For those,
+CPU binds long before bandwidth does — `app.media.max-transcode-sessions` is
+**2** here, and a decision with no slot free is a **429** rather than a queue,
+so a party of four on such a title will see two of its seats refused. Advisory
+only: the party opens anyway, because the host is the one who knows what their
+machine can take.
 
 The six-character code uses an alphabet with `0 O 1 I L` removed, because it
 gets read across a room and retyped on a TV remote. Lower case and pasted
@@ -834,6 +850,6 @@ scan of `E:/Entertainment` is what will confirm them.
 Watch parties are tested end to end — real WebSocket connections, two accounts,
 guest tokens, real files on disk — but never yet with several real devices on
 real networks. Two things only that will tell you: whether the drift thresholds
-above are the right ones on a phone over wifi, and how many concurrent streams
-this machine's upstream actually carries. `maxMembers` defaults to 4 as a guess,
-not a measurement.
+above hold on a phone over wifi, and whether four concurrent streams really fit
+in 40 Mbps once the rest of the household is using it. The second is one
+property, `app.parties.max-members`, not a rebuild.

@@ -1103,7 +1103,13 @@
         <span class="verb write">POST</span>
         <span class="sig">/api/parties</span>
         <p class="desc">Open a party on a title and get a code to share. Opening a second one retires the first.</p>
-        <p class="meta"><b>body</b> { mediaItemId, maxMembers?, requireApprovalForGuests? }<br><b>→</b> 201 PartyDto { partyId, code, mediaItemId, itemTitle, live, maxMembers, youAreHost, members[], pending[], clock, capacityWarning }<br><b>maxMembers</b> default 4, max 8 — every seat is an independent stream off one box</p>
+        <p class="meta"><b>body</b> { mediaItemId, maxMembers?, requireApprovalForGuests? }<br><b>→</b> 201 PartyDto { partyId, code, mediaItemId, itemTitle, live, maxMembers, youAreHost, members[], pending[], clock, capacityWarning }<br><b>maxMembers</b> max 8, default from <code>app.parties.max-members</code> — 4 on this server</p>
+      </div>
+      <div class="ep">
+        <span class="verb">SIZING</span>
+        <span class="sig">how four was arrived at</span>
+        <p class="desc">Seats are upstream bandwidth, not preference. Every one is an independent stream off this machine.</p>
+        <p class="meta">40 Mbps up, less headroom for the rest of the house → <b>~32 Mbps usable</b><br>a 1080p title in this library → <b>8 Mbps</b> → <b>4 streams</b><br>Four total with the host watching from elsewhere, or three friends plus a host on the LAN, who costs no upstream at all. A library of remuxes nearer 20 Mbps fits two. Change the property, not the client.</p>
       </div>
       <div class="ep">
         <span class="verb write">POST</span>
