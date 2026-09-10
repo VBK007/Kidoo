@@ -21,7 +21,14 @@ public final class CatalogDtos {
 
     private CatalogDtos() {}
 
-    /** What a poster tile needs, and nothing more. */
+    /**
+     * What a poster tile needs, and nothing more.
+     *
+     * <p>Carries the three ranking signals — {@code rating}, {@code viewCount} and
+     * {@code likeCount} — plus this profile's own {@code liked} flag, so a tile can
+     * render its heart and its "played 12 times" label from the listing it came in,
+     * without a follow-up call per poster.
+     */
     public record ItemSummaryDto(
             String id,
             String type,
@@ -39,12 +46,16 @@ public final class CatalogDtos {
             Integer percentComplete,
             String capturedAt,
             String artist,
-            String album) {
+            String album,
+            long viewCount,
+            long likeCount,
+            boolean liked) {
 
         public static ItemSummaryDto from(MediaItem item,
                                           Integer resumeSeconds,
                                           boolean watched,
-                                          Integer percentComplete) {
+                                          Integer percentComplete,
+                                          boolean liked) {
             return new ItemSummaryDto(
                     item.getId(),
                     item.getType().name(),
@@ -62,7 +73,10 @@ public final class CatalogDtos {
                     percentComplete,
                     item.getCapturedAt() == null ? null : item.getCapturedAt().toString(),
                     item.getArtist(),
-                    item.getAlbum());
+                    item.getAlbum(),
+                    item.playCount(),
+                    item.getLikeCount(),
+                    liked);
         }
     }
 
@@ -135,7 +149,10 @@ public final class CatalogDtos {
             List<SubtitleTrackDto> subtitles,
             List<PlayerDtos.AudioTrackDto> audioTracks,
             Integer resumePositionSeconds,
-            boolean watched) {}
+            boolean watched,
+            long viewCount,
+            long likeCount,
+            boolean liked) {}
 
     public record ItemPageDto(
             List<ItemSummaryDto> items,

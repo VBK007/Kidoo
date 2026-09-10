@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -32,6 +33,7 @@ import com.example.kido.media.dto.CatalogDtos.SubtitleTrackDto;
 import com.example.kido.media.dto.CatalogDtos.TimelineDto;
 import com.example.kido.media.dto.CatalogDtos.TimelineGroupDto;
 import com.example.kido.media.dto.PlayerDtos.AudioTrackDto;
+import com.example.kido.media.engagement.LikeService;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.playback.PlaybackProgress;
 import com.example.kido.media.playback.PlaybackService;
@@ -61,15 +63,18 @@ public class CatalogService {
 
     private final MediaItemRepository items;
     private final PlaybackService playback;
+    private final LikeService likes;
     private final MediaPaths paths;
     private final SidecarLocator sidecars;
 
     public CatalogService(MediaItemRepository items,
                           PlaybackService playback,
+                          LikeService likes,
                           MediaPaths paths,
                           SidecarLocator sidecars) {
         this.items = items;
         this.playback = playback;
+        this.likes = likes;
         this.paths = paths;
         this.sidecars = sidecars;
     }
@@ -107,10 +112,11 @@ public class CatalogService {
 
         List<String> ids = results.getContent().stream().map(MediaItem::getId).toList();
         Map<String, PlaybackProgress> progress = playback.progressByItemId(profile, ids);
+        Set<String> liked = likes.likedItemIds(profile, ids);
 
         List<ItemSummaryDto> summaries = results.getContent().stream()
                 .filter(item -> !unwatched || isUnwatched(progress.get(item.getId())))
-                .map(item -> toSummary(item, progress.get(item.getId())))
+                .map(item -> toSummary(item, progress.get(item.getId()), liked))
                 .toList();
 
         return new ItemPageDto(
@@ -130,9 +136,21 @@ public class CatalogService {
         List<MediaItem> found = items
                 .findByTypeInAndMissingFalseAndHiddenFalseOrderByAddedAtDesc(
                         requested, PageRequest.of(0, Math.min(Math.max(1, limit), 50)));
-        Map<String, PlaybackProgress> progress = playback.progressByItemId(
-                profile, found.stream().map(MediaItem::getId).toList());
-        return found.stream().map(item -> toSummary(item, progress.get(item.getId()))).toList();
+        return summarise(profile, found);
+    }
+
+    /**
+     * Turns a list of entities into tiles, resolving watch progress and this profile's
+     * likes in one query each rather than one per item.
+     */
+    @Transactional(readOnly = true)
+    public List<ItemSummaryDto> summarise(Profile profile, List<MediaItem> found) {
+        List<String> ids = found.stream().map(MediaItem::getId).toList();
+        Map<String, PlaybackProgress> progress = playback.progressByItemId(profile, ids);
+        Set<String> liked = likes.likedItemIds(profile, ids);
+        return found.stream()
+                .map(item -> toSummary(item, progress.get(item.getId()), liked))
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -173,7 +191,10 @@ public class CatalogService {
                 subtitleTracks(item),
                 audioTracks(item),
                 progress == null ? null : (int) progress.getPositionSeconds(),
-                progress != null && progress.isWatched());
+                progress != null && progress.isWatched(),
+                item.playCount(),
+                item.getLikeCount(),
+                !likes.likedItemIds(profile, List.of(itemId)).isEmpty());
     }
 
     /** Library header counts, per-category breakdown and the genre facet list. */
@@ -223,14 +244,15 @@ public class CatalogService {
                         TIMELINE_TYPES, PageRequest.of(Math.max(0, page), pageSize));
         List<MediaItem> found = pageOfItems.getContent();
 
-        Map<String, PlaybackProgress> progress = playback.progressByItemId(
-                profile, found.stream().map(MediaItem::getId).toList());
+        List<String> ids = found.stream().map(MediaItem::getId).toList();
+        Map<String, PlaybackProgress> progress = playback.progressByItemId(profile, ids);
+        Set<String> liked = likes.likedItemIds(profile, ids);
 
         Map<String, List<ItemSummaryDto>> grouped = new LinkedHashMap<>();
         Map<String, String> labels = new LinkedHashMap<>();
 
         for (MediaItem item : found) {
-            ItemSummaryDto summary = toSummary(item, progress.get(item.getId()));
+            ItemSummaryDto summary = toSummary(item, progress.get(item.getId()), liked);
             switch (mode) {
                 case "person" -> {
                     if (item.getPeople().isEmpty()) {
@@ -398,12 +420,15 @@ public class CatalogService {
         }
     }
 
-    private ItemSummaryDto toSummary(MediaItem item, PlaybackProgress progress) {
+    private ItemSummaryDto toSummary(MediaItem item,
+                                     PlaybackProgress progress,
+                                     Set<String> likedIds) {
         return ItemSummaryDto.from(
                 item,
                 progress == null ? null : (int) progress.getPositionSeconds(),
                 progress != null && progress.isWatched(),
-                progress == null ? null : progress.percentComplete());
+                progress == null ? null : progress.percentComplete(),
+                likedIds.contains(item.getId()));
     }
 
     private static boolean isUnwatched(PlaybackProgress progress) {
@@ -476,9 +501,14 @@ public class CatalogService {
             case "year" -> Sort.by(Sort.Order.desc("year").nullsLast(), Sort.Order.asc("sortTitle"));
             case "rating" -> Sort.by(Sort.Order.desc("rating").nullsLast(),
                     Sort.Order.asc("sortTitle"));
+            case "likes" -> Sort.by(Sort.Order.desc("likeCount"), Sort.Order.asc("sortTitle"));
             case "title" -> Sort.by(Sort.Direction.ASC, "sortTitle");
+            // No "views" here on purpose: a play count is the sum of two columns, and a
+            // Sort cannot express that. Most-watched ordering lives on the home screen's
+            // rail, which sorts on the sum in JPQL.
             default -> throw new ApiException(HttpStatus.BAD_REQUEST,
-                    "Unknown sort '" + sort + "' (expected title, added, captured, year or rating)");
+                    "Unknown sort '" + sort + "' (expected title, added, captured, year, "
+                            + "rating or likes)");
         };
     }
 

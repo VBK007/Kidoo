@@ -114,11 +114,20 @@ backend at all.
 ### 1. Home — built
 
 ```
+GET /api/media/home?types=FILM,ANIME&limit=20              # the whole screen
+GET /api/health                                            # TOWER · ONLINE
+```
+
+One call returns the continue-watching row, the ranked rails and the library
+header. The rails it composes are still available separately, for a client that
+refreshes one row on its own:
+
+```
+GET /api/media/home/popular?limit=20      # rating + views + likes, blended
 GET /api/media/continue-watching?limit=20
 GET /api/media/recently-added?types=FILM,ANIME&limit=20
 GET /api/media/recently-added?types=PHOTO,HOME_VIDEO      # camera roll rail
 GET /api/media/library-summary
-GET /api/health                                            # TOWER · ONLINE
 ```
 
 ### 2. Library — built
@@ -130,7 +139,11 @@ GET /api/media/library-summary                             # count + total size
 
 `category` accepts the chip labels directly: `all`, `films`, `anime`, `ours`,
 `music`, `photos`. `minHeight=2160` is the `4K ONLY` chip. `sort` is one of
-`title` `added` `captured` `year` `rating`.
+`title` `added` `captured` `year` `rating` `likes`.
+
+There is no `sort=views`: a play count is the sum of two columns and a JPA
+`Sort` cannot express that. Most-watched ordering is the home screen's
+`most-watched` rail, which sorts on the sum in JPQL.
 
 ### 3. Search — partial
 
@@ -326,8 +339,14 @@ Query: `category` `q` `genre` `unwatched` `minHeight` `sort` `page` `size`.
 ```
 id, type, title, year, runtimeMinutes, rating, quality, genres[],
 hasPoster, hasBackdrop, missing, resumePositionSeconds, watched,
-percentComplete, capturedAt, artist, album
+percentComplete, capturedAt, artist, album,
+viewCount, likeCount, liked
 ```
+
+The last three are the ranking signals, carried on every tile so a grid can draw
+its heart and its "played 12 times" label without a call per poster. `viewCount`
+is plays started, household-wide; `likeCount` is the household total; `liked` is
+whether the profile in `X-Profile-Id` likes it.
 
 **`GET /api/media/items/{id}`** → `ItemDetailDto`. **410** if the file is gone.
 ```
@@ -335,7 +354,8 @@ id, type, libraryName, title, originalTitle, year, plot, tagline,
 runtimeMinutes, rating, certification, genres[], directors, castMembers,
 studio, quality, tmdbId, imdbId, artist, album, trackNumber,
 capturedAt, place, people[], fileSize, fileName, hasPoster, hasBackdrop,
-mediaInfo, subtitles[], audioTracks[], resumePositionSeconds, watched
+mediaInfo, subtitles[], audioTracks[], resumePositionSeconds, watched,
+viewCount, likeCount, liked
 ```
 
 `mediaInfo`: `container, durationSeconds, videoCodec, width, height, bitrate,
@@ -347,6 +367,63 @@ audioCodecs, audioChannels, probed`
 
 **`GET /api/media/recently-added`** — a rail, capped at 50, unpaged by design.
 Query: `types` (comma-separated), `limit`. → `ItemSummaryDto[]`
+
+### Home screen
+
+**`GET /api/media/home`** — the whole screen in one call.
+Query: `types` (comma-separated, default `FILM,ANIME`), `limit` (posters per
+rail, capped at 50).
+
+```json
+{ "continueWatching": [ { "item": {}, "positionSeconds": 0,
+                          "durationSeconds": 0, "percentComplete": 0 } ],
+  "rails": [ { "key": "popular", "title": "Popular in your library",
+               "rankedBy": "popularity",
+               "items": [ { "item": {}, "score": 0.904,
+                            "reason": "Played 30 times" } ] } ],
+  "library": {},
+  "weights": { "rating": 0.4, "views": 0.35, "likes": 0.25 },
+  "generatedAt": "2026-09-10T05:09:11Z" }
+```
+
+Rails come back in render order and an empty rail is omitted rather than sent as
+a bare heading, so a fresh library returns `"rails": []`:
+
+| `key` | `rankedBy` | Order |
+| --- | --- | --- |
+| `popular` | `popularity` | The blend of all three signals |
+| `top-rated` | `rating` | `rating` desc; unrated titles are excluded |
+| `most-watched` | `views` | plays desc, direct and transcoded together |
+| `most-liked` | `likes` | `likeCount` desc |
+| `recently-added` | `added` | `addedAt` desc |
+
+`score` is 0–1 and is present only on `popular`; elsewhere it is null, because a
+single-signal rail's position is already its own number. `reason` is a subtitle
+naming why the title is there — `Rated 8.4`, `Played 30 times`, `Liked by 3 in
+your house`.
+
+**How `popular` is ranked.** Each signal is normalised to 0–1 and then weighted
+`0.40` rating, `0.35` views, `0.25` likes. Rating leads because it is the only
+signal that exists before anyone has watched anything. Play and like counts are
+normalised on a log curve against the library's own maximum — linear scaling
+would let one endlessly-rewatched favourite push every other title to zero and
+collapse the rail into a rating sort. An unrated title is scored at the
+library's mean rating, not zero, so home footage the scraper never matched can
+still surface. Candidates are the union of the top 100 by each signal.
+
+**`GET /api/media/home/popular`** — the blended rail alone, same query
+parameters. → one rail object.
+
+### Likes
+
+Per profile, so each member of a household likes for themselves; the count is
+the household's. Both write verbs are idempotent, so a retry on a flaky
+connection cannot double-count or toggle back.
+
+**`PUT /api/media/items/{id}/like`**, **`DELETE`**, **`GET`** →
+`{ mediaItemId, liked, likeCount }`. **404** if the item is unknown. Unlike
+browsing, an item whose file is currently missing still accepts a like — the
+opinion is about the title, and an unplugged disk should not lose it.
 
 **`GET /api/media/library-summary`** →
 `{ itemCount, totalBytes, categories[{ type, label, itemCount, totalBytes }], genres[] }`

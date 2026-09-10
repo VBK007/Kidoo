@@ -39,3 +39,10 @@ out/
 ### Logs ###
 logs/
 *.log
+
+### Secrets — never commit ###
+# Firebase service-account keys. These grant admin access to the Firebase
+# project; a leaked one cannot be rotated by changing a password.
+secrets/
+*firebase-adminsdk*.json
+*serviceAccount*.json
