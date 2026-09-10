@@ -60,6 +60,14 @@ public class MediaProperties {
     private boolean scanOnStartup = false;
 
     /**
+     * Minutes between automatic background scans that pick up files dropped into a
+     * library without anyone triggering a scan by hand. Zero (the default) disables
+     * periodic scanning — {@link #scanOnStartup} and the admin {@code POST .../scan}
+     * endpoint remain the only ways to index new media.
+     */
+    private int scanIntervalMinutes = 0;
+
+    /**
      * Videos smaller than this are skipped as trailers/samples/extras. Applies to video
      * only — photos and songs are legitimately small. Zero disables the check.
      */
