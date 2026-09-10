@@ -439,7 +439,7 @@
 
   <section>
     <p class="eyebrow">Every request</p>
-    <h2>Three headers</h2>
+    <h2>Three headers, and one other kind of token</h2>
     <div class="card">
       <dl class="headers">
         <div>
@@ -472,7 +472,24 @@
             response cannot confirm a guessed key.
           </dd>
         </div>
+        <div>
+          <dt>Authorization: Bearer &lt;guest jwt&gt;</dt>
+          <dd>
+            Watch party guests. Carried the same way, but there is no account
+            behind it: it reaches five endpoints for one film and everything
+            else is <strong>403</strong> — including every call that takes
+            <code>X-Profile-Id</code>, because a guest has no profile for one to
+            name. The party, not the expiry, is what authorises it. See
+            <b>Watch together</b>.
+          </dd>
+        </div>
       </dl>
+      <p class="gap-note" style="color: var(--on-ink-faint)">
+        Two endpoints are public that look as though they should not be:
+        <code>POST /api/parties/{code}/guest</code> and its polling twin. Someone
+        asking to be let into a party has no credential yet — that is the whole
+        reason they are asking.
+      </p>
     </div>
   </section>
 
@@ -865,14 +882,22 @@
         <span class="num">16</span>
         <div class="body">
           <h3>Watch together</h3>
-          <p class="gap-note none-note">
-            Needs a push channel — WebSocket or SSE — which the stack does not
-            have yet. One server clock, per-device readiness and reactions are all
-            realtime, not REST. Worth deciding the transport before starting, since
-            handoff and cast would use the same one.
+          <p>One host, one clock, four devices by default. Friends with an account join with the code; friends without one knock, and the host taps accept.</p>
+          <div class="calls">
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/parties</span></div>
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/parties/{code}/join</span></div>
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/parties/{code}/guest</span></div>
+            <div class="call"><span class="verb write">POST</span><span class="path">/api/parties/{code}/admit</span></div>
+            <div class="call"><span class="verb">WS</span><span class="path">/ws/party?code=…&amp;token=…</span></div>
+          </div>
+          <p class="gap-note" style="color: var(--on-ink-faint)">
+            The push channel this row used to say the stack was missing is now
+            here, and handoff and cast can reuse it. The client owes one thing in
+            return: correcting its own drift against the shared clock, by nudging
+            playback rate rather than seeking.
           </p>
         </div>
-        <span class="state none"><span class="dot"></span>NOT BUILT</span>
+        <span class="state done"><span class="dot"></span>BUILT</span>
       </div>
 
       <div class="row">
@@ -1070,6 +1095,132 @@
         <p class="desc">Probe results alone, for a debug screen.</p>
         <p class="meta"><b>→</b> MediaInfoDto</p>
       </div>
+    </div>
+
+    <div class="group">
+      <h3>Watch together</h3>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/parties</span>
+        <p class="desc">Open a party on a title and get a code to share. Opening a second one retires the first.</p>
+        <p class="meta"><b>body</b> { mediaItemId, maxMembers?, requireApprovalForGuests? }<br><b>→</b> 201 PartyDto { partyId, code, mediaItemId, itemTitle, live, maxMembers, youAreHost, members[], pending[], clock, capacityWarning }<br><b>maxMembers</b> default 4, max 8 — every seat is an independent stream off one box</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/parties/{code}/join</span>
+        <p class="desc">Account holders, no approval — they can already stream any title, so gating the rendezvous would protect nothing. Safe to repeat on reconnect.</p>
+        <p class="meta"><b>→</b> PartyDto · <b>409</b> every seat taken · <b>404</b> unknown code <i>or</i> ended party, deliberately indistinguishable</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/parties/{code}/state</span>
+        <p class="desc">The polling fallback for a client that cannot hold a socket open. Same shape the socket pushes, just later.</p>
+        <p class="meta"><b>→</b> PartyDto · <b>403</b> for a non-member</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/parties/{code}/leave</span>
+        <p class="desc">The host leaving ends the party for everyone. No handover: the host's player <i>is</i> the clock.</p>
+        <p class="meta"><b>→</b> 204</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">DELETE</span>
+        <span class="sig">/api/parties/{code}</span>
+        <p class="desc">Host only. Everyone gets an <code>ended</code> frame before their socket closes, and guest streams stop at once.</p>
+        <p class="meta"><b>→</b> 204</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/parties/{code}/guest</span>
+        <p class="desc">Public. A friend with no account asks to be let in. What comes back is a place in a queue, not a credential — holding a code is weak evidence of an invitation.</p>
+        <p class="meta"><b>body</b> { name } — control characters stripped, capped at 40<br><b>→</b> { status: PENDING, requestId, pollToken, token: null }<br><b>429</b> rate limited per address, which is what makes guessing codes pointless</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/parties/{code}/guest/{requestId}</span>
+        <p class="desc">Public. Poll for the host's answer. The pollToken is the secret — the requestId reaches the host in the accept prompt, so it is not one.</p>
+        <p class="meta"><b>query</b> token (the pollToken)<br><b>→</b> { status: PENDING | ADMITTED | DENIED, token?, expiresAt? }<br>unanswered requests expire after 5 minutes; the pollToken stays valid for the life of the party so a restarted app can fetch its token again</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/parties/{code}/admit</span>
+        <p class="desc">The host's yes or no to one waiting guest.</p>
+        <p class="meta"><b>body</b> { requestId, allow }<br><b>→</b> PartyDto · <b>409</b> already answered, by a double tap or by the timeout</p>
+      </div>
+      <div class="ep">
+        <span class="verb write">POST</span>
+        <span class="sig">/api/media/guest/playback-decision</span>
+        <p class="desc">The guest's way in to playback. No item in the path — the title is in the token, put there when the host admitted them. Everything after this is the shared path.</p>
+        <p class="meta"><b>query</b> startSeconds<br><b>body</b> ClientCapabilitiesRequest<br><b>→</b> PlaybackDecisionDto, identical to the account endpoint</p>
+      </div>
+      <div class="ep">
+        <span class="verb">WS</span>
+        <span class="sig">/ws/party?code=…&amp;token=…</span>
+        <p class="desc">The clock. The token is in the query because a browser cannot set a header on a WebSocket; a refused handshake is a 403 and never becomes a socket.</p>
+        <p class="meta"><b>token</b> an account JWT or a guest JWT<br><b>→</b> tick every 2s, and play/pause/seek the moment they happen</p>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Watch together · the wire</h3>
+      <p>
+        Server frames. A <code>pause</code> carries exactly what a <code>tick</code>
+        carries — the separate type exists so the client can say "Amma paused"
+        instead of moving the bar silently. <code>pending</code> goes to the host
+        alone, because it holds a name a stranger typed and nobody else can act
+        on it.
+      </p>
+<pre><code>{"type":"tick",   "clock":{ … }, "by":null}
+{"type":"play",   "clock":{ … }, "by":"Amma"}
+{"type":"pause",  "clock":{ … }, "by":"Amma"}
+{"type":"seek",   "clock":{ … }, "by":"Amma"}
+{"type":"members","members":[{ id, name, role, host, joinedAt,
+                               online, buffering, driftSeconds }]}
+{"type":"pending","guest":{"requestId":"…","name":"Ravi","requestedAt":"…"}}
+{"type":"ended",  "reason":"host ended it"}
+{"type":"error",  "message":"only the host controls playback"}
+
+clock = { state: PLAYING|PAUSED, positionSeconds,
+          atEpochMillis, serverNowEpochMillis }</code></pre>
+      <p>
+        Client frames. The first three are host-only — a member sending one gets
+        an <code>error</code> back and keeps its socket, because a stray control
+        is a client bug worth surfacing rather than burying under a reconnect.
+        <code>report</code> is for everyone: from the host it re-anchors the
+        party to their real position, from anyone else it only records how far
+        off they are.
+      </p>
+<pre><code>{"type":"play"|"pause"|"seek", "positionSeconds":812.4}
+{"type":"report", "positionSeconds":812.1, "buffering":false}</code></pre>
+    </div>
+
+    <div class="group">
+      <h3>Watch together · following the clock</h3>
+      <p>
+        The clock is an anchor, not a counter. <code>positionSeconds</code> was
+        true at <code>atEpochMillis</code> and nothing advances it, so a slow
+        tick, a missed tick and a reconnect mid-film all land on the same answer
+        — where a counter incremented on a timer drifts by exactly as much as
+        the timer did. Both timestamps are the server's, so a phone with a badly
+        set clock cannot drag the party off.
+      </p>
+<pre><code>offset = serverNowEpochMillis - localNow      // re-estimate every frame
+target = positionSeconds + (localNow + offset - atEpochMillis) / 1000
+drift  = target - myPosition                 // only while state is PLAYING
+
+drift &gt; 2.0s        seek to target
+0.35s – 2.0s        playbackRate 1.06 or 0.94 until under 0.1s, then 1.0
+&lt; 0.35s             do nothing</code></pre>
+      <p>
+        The rate nudge is the part that matters. A seek every few seconds is
+        visible and ugly; a 6% rate change for two seconds is not.
+      </p>
+      <p>
+        Two behaviours to build the UI around. The host dropping <b>pauses</b>
+        the party rather than ending it, so a tunnel or a locked phone does not
+        end everyone's evening — and a party with nobody connected for fifteen
+        minutes is closed.
+      </p>
     </div>
 
     <div class="group">

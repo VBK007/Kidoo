@@ -34,6 +34,11 @@ isolates transport in `data/remote`, so it is a one-file change on the client.
 | `Authorization: Bearer <jwt>` | Everything except `/api/health`, `/api/auth/register`, `/api/auth/login` | Register returns **201** with a token. Pass `"role":"PARENT"` to create an owner account. |
 | `X-Profile-Id: <profileId>` | All profile-scoped media calls | Resume points, downloads, settings and unwatched marks are per profile, not per account. Omitted → the account's first profile. A profile id from another household returns **404**. |
 | `X-Admin-Key: <key>` | `/api/media/admin/**` and the library scan | Required **in addition to** a PARENT account. Both checks, because the key alone would let a child's device act as owner if it leaked into a shared client build. Failure is **403** either way, so a response cannot confirm a guessed key. |
+| `Authorization: Bearer <guest jwt>` | Watch party guests only | A different kind of token, carried the same way. It has no account behind it and reaches five endpoints for one film — everything else is **403**, including anything taking `X-Profile-Id`. See **Watch together**. |
+
+Two endpoints are public that look like they should not be:
+`POST /api/parties/{code}/guest` and its polling twin. A guest has no
+credential yet, which is the whole reason they are asking for one.
 
 ## Error envelope
 
@@ -281,12 +286,26 @@ knowing whose. Missing: no sleep detection and no wake-on-LAN, so
 Depends on screen 11. Session transfer and phone-as-remote need a device
 registry first.
 
-### 16. Watch together — none
+### 16. Watch together — built
 
-Needs a push channel (WebSocket or SSE) which the stack does not have. One
-server clock, per-device readiness and reactions are all realtime, not REST.
-Worth deciding the transport before starting, since cast and handoff would use
-the same one.
+One host, up to `maxMembers` devices, one clock. The host's player is the
+authority and everyone else follows it over a WebSocket — the push channel this
+section used to say the stack was missing. Cast and handoff can reuse it.
+
+Friends with an account on this server join with the code. Friends without one
+knock, the host taps accept, and they get a token good for that single title
+while the party lasts: no library, no resume point, no other film.
+
+```
+POST /api/parties                      # host opens one, gets a code
+POST /api/parties/{code}/join          # account holder
+POST /api/parties/{code}/guest         # no account — public
+POST /api/parties/{code}/admit         # host says yes or no
+WS   /ws/party?code=…&token=…
+```
+
+Full shape, the frame protocol and the drift-correction the client owes are all
+in **Watch together** under the endpoint reference.
 
 ### 17. Requests — none
 
@@ -460,6 +479,162 @@ has not produced it yet. Retry rather than fail.
 the reaper handles clients that vanish.
 
 **`GET /api/media/items/{id}/media-info`** → `MediaInfoDto`, for a debug screen.
+
+### Watch together
+
+Several devices on one film. The party is persisted; the playhead is not, so a
+restart ends every party — which is honest, because the sockets holding them
+together are gone too.
+
+**`POST /api/parties`** — body `{ mediaItemId, maxMembers?, requireApprovalForGuests? }`
+→ **201** `PartyDto`. `maxMembers` defaults to **4**, capped at 8: every seat is
+an independent stream off one box. Opening a second party retires the first —
+tapping "watch together" again means the first attempt reached nobody.
+
+```
+partyId, code, mediaItemId, itemTitle, live, maxMembers, youAreHost,
+members[{ id, name, role, host, joinedAt, online, buffering, driftSeconds }],
+pending[{ requestId, name, requestedAt }],
+clock{ state, positionSeconds, atEpochMillis, serverNowEpochMillis },
+capacityWarning
+```
+
+`role` is `HOST` `MEMBER` `GUEST`. `online` is not the same as being in the
+party — someone in a tunnel keeps their seat. `pending` is empty for everyone
+but the host. `clock` is null until the host's player reports a position.
+`capacityWarning` is set when the title has never once direct-played, meaning
+each seat costs its own ffmpeg process; advisory only, the party opens anyway.
+
+The six-character code uses an alphabet with `0 O 1 I L` removed, because it
+gets read across a room and retyped on a TV remote. Lower case and pasted
+spaces or hyphens are accepted.
+
+**`POST /api/parties/{code}/join`** → `PartyDto`. Account holders, no approval:
+they can already stream any title, so gating the rendezvous would protect
+nothing. Safe to repeat — a reconnect calls it again and reuses the same seat.
+**409** every seat taken. **404** unknown code *or* ended party: the two are
+deliberately indistinguishable, so guessing cannot confirm a real code.
+
+**`GET /api/parties/{code}/state`** → `PartyDto`. The polling fallback for a
+client that cannot hold a socket open — the same shape the socket pushes, just
+later. **403** for a non-member.
+
+**`POST /api/parties/{code}/leave`** → 204. The host leaving ends the party for
+everyone. There is no handover: the host's player *is* the clock, so promoting
+someone would mean adopting a different device's playhead mid-film.
+
+**`DELETE /api/parties/{code}`** → 204, host only. Everyone gets an `ended`
+frame before their socket closes.
+
+#### Guests — no account on this server
+
+**`POST /api/parties/{code}/guest`** — **public** — body `{ name }` →
+`{ status, requestId, pollToken, token, expiresAt }`. Normally
+`status: "PENDING"` with `token: null`: holding a code is weak evidence of an
+invitation, since codes get forwarded and read over shoulders. Rate limited per
+address — **429** when someone is guessing codes. The name is stripped of
+control characters and capped at 40, so an accept prompt cannot be dressed up
+to read as something else.
+
+**`GET /api/parties/{code}/guest/{requestId}?token=<pollToken>`** — **public** —
+same shape. `PENDING` until the host answers, then `ADMITTED` with a token, or
+`DENIED`. Unanswered requests expire after **5 minutes**. `pollToken` is
+returned once, on the first response, and stays valid for the life of the party
+so an app that restarts can fetch its token again rather than making the host
+approve the same person twice. It is separate from `requestId` because the
+request id reaches the host in the accept prompt and so is not a secret.
+
+**`POST /api/parties/{code}/admit`** — host only — body `{ requestId, allow }`
+→ `PartyDto`. **409** if that request was already answered, by a double tap or
+by the timeout.
+
+**`POST /api/media/guest/playback-decision`** — guest token — query
+`startSeconds`, body `ClientCapabilitiesRequest` → the same
+`PlaybackDecisionDto` an account gets. No item in the path: the title is in the
+token, put there when the host admitted them. Everything after this is the
+shared path — the returned `/stream` or playlist URL behaves identically.
+
+A guest token reaches exactly this and nothing else:
+
+```
+POST /api/media/guest/playback-decision
+GET  /api/media/items/{id}/stream           # {id} must be the party's title
+GET  /api/media/items/{id}/subtitles/{n}    # and /poster, /backdrop
+GET  /api/media/transcode/{sessionId}/**
+WS   /ws/party
+```
+
+Everything else is **403**, including every endpoint that takes `X-Profile-Id`
+— a guest has no profile for one to name. The **party**, not the token's
+expiry, is the authority: ending it makes a token with hours left worthless and
+stops that guest's stream at once. Members with accounts are not cut off, since
+they could have played the title without any party at all.
+
+#### The socket
+
+```
+ws://host/ws/party?code=K7M2QP&token=<account or guest jwt>
+```
+
+The token is in the query because a browser cannot set a header on a WebSocket.
+A refused handshake is **403** and never becomes a socket. A second connection
+from the same person replaces the first.
+
+Server → client:
+
+```json
+{"type":"tick","clock":{ … },"by":null}
+{"type":"play","clock":{ … },"by":"Amma"}
+{"type":"pause","clock":{ … },"by":"Amma"}
+{"type":"seek","clock":{ … },"by":"Amma"}
+{"type":"members","members":[ … ]}
+{"type":"pending","guest":{"requestId":"…","name":"Ravi","requestedAt":"…"}}
+{"type":"ended","reason":"host ended it"}
+{"type":"error","message":"only the host controls playback"}
+```
+
+`tick` every 2s and once on connect; the rest the moment they happen. The
+payload of a `pause` is identical to a `tick` — the type exists so the client
+can say "Amma paused" rather than moving the bar silently. `pending` goes to
+the host alone.
+
+Client → server:
+
+```json
+{"type":"play"|"pause"|"seek","positionSeconds":812.4}
+{"type":"report","positionSeconds":812.1,"buffering":false}
+```
+
+The first three are host-only; a member sending one gets an `error` frame and
+keeps its socket. `report` is for everyone, every few seconds: from the host it
+re-anchors the party to their real position, from anyone else it only records
+how far off they are, which is what `driftSeconds` in the member list shows.
+
+#### Following the clock — the client's half
+
+The clock is an anchor, not a counter. `positionSeconds` was true at
+`atEpochMillis` and nothing advances it, so a slow tick, a missed tick and a
+reconnect mid-film all land on the same answer. Both timestamps are the
+server's, so a device with a badly set clock cannot drag the party off.
+
+```
+offset = serverNowEpochMillis - localNow        // re-estimate on every frame
+target = positionSeconds + (localNow + offset - atEpochMillis) / 1000
+drift  = target - myPosition                    // only while state is PLAYING
+```
+
+| `drift` | what to do |
+| --- | --- |
+| over 2.0s | seek to `target` |
+| 0.35 – 2.0s | `playbackRate` 1.06 or 0.94 until under 0.1s, then back to 1.0 |
+| under 0.35s | nothing |
+
+The rate nudge is the part that matters: a seek every few seconds is visible
+and ugly, a 6% rate change for two seconds is not.
+
+Two behaviours worth building the UI around: the host dropping **pauses** the
+party rather than ending it, so a tunnel or a locked phone does not end the
+evening, and a party with nobody connected for 15 minutes is closed.
 
 ### Player state
 
@@ -655,3 +830,10 @@ sheet you load instead.
 ffmpeg transcoding, download conversion and sprite generation are all tested up
 to the point of invoking the binary, using synthetic fixtures. The first real
 scan of `E:/Entertainment` is what will confirm them.
+
+Watch parties are tested end to end — real WebSocket connections, two accounts,
+guest tokens, real files on disk — but never yet with several real devices on
+real networks. Two things only that will tell you: whether the drift thresholds
+above are the right ones on a phone over wifi, and how many concurrent streams
+this machine's upstream actually carries. `maxMembers` defaults to 4 as a guess,
+not a measurement.

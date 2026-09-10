@@ -20,6 +20,8 @@ import com.example.kido.media.MediaFiles;
 import com.example.kido.media.catalog.CatalogService;
 import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.stream.FileStreamer;
+import com.example.kido.media.together.WatchPartyGrants;
+import com.example.kido.security.GuestPrincipal;
 import com.example.kido.user.AppUser;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -45,30 +47,46 @@ public class ArtworkController {
     private final FileStreamer streamer;
     private final SubtitleConverter subtitles;
 
+    /**
+     * Watch party guests reach these three endpoints, and nothing else here.
+     *
+     * <p>Subtitles because a film with them is not watchable without them, and the two
+     * images because a player shows the title while it buffers. All three are scoped to
+     * the one item the guest was admitted to, so opening them adds no reach beyond the
+     * film they are already streaming.
+     */
+    private final WatchPartyGrants grants;
+
     public ArtworkController(CatalogService catalog,
                              MediaPaths paths,
                              FileStreamer streamer,
-                             SubtitleConverter subtitles) {
+                             SubtitleConverter subtitles,
+                             WatchPartyGrants grants) {
         this.catalog = catalog;
         this.paths = paths;
         this.streamer = streamer;
         this.subtitles = subtitles;
+        this.grants = grants;
     }
 
     @GetMapping("/poster")
     public void poster(@AuthenticationPrincipal AppUser user,
+                       @AuthenticationPrincipal GuestPrincipal guest,
                        @PathVariable String id,
                        HttpServletRequest request,
                        HttpServletResponse response) throws IOException {
+        grants.requirePlayable(guest, id);
         MediaItem item = catalog.require(id);
         serveImage(item.getPosterPath(), "poster", request, response);
     }
 
     @GetMapping("/backdrop")
     public void backdrop(@AuthenticationPrincipal AppUser user,
+                         @AuthenticationPrincipal GuestPrincipal guest,
                          @PathVariable String id,
                          HttpServletRequest request,
                          HttpServletResponse response) throws IOException {
+        grants.requirePlayable(guest, id);
         MediaItem item = catalog.require(id);
         serveImage(item.getBackdropPath(), "backdrop", request, response);
     }
@@ -93,8 +111,10 @@ public class ArtworkController {
      */
     @GetMapping("/subtitles/{index}")
     public ResponseEntity<byte[]> subtitle(@AuthenticationPrincipal AppUser user,
+                                           @AuthenticationPrincipal GuestPrincipal guest,
                                            @PathVariable String id,
                                            @PathVariable int index) throws IOException {
+        grants.requirePlayable(guest, id);
         MediaItem item = catalog.require(id);
         List<SidecarLocator.SubtitleTrack> tracks = catalog.externalSubtitles(item);
 

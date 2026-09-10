@@ -93,8 +93,31 @@ public class PlaybackSessionRegistry {
                                  Integer targetHeight,
                                  double startSeconds) {
 
+        return start(profile.getId(), profile.getName(), item, mode, deviceName, clientIp,
+                transcodeSessionId, targetHeight, startSeconds);
+    }
+
+    /**
+     * Opens a session for a viewer who has no profile.
+     *
+     * <p>A watch party guest has no account and therefore no profile, but they consume
+     * exactly the same upstream bandwidth and the same ffmpeg process as anyone else —
+     * so they belong in the People tab, and the owner must be able to end their stream.
+     * The identifier stored in {@code profileId} is whatever names the viewer: a profile
+     * id for an account, a party member id for a guest.
+     */
+    public PlaybackSession start(String viewerId,
+                                 String viewerName,
+                                 MediaItem item,
+                                 Mode mode,
+                                 String deviceName,
+                                 String clientIp,
+                                 String transcodeSessionId,
+                                 Integer targetHeight,
+                                 double startSeconds) {
+
         sessions.values().stream()
-                .filter(existing -> existing.getProfileId().equals(profile.getId())
+                .filter(existing -> existing.getProfileId().equals(viewerId)
                         && existing.getMediaItemId().equals(item.getId()))
                 .map(PlaybackSession::getId)
                 .toList()
@@ -102,8 +125,8 @@ public class PlaybackSessionRegistry {
 
         PlaybackSession session = new PlaybackSession(
                 UUID.randomUUID().toString().replace("-", ""),
-                profile.getId(),
-                profile.getName(),
+                viewerId,
+                viewerName,
                 item.getId(),
                 item.getTitle(),
                 mode,
@@ -116,8 +139,8 @@ public class PlaybackSessionRegistry {
 
         sessions.put(session.getId(), session);
         peakConcurrent.accumulateAndGet(sessions.size(), Math::max);
-        log.info("Playback session={} profile='{}' item='{}' mode={} device='{}'",
-                session.getId(), profile.getName(), item.getTitle(), mode, session.getDeviceName());
+        log.info("Playback session={} viewer='{}' item='{}' mode={} device='{}'",
+                session.getId(), viewerName, item.getTitle(), mode, session.getDeviceName());
         return session;
     }
 
@@ -204,6 +227,26 @@ public class PlaybackSessionRegistry {
         log.info("Terminated playback session={} profile='{}' item='{}'",
                 sessionId, session.getProfileName(), session.getItemTitle());
         return true;
+    }
+
+    /**
+     * Ends every session one viewer has open on one title.
+     *
+     * <p>Callers outside this class know <em>who</em> is watching, not which session id
+     * their player was handed: a watch party knows its members, not the ids that came
+     * back from their playback decisions.
+     *
+     * @return how many were ended, which is normally one — a viewer is only ever left
+     *         with a single session per title, since re-deciding replaces the old one
+     */
+    public int terminateFor(String viewerId, String mediaItemId) {
+        List<String> matching = sessions.values().stream()
+                .filter(session -> session.getProfileId().equals(viewerId)
+                        && session.getMediaItemId().equals(mediaItemId))
+                .map(PlaybackSession::getId)
+                .toList();
+        matching.forEach(this::terminate);
+        return matching.size();
     }
 
     /** Removes a session without the termination semantics, e.g. when superseded. */
