@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -22,6 +23,7 @@ import com.example.kido.media.dto.PlaybackDtos.ProgressDto;
 import com.example.kido.media.dto.PlaybackDtos.ProgressRequest;
 import com.example.kido.media.dto.PlayerDtos.SubtitleOffsetRequest;
 import com.example.kido.media.dto.PlayerDtos.TrackSelectionRequest;
+import com.example.kido.media.engagement.LikeService;
 import com.example.kido.media.session.PlaybackSessionRegistry;
 import com.example.kido.media.session.WatchEvent;
 import com.example.kido.media.session.WatchEventRepository;
@@ -63,15 +65,18 @@ public class PlaybackService {
     private final MediaItemRepository items;
     private final WatchEventRepository watchEvents;
     private final PlaybackSessionRegistry sessions;
+    private final LikeService likes;
 
     public PlaybackService(PlaybackProgressRepository progressRepository,
                            MediaItemRepository items,
                            WatchEventRepository watchEvents,
-                           PlaybackSessionRegistry sessions) {
+                           PlaybackSessionRegistry sessions,
+                           LikeService likes) {
         this.progressRepository = progressRepository;
         this.items = items;
         this.watchEvents = watchEvents;
         this.sessions = sessions;
+        this.likes = likes;
     }
 
     /**
@@ -233,6 +238,9 @@ public class PlaybackService {
                         profile.getId(), MIN_TRACKED_SECONDS,
                         PageRequest.of(0, Math.max(1, limit)));
 
+        Set<String> liked = likes.likedItemIds(
+                profile, started.stream().map(PlaybackProgress::getMediaItemId).toList());
+
         List<ContinueWatchingDto> out = new ArrayList<>();
         for (PlaybackProgress progress : started) {
             Optional<MediaItem> item = items.findById(progress.getMediaItemId());
@@ -244,7 +252,8 @@ public class PlaybackService {
                             item.get(),
                             (int) progress.getPositionSeconds(),
                             false,
-                            progress.percentComplete()),
+                            progress.percentComplete(),
+                            liked.contains(progress.getMediaItemId())),
                     progress.getPositionSeconds(),
                     progress.getDurationSeconds(),
                     progress.percentComplete()));

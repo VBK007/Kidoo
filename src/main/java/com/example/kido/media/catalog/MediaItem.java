@@ -51,7 +51,8 @@ import lombok.Setter;
                 @Index(name = "idx_media_item_sort_title", columnList = "sort_title"),
                 @Index(name = "idx_media_item_type", columnList = "media_type"),
                 @Index(name = "idx_media_item_missing", columnList = "missing"),
-                @Index(name = "idx_media_item_captured", columnList = "captured_at")
+                @Index(name = "idx_media_item_captured", columnList = "captured_at"),
+                @Index(name = "idx_media_item_likes", columnList = "like_count")
         })
 @Getter
 @Setter
@@ -262,6 +263,18 @@ public class MediaItem {
     private Instant lastPlayedAt;
 
     /**
+     * How many profiles have liked this title, kept in step with the like rows by
+     * {@code LikeService}.
+     *
+     * <p>Denormalised on purpose: the home screen ranks the whole library by likes, and
+     * doing that through the per-profile like table would mean grouping every like row
+     * on every home request. As a column it is one indexed sort.
+     */
+    @Column(name = "like_count", nullable = false)
+    @Builder.Default
+    private long likeCount = 0;
+
+    /**
      * True for a file that has been played and has never once direct-played — the
      * admin panel's "always transcodes" note, and the strongest candidate for
      * re-encoding once so it stops costing CPU on every view.
@@ -270,6 +283,14 @@ public class MediaItem {
         return transcodeCount > 0 && directPlayCount == 0;
     }
 
+    /**
+     * Times playback has started, however it was served — the view count the home
+     * screen ranks on.
+     *
+     * <p>Counts starts rather than completions: a title abandoned after five minutes
+     * still says the household reached for it, and whether it was finished is already
+     * recorded per profile as watch progress.
+     */
     public long playCount() {
         return directPlayCount + transcodeCount;
     }
