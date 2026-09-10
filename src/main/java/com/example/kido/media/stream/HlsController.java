@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.media.dto.PlaybackDtos.TranscodeSessionDto;
 import com.example.kido.media.session.PlaybackSessionRegistry;
+import com.example.kido.media.together.WatchPartyGrants;
+import com.example.kido.security.GuestPrincipal;
 import com.example.kido.user.AppUser;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -44,21 +46,39 @@ public class HlsController {
     private final TranscodeSessionManager sessions;
     private final FileStreamer streamer;
     private final PlaybackSessionRegistry playbackSessions;
+    private final WatchPartyGrants grants;
 
     public HlsController(TranscodeSessionManager sessions,
                          FileStreamer streamer,
-                         PlaybackSessionRegistry playbackSessions) {
+                         PlaybackSessionRegistry playbackSessions,
+                         WatchPartyGrants grants) {
         this.sessions = sessions;
         this.streamer = streamer;
         this.playbackSessions = playbackSessions;
+        this.grants = grants;
+    }
+
+    /**
+     * Checks a guest against the title behind a transcode, not against its id.
+     *
+     * <p>A transcode session id is opaque, which is not the same as secret: it travels
+     * in URLs and logs. What authorises a guest is the film the session is producing,
+     * so that is what gets compared.
+     */
+    private void requireGrant(GuestPrincipal guest, String sessionId) {
+        if (guest != null) {
+            grants.requirePlayable(guest, sessions.require(sessionId).getMovieId());
+        }
     }
 
     @GetMapping("/index.m3u8")
     public void playlist(@AuthenticationPrincipal AppUser user,
+                         @AuthenticationPrincipal GuestPrincipal guest,
                          @PathVariable String sessionId,
                          HttpServletRequest request,
                          HttpServletResponse response) throws IOException {
 
+        requireGrant(guest, sessionId);
         Path playlist = sessions.playlistFile(sessionId);
         streamer.serve(playlist, "application/vnd.apple.mpegurl",
                 PLAYLIST_CACHE_SECONDS, request, response);
@@ -70,11 +90,13 @@ public class HlsController {
      */
     @GetMapping("/{segment}")
     public void segment(@AuthenticationPrincipal AppUser user,
+                        @AuthenticationPrincipal GuestPrincipal guest,
                         @PathVariable String sessionId,
                         @PathVariable String segment,
                         HttpServletRequest request,
                         HttpServletResponse response) throws IOException {
 
+        requireGrant(guest, sessionId);
         Path file = sessions.segmentFile(sessionId, segment);
         long written = streamer.serve(file, "video/mp2t", SEGMENT_CACHE_SECONDS, request, response);
         // Metered against the playback session so the admin panel can report the real
@@ -90,14 +112,18 @@ public class HlsController {
      */
     @DeleteMapping
     public ResponseEntity<Void> stop(@AuthenticationPrincipal AppUser user,
+                                     @AuthenticationPrincipal GuestPrincipal guest,
                                      @PathVariable String sessionId) {
+        requireGrant(guest, sessionId);
         sessions.stop(sessionId);
         return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/status")
     public TranscodeSessionDto status(@AuthenticationPrincipal AppUser user,
+                                      @AuthenticationPrincipal GuestPrincipal guest,
                                       @PathVariable String sessionId) {
+        requireGrant(guest, sessionId);
         TranscodeSession session = sessions.require(sessionId);
         return toDto(session);
     }
