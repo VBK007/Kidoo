@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -37,12 +38,43 @@ public class FileStreamer {
      */
     public long serve(Path file, String contentType, long cacheSeconds,
                       HttpServletRequest request, HttpServletResponse response) throws IOException {
+        return serve(file, contentType, cacheSeconds, false, request, response);
+    }
+
+    /**
+     * @param cacheSeconds     seconds to allow caching; zero or less sends {@code no-store}
+     * @param alwaysRevalidate {@code true} for content addressed by a stable URL whose
+     *                         bytes can change underneath it — a poster gaining a better
+     *                         match, say. Sends {@code no-cache} instead of a bare
+     *                         {@code max-age}: the client may still keep a cached copy,
+     *                         but must check it against the ETag below on every request
+     *                         rather than trusting it blindly for the next
+     *                         {@code cacheSeconds}. A stale response then costs one small
+     *                         request with a {@code 304} reply, not a stuck poster for a
+     *                         day. HLS segments and downloads never take this path — once
+     *                         written, their bytes never change under the same URL, so
+     *                         paying for a round trip on every request would be pure loss.
+     */
+    public long serve(Path file, String contentType, long cacheSeconds, boolean alwaysRevalidate,
+                      HttpServletRequest request, HttpServletResponse response) throws IOException {
 
         long length = Files.size(file);
+        FileTime modified = Files.getLastModifiedTime(file);
+        String etag = "\"" + Long.toHexString(length) + "-" + Long.toHexString(modified.toMillis()) + "\"";
+
         response.setHeader(HttpHeaders.ACCEPT_RANGES, "bytes");
         response.setContentType(contentType);
-        response.setHeader(HttpHeaders.CACHE_CONTROL,
-                cacheSeconds > 0 ? "private, max-age=" + cacheSeconds : "no-store");
+        response.setHeader(HttpHeaders.CACHE_CONTROL, alwaysRevalidate
+                ? "private, no-cache"
+                : cacheSeconds > 0 ? "private, max-age=" + cacheSeconds : "no-store");
+        response.setHeader(HttpHeaders.ETAG, etag);
+        response.setDateHeader(HttpHeaders.LAST_MODIFIED, modified.toMillis());
+
+        String ifNoneMatch = request.getHeader(HttpHeaders.IF_NONE_MATCH);
+        if (ifNoneMatch != null && ifNoneMatch.equals(etag)) {
+            response.setStatus(HttpStatus.NOT_MODIFIED.value());
+            return 0;
+        }
 
         Range range = parseRange(request.getHeader(HttpHeaders.RANGE), length);
 

@@ -39,7 +39,14 @@ import jakarta.servlet.http.HttpServletResponse;
 @RequestMapping("/api/media/items/{id}")
 public class ArtworkController {
 
-    /** Artwork is effectively immutable, and re-fetching it on every scroll is wasteful. */
+    /**
+     * Unused while {@code alwaysRevalidate} is on below — kept as the value {@link
+     * com.example.kido.media.stream.FileStreamer} would fall back to if that ever
+     * changes. The poster behind a given item id is not actually immutable: a rescan
+     * can swap in a better match, so every request revalidates against the file's ETag
+     * instead of trusting a blind day-long cache — cheap (a 304, no image bytes) when
+     * nothing changed, and never more than one request stale when something did.
+     */
     private static final long ARTWORK_CACHE_SECONDS = 86_400;
 
     private final CatalogService catalog;
@@ -98,7 +105,7 @@ public class ArtworkController {
             throw new ApiException(HttpStatus.NOT_FOUND, "No " + what + " for this item");
         }
         Path file = paths.requireImage(storedPath);
-        streamer.serve(file, imageContentType(file), ARTWORK_CACHE_SECONDS, request, response);
+        streamer.serve(file, imageContentType(file), ARTWORK_CACHE_SECONDS, true, request, response);
     }
 
     /**
