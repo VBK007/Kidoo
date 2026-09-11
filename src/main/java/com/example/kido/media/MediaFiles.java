@@ -27,7 +27,7 @@ public final class MediaFiles {
             "mp3", "flac", "m4a", "aac", "ogg", "oga", "opus", "wav", "wma", "alac", "aiff");
 
     public static final Set<String> IMAGE_EXTENSIONS = Set.of(
-            "jpg", "jpeg", "png", "webp", "heic", "heif", "gif", "bmp", "tif", "tiff", "dng");
+            "jpg", "jpeg", "png", "webp", "avif", "heic", "heif", "gif", "bmp", "tif", "tiff", "dng");
 
     private static final Map<String, String> CONTENT_TYPES = Map.ofEntries(
             // video

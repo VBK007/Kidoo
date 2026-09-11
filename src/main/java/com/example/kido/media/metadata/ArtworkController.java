@@ -145,6 +145,7 @@ public class ArtworkController {
         return switch (extension) {
             case "png" -> MediaType.IMAGE_PNG_VALUE;
             case "webp" -> "image/webp";
+            case "avif" -> "image/avif";
             case "gif" -> MediaType.IMAGE_GIF_VALUE;
             default -> MediaType.IMAGE_JPEG_VALUE;
         };

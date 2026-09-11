@@ -29,7 +29,7 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class SidecarLocator {
 
-    private static final List<String> IMAGE_EXTENSIONS = List.of("jpg", "jpeg", "png", "webp");
+    private static final List<String> IMAGE_EXTENSIONS = List.of("jpg", "jpeg", "png", "webp", "avif");
 
     /** Generic artwork names, tried after the movie-specific ones. */
     private static final List<String> POSTER_NAMES = List.of("poster", "folder", "cover", "movie", "default");
@@ -39,6 +39,16 @@ public class SidecarLocator {
 
     /** Sub-directories that conventionally hold external subtitles. */
     private static final List<String> SUBTITLE_DIRS = List.of("Subs", "subs", "Subtitles", "subtitles");
+
+    /**
+     * Folder names treated as a shared poster library for the whole library root rather
+     * than indexable content of their own — a household's answer to a disk with no
+     * per-file artwork convention at all: drop one clean image per title in here, named
+     * however is easiest, and {@link #findPosterByTitle} lines it up. The scanner must
+     * never index a file inside one standalone (see {@link #isInPosterFolder}), or every
+     * image in here becomes its own bogus catalog entry.
+     */
+    private static final Set<String> POSTER_FOLDER_NAMES = Set.of("moviesposters", "posters", "artwork");
 
     /**
      * Locates the metadata sidecar for {@code videoFile}.
@@ -65,6 +75,85 @@ public class SidecarLocator {
 
     public Optional<Path> findBackdrop(Path videoFile) {
         return findArtwork(videoFile, BACKDROP_NAMES);
+    }
+
+    /**
+     * Whether {@code file} sits directly inside a folder the library treats as a shared
+     * poster source rather than content of its own. The scanner filters these out before
+     * they are ever offered as a candidate, the same way {@code Files.walk} never
+     * descends into the reasoning behind {@link #SUBTITLE_DIRS} — an asset folder is not
+     * a fact about what is playable.
+     */
+    public static boolean isInPosterFolder(Path file) {
+        Path folder = file.getParent();
+        if (folder == null || folder.getFileName() == null) {
+            return false;
+        }
+        return POSTER_FOLDER_NAMES.contains(folder.getFileName().toString().toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * A poster from a per-library posters folder (see {@link #POSTER_FOLDER_NAMES}),
+     * matched by the item's own title rather than by anything about the video file.
+     *
+     * <p>Unlike {@link #findLooseMatch}, which pairs a video against images in its own
+     * folder, this pairs a title against every image in one shared folder for the whole
+     * library — the household's answer to a disk with no per-file artwork at all: one
+     * clean image per title, named however is easiest, dropped in one place instead of
+     * beside forty video files individually.
+     */
+    public Optional<Path> findPosterByTitle(Path libraryRoot, String title) {
+        if (title == null || title.isBlank()) {
+            return Optional.empty();
+        }
+        Optional<Path> posterFolder = findPosterFolder(libraryRoot);
+        if (posterFolder.isEmpty()) {
+            return Optional.empty();
+        }
+        String titleKey = alnumKey(title);
+        if (titleKey.isBlank()) {
+            return Optional.empty();
+        }
+
+        Path best = null;
+        double bestScore = 0;
+        try (Stream<Path> entries = Files.list(posterFolder.get())) {
+            for (Path path : entries.filter(Files::isRegularFile).toList()) {
+                String name = path.getFileName().toString();
+                if (!IMAGE_EXTENSIONS.contains(MediaFiles.extension(name))) {
+                    continue;
+                }
+                String imageKey = alnumKey(MediaFiles.baseName(name));
+                if (imageKey.length() < LOOSE_MATCH_MIN_KEY_LENGTH) {
+                    continue;
+                }
+                double score = fullKeySimilarity(titleKey, imageKey);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = path;
+                }
+            }
+        } catch (IOException ex) {
+            log.debug("Could not list poster folder {}: {}", posterFolder.get(), ex.getMessage());
+        }
+
+        if (best == null || bestScore < TITLE_MATCH_THRESHOLD) {
+            return Optional.empty();
+        }
+        log.debug("Title-matched poster for '{}': {} (score {})", title, best.getFileName(), bestScore);
+        return Optional.of(best.toAbsolutePath().normalize());
+    }
+
+    private static Optional<Path> findPosterFolder(Path libraryRoot) {
+        try (Stream<Path> entries = Files.list(libraryRoot)) {
+            return entries
+                    .filter(Files::isDirectory)
+                    .filter(path -> POSTER_FOLDER_NAMES.contains(
+                            path.getFileName().toString().toLowerCase(Locale.ROOT)))
+                    .findFirst();
+        } catch (IOException ex) {
+            return Optional.empty();
+        }
     }
 
     private Optional<Path> findArtwork(Path videoFile, List<String> genericNames) {
@@ -170,6 +259,21 @@ public class SidecarLocator {
         String window = videoKey.substring(0, windowLength);
         int distance = levenshtein(window, imageKey);
         return 1.0 - ((double) distance / imageKey.length());
+    }
+
+    /** A title-vs-poster match should be near-exact, so a lower floor than the
+     * per-video loose match would risk pairing unrelated titles. */
+    private static final double TITLE_MATCH_THRESHOLD = 0.6;
+
+    /**
+     * Full-length similarity for two keys expected to already be close, e.g. a clean
+     * title against a clean poster filename — unlike {@link #loosePrefixSimilarity},
+     * neither side carries release-tag noise to window away.
+     */
+    private static double fullKeySimilarity(String a, String b) {
+        int distance = levenshtein(a, b);
+        int longer = Math.max(a.length(), b.length());
+        return longer == 0 ? 1.0 : 1.0 - ((double) distance / longer);
     }
 
     /** Two-row Levenshtein; these keys are short, so the quadratic cost is irrelevant. */

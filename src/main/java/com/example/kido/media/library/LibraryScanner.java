@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 import com.example.kido.common.ApiException;
 import com.example.kido.media.MediaFiles;
 import com.example.kido.media.MediaPaths;
+import com.example.kido.media.metadata.SidecarLocator;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -104,6 +105,7 @@ public class LibraryScanner {
             List<Path> candidates = walk
                     .filter(Files::isRegularFile)
                     .filter(MediaFiles::isMedia)
+                    .filter(path -> !SidecarLocator.isInPosterFolder(path))
                     .toList();
 
             log.info("Library '{}' [{}]: {} candidate files under {}",

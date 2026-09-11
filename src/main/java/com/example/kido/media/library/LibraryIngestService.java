@@ -53,6 +53,7 @@ public class LibraryIngestService {
     private static final int RECONCILE_PAGE_SIZE = 500;
 
     private final MediaProperties props;
+    private final MediaPaths paths;
     private final MediaItemRepository items;
     private final MediaChapterRepository chapters;
     private final NfoParser nfoParser;
@@ -61,6 +62,7 @@ public class LibraryIngestService {
     private final MediaProbe probe;
 
     public LibraryIngestService(MediaProperties props,
+                                MediaPaths paths,
                                 MediaItemRepository items,
                                 MediaChapterRepository chapters,
                                 NfoParser nfoParser,
@@ -68,6 +70,7 @@ public class LibraryIngestService {
                                 FilenameParser filenames,
                                 MediaProbe probe) {
         this.props = props;
+        this.paths = paths;
         this.items = items;
         this.chapters = chapters;
         this.nfoParser = nfoParser;
@@ -250,6 +253,14 @@ public class LibraryIngestService {
             }
             Path file = Path.of(item.getFilePath());
             String poster = sidecars.findPoster(file).map(Path::toString).orElse(null);
+            if (poster == null) {
+                // Nothing beside the file itself; try the library's shared posters
+                // folder, matched by title rather than by anything about the video.
+                poster = paths.libraryOf(file)
+                        .flatMap(root -> sidecars.findPosterByTitle(root.path(), item.getTitle()))
+                        .map(Path::toString)
+                        .orElse(null);
+            }
             String backdrop = sidecars.findBackdrop(file).map(Path::toString).orElse(null);
             if (poster == null && backdrop == null) {
                 continue;
