@@ -237,9 +237,12 @@ POST /api/media/library/scan             # admin key
 GET  /api/media/admin/matches            # "Fix wrong matches · N titles"
 ```
 
-`showTechnicalBadges` is stored server-side so it follows a person between
-devices. Missing: preferred subtitle language, and separate Wi-Fi vs mobile
-quality — there is one `awayMaxHeight` today, not a pair.
+`showTechnicalBadges`, `preferredLanguage` and `preferredGenres` are stored
+server-side so they follow a person between devices — the first-run questions
+answer to the account, not to one handset. Missing: separate Wi-Fi vs mobile
+quality — there is one `awayMaxHeight` today, not a pair. And nothing yet *reads*
+`preferredLanguage` when choosing a default audio or subtitle track, or
+`preferredGenres` when ordering a rail; both are stored and returned only.
 
 ### 11. Cast to TV — none
 
@@ -799,9 +802,18 @@ ffmpeg) or discards a prepared copy.
 `{ mediaItemId, atHome, originalBytes, transcodedBytes, transcodeHeight, uploadBitsPerSecond, originalFitsUpload, explanation }`
 
 **`GET /api/media/settings`**, **`PUT /api/media/settings`** →
-`{ profileId, awayBehaviour (ASK|SAVED_ONLY|STREAM), downloadHeight, awayMaxHeight, showTechnicalBadges }`
+`{ profileId, awayBehaviour (ASK|SAVED_ONLY|STREAM), downloadHeight, awayMaxHeight, showTechnicalBadges, preferredLanguage, preferredGenres }`
 
 PUT takes only the fields that changed.
+
+`preferredLanguage` is an ISO 639-1 code, lowercased on the way in, and
+`preferredGenres` is a list replaced wholesale — the client holds all of it on
+screen when it sends, so merging could only re-add what was just deselected.
+Since an absent field means "leave unchanged", the empty value is how either is
+cleared: `""` for the language, `[]` for the genres.
+
+Both are a hint for ordering, never a filter. A library this size has no business
+hiding two thirds of itself over three taps on a first-run screen.
 
 ### Owner only — admin key **and** PARENT
 

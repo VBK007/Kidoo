@@ -7,6 +7,7 @@ import com.example.kido.media.downloads.ProfileMediaSettings;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Size;
 
 /** Request and response shapes for offline copies and the away-from-home decision. */
 public final class DownloadDtos {
@@ -150,7 +151,9 @@ public final class DownloadDtos {
             String awayBehaviour,
             Integer downloadHeight,
             Integer awayMaxHeight,
-            boolean showTechnicalBadges) {
+            boolean showTechnicalBadges,
+            String preferredLanguage,
+            List<String> preferredGenres) {
 
         public static MediaSettingsDto from(ProfileMediaSettings settings) {
             return new MediaSettingsDto(
@@ -158,14 +161,25 @@ public final class DownloadDtos {
                     settings.getAwayBehaviour().name(),
                     settings.getDownloadHeight(),
                     settings.getAwayMaxHeight(),
-                    settings.isShowTechnicalBadges());
+                    settings.isShowTechnicalBadges(),
+                    settings.getPreferredLanguage(),
+                    List.copyOf(settings.getPreferredGenres()));
         }
     }
 
-    /** Every field optional: the client sends only what changed. */
+    /**
+     * Every field optional: the client sends only what changed.
+     *
+     * <p>Which leaves no way to say "forget this" with null, so the empty value does it
+     * instead — {@code ""} clears the language, {@code []} clears the genres. The
+     * alternative is a per-field "cleared" flag, which is more wire for a case that
+     * amounts to someone changing their mind on a settings screen.
+     */
     public record UpdateMediaSettingsRequest(
             String awayBehaviour,
             @Min(240) @Max(4320) Integer downloadHeight,
             @Min(240) @Max(4320) Integer awayMaxHeight,
-            Boolean showTechnicalBadges) {}
+            Boolean showTechnicalBadges,
+            @Size(max = 16) String preferredLanguage,
+            @Size(max = 32) List<@Size(max = 128) String> preferredGenres) {}
 }

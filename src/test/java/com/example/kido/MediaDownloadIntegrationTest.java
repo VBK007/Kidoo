@@ -501,6 +501,50 @@ class MediaDownloadIntegrationTest {
                 "{\"awayBehaviour\":\"nonsense\"}").statusCode());
     }
 
+    /** The first-run questions, which used to be answered to the handset and nobody else. */
+    @Test
+    void languageAndGenresSurviveAReinstall() throws Exception {
+        HttpResponse<String> updated = send("PUT", "/api/media/settings",
+                "{\"preferredLanguage\":\"TA\",\"preferredGenres\":[\"Action\",\"Drama\"]}");
+        assertEquals(200, updated.statusCode(), updated.body());
+
+        // Lowercased on the way in, so a client sending TA and one sending ta do not
+        // produce two different stored answers.
+        HttpResponse<String> reread = send("GET", "/api/media/settings", null);
+        assertTrue(reread.body().contains("\"preferredLanguage\":\"ta\""), reread.body());
+        assertTrue(reread.body().contains("\"preferredGenres\":[\"Action\",\"Drama\"]"),
+                reread.body());
+    }
+
+    /** Sent wholesale, so deselecting a genre has to actually remove it. */
+    @Test
+    void genresAreReplacedRatherThanMerged() throws Exception {
+        send("PUT", "/api/media/settings", "{\"preferredGenres\":[\"Action\",\"Drama\"]}");
+        send("PUT", "/api/media/settings", "{\"preferredGenres\":[\"  Comedy \",\"comedy\",\"\"]}");
+
+        HttpResponse<String> reread = send("GET", "/api/media/settings", null);
+        assertTrue(reread.body().contains("\"preferredGenres\":[\"Comedy\"]"), reread.body());
+    }
+
+    /** Absent leaves a field alone; empty is how the client says "forget it". */
+    @Test
+    void omittedPreferencesAreLeftAloneAndEmptyClearsThem() throws Exception {
+        send("PUT", "/api/media/settings",
+                "{\"preferredLanguage\":\"ta\",\"preferredGenres\":[\"Action\"]}");
+        send("PUT", "/api/media/settings", "{\"awayMaxHeight\":720}");
+
+        HttpResponse<String> kept = send("GET", "/api/media/settings", null);
+        assertTrue(kept.body().contains("\"preferredLanguage\":\"ta\""), kept.body());
+        assertTrue(kept.body().contains("\"preferredGenres\":[\"Action\"]"), kept.body());
+
+        send("PUT", "/api/media/settings",
+                "{\"preferredLanguage\":\"\",\"preferredGenres\":[]}");
+
+        HttpResponse<String> cleared = send("GET", "/api/media/settings", null);
+        assertTrue(cleared.body().contains("\"preferredLanguage\":null"), cleared.body());
+        assertTrue(cleared.body().contains("\"preferredGenres\":[]"), cleared.body());
+    }
+
     @Test
     void nonVideoCannotBeDownloaded() throws Exception {
         MediaItem song = items.save(MediaItem.builder()

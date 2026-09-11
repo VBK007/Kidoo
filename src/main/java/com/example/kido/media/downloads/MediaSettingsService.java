@@ -1,7 +1,11 @@
 package com.example.kido.media.downloads;
 
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -52,8 +56,43 @@ public class MediaSettingsService {
         if (request.showTechnicalBadges() != null) {
             settings.setShowTechnicalBadges(request.showTechnicalBadges());
         }
+        if (request.preferredLanguage() != null) {
+            // Blank is "no language chosen", not the empty string: a column holding ""
+            // would satisfy every null check downstream and mean nothing.
+            String code = request.preferredLanguage().trim().toLowerCase(Locale.ROOT);
+            settings.setPreferredLanguage(code.isEmpty() ? null : code);
+        }
+        if (request.preferredGenres() != null) {
+            // Replaced wholesale rather than merged. The client holds the entire list on
+            // screen when it sends this, so a merge could only ever add genres somebody
+            // has just deselected.
+            settings.getPreferredGenres().clear();
+            settings.getPreferredGenres().addAll(cleanGenres(request.preferredGenres()));
+        }
         settings.setUpdatedAt(Instant.now());
         return repository.save(settings);
+    }
+
+    /**
+     * Trims, drops blanks and de-duplicates case-insensitively, keeping the order sent.
+     *
+     * <p>Casing is preserved as given, since these are shown back to the person who
+     * chose them and "sci-fi" reads better than "SCI-FI". Matching against the library
+     * is case-insensitive anyway.
+     */
+    private static Set<String> cleanGenres(List<String> raw) {
+        Set<String> seen = new HashSet<>();
+        Set<String> cleaned = new LinkedHashSet<>();
+        for (String genre : raw) {
+            if (genre == null) {
+                continue;
+            }
+            String trimmed = genre.trim();
+            if (!trimmed.isEmpty() && seen.add(trimmed.toLowerCase(Locale.ROOT))) {
+                cleaned.add(trimmed);
+            }
+        }
+        return cleaned;
     }
 
     private static ProfileMediaSettings.AwayBehaviour parseBehaviour(String raw) {
