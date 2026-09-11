@@ -124,7 +124,12 @@ public class SidecarLocator {
                     continue;
                 }
                 String imageKey = alnumKey(MediaFiles.baseName(name));
-                if (imageKey.length() < LOOSE_MATCH_MIN_KEY_LENGTH) {
+                // Lower than the per-video loose match's floor: a title is curated
+                // text, not a noisy release slug, so a real four-letter title like
+                // "Trip" must not be thrown out before it even gets scored — the edit
+                // distance in fullKeySimilarity is what guards against a coincidental
+                // short match, not the length on its own.
+                if (imageKey.length() < TITLE_MATCH_MIN_KEY_LENGTH) {
                     continue;
                 }
                 double score = fullKeySimilarity(titleKey, imageKey);
@@ -264,6 +269,10 @@ public class SidecarLocator {
     /** A title-vs-poster match should be near-exact, so a lower floor than the
      * per-video loose match would risk pairing unrelated titles. */
     private static final double TITLE_MATCH_THRESHOLD = 0.6;
+
+    /** A title can legitimately be this short ("Trip", "Up", "It"); the edit-distance
+     * threshold above is what keeps a short match honest, not this floor. */
+    private static final int TITLE_MATCH_MIN_KEY_LENGTH = 2;
 
     /**
      * Full-length similarity for two keys expected to already be close, e.g. a clean
