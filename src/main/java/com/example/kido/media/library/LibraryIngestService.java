@@ -304,13 +304,34 @@ public class LibraryIngestService {
         return poster != null ? poster : titleMatchedPoster(file, title);
     }
 
-    /** Nothing beside the file itself; try the library's shared posters folder,
-     * matched by title rather than by anything about the video. */
+    /**
+     * Nothing beside the file itself; try every configured library's shared posters
+     * folder, matched by title rather than by anything about the video.
+     *
+     * <p>Every root is checked, not just the one this file happens to live in: a
+     * posters folder is a household convenience, filed under whichever library was
+     * open at the time, and there is no reason its coverage should stop at that
+     * library's own boundary when a film in a different root shares the exact same
+     * title. The item's own library is tried first, purely so the common case (a
+     * posters folder actually meant for this library) does not pay for checking the
+     * others.
+     */
     private String titleMatchedPoster(Path file, String title) {
-        return paths.libraryOf(file)
-                .flatMap(root -> sidecars.findPosterByTitle(root.path(), title))
-                .map(Path::toString)
-                .orElse(null);
+        Optional<MediaPaths.LibraryRoot> own = paths.libraryOf(file);
+        Optional<Path> ownMatch = own.flatMap(root -> sidecars.findPosterByTitle(root.path(), title));
+        if (ownMatch.isPresent()) {
+            return ownMatch.get().toString();
+        }
+        for (MediaPaths.LibraryRoot root : paths.libraryRoots()) {
+            if (own.isPresent() && root.path().equals(own.get().path())) {
+                continue;
+            }
+            Optional<Path> match = sidecars.findPosterByTitle(root.path(), title);
+            if (match.isPresent()) {
+                return match.get().toString();
+            }
+        }
+        return null;
     }
 
     /** Unreadable counts as "not below the floor" — nothing to churn toward if the
