@@ -152,7 +152,8 @@ public final class CatalogDtos {
             boolean watched,
             long viewCount,
             long likeCount,
-            boolean liked) {}
+            boolean liked,
+            long commentCount) {}
 
     public record ItemPageDto(
             List<ItemSummaryDto> items,

@@ -94,6 +94,26 @@ public class MediaProperties {
     /** Target HLS segment length in seconds. */
     private int hlsSegmentSeconds = 6;
 
+    /**
+     * Where artwork uploaded through the admin API is kept.
+     *
+     * <p>Deliberately not a media library and deliberately not the temp directory. Not a
+     * library, because writing into somebody's movie folders on their behalf is not this
+     * server's business and a rescan would then treat the file as sidecar artwork it
+     * owns. Not the temp directory, unlike the transcode and download scratch space,
+     * because a poster somebody uploaded is content rather than a working file and has
+     * to survive a reboot.
+     */
+    private String artworkDir = "data/artwork";
+
+    /**
+     * Largest artwork upload accepted, in megabytes.
+     *
+     * <p>A poster is a few hundred kilobytes; anything near this ceiling is a camera
+     * original that will be scaled to a thumbnail anyway.
+     */
+    private int artworkMaxSizeMb = 10;
+
     @Getter
     @Setter
     private Trickplay trickplay = new Trickplay();

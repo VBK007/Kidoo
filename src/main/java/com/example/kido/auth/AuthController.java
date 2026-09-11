@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.example.kido.auth.dto.AuthResponse;
 import com.example.kido.auth.dto.FirebaseLoginRequest;
 import com.example.kido.auth.dto.LoginRequest;
+import com.example.kido.auth.dto.RefreshRequest;
 import com.example.kido.auth.dto.RegisterRequest;
 import com.example.kido.auth.dto.UserDto;
 import com.example.kido.user.AppUser;
@@ -50,6 +51,21 @@ public class AuthController {
     public ResponseEntity<AuthResponse> firebase(
             @Valid @RequestBody FirebaseLoginRequest request) {
         return ResponseEntity.ok(authService.loginWithFirebase(request));
+    }
+
+    /**
+     * Trades a refresh token for a new access token, no password involved.
+     *
+     * <p>Public, like login, because the access token that would authenticate the call
+     * is exactly the thing that has expired by the time a client needs this. The refresh
+     * token in the body is the credential.
+     *
+     * <p>The response carries a <em>new</em> refresh token as well: the one just sent is
+     * spent and will not work twice. Clients must overwrite what they stored.
+     */
+    @PostMapping("/refresh")
+    public ResponseEntity<AuthResponse> refresh(@Valid @RequestBody RefreshRequest request) {
+        return ResponseEntity.ok(authService.refresh(request));
     }
 
     @GetMapping("/me")

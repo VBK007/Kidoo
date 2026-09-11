@@ -9,6 +9,7 @@ import java.util.UUID;
 import com.example.kido.auth.dto.AuthResponse;
 import com.example.kido.auth.dto.FirebaseLoginRequest;
 import com.example.kido.auth.dto.LoginRequest;
+import com.example.kido.auth.dto.RefreshRequest;
 import com.example.kido.auth.dto.RegisterRequest;
 import com.example.kido.auth.dto.UserDto;
 import com.example.kido.common.ApiException;
@@ -29,15 +30,18 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final FirebaseVerifier firebase;
+    private final RefreshTokenService refreshTokens;
 
     public AuthService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
                        JwtService jwtService,
-                       FirebaseVerifier firebase) {
+                       FirebaseVerifier firebase,
+                       RefreshTokenService refreshTokens) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.firebase = firebase;
+        this.refreshTokens = refreshTokens;
     }
 
     /**
@@ -83,7 +87,7 @@ public class AuthService {
         });
 
         log.info("Google sign-in success for id={} email='{}'", user.getId(), key);
-        return new AuthResponse(jwtService.generateToken(user), UserDto.from(user));
+        return session(user);
     }
 
     /** `arun@gmail.com` becomes `arun`, then `arun2`, `arun3` … if already taken. */
@@ -126,7 +130,7 @@ public class AuthService {
 
         AppUser saved = userRepository.save(user);
         log.info("Registered new user id={} username='{}' role={}", saved.getId(), username, saved.getRole());
-        return new AuthResponse(jwtService.generateToken(saved), UserDto.from(saved));
+        return session(saved);
     }
 
     public AuthResponse login(LoginRequest req) {
@@ -144,6 +148,40 @@ public class AuthService {
         }
 
         log.info("Login success for username='{}' id={}", user.getUsername(), user.getId());
-        return new AuthResponse(jwtService.generateToken(user), UserDto.from(user));
+        return session(user);
+    }
+
+    /**
+     * Issues a new access token against a refresh token, without a password.
+     *
+     * <p>The refresh token is rotated in the same breath, so the response carries a
+     * replacement the client must store in place of the one it sent.
+     *
+     * <p>The user is loaded rather than taken on trust from the token: an account
+     * deleted since the token was minted must not keep refreshing its way back in, and
+     * a role changed since then takes effect on the next refresh rather than whenever
+     * the old access token happens to lapse.
+     */
+    public AuthResponse refresh(RefreshRequest req) {
+        RefreshTokenService.Rotation rotation = refreshTokens.rotate(req.refreshToken().trim());
+
+        AppUser user = userRepository.findById(rotation.userId())
+                .orElseThrow(() -> {
+                    log.warn("Refresh token valid but user id={} no longer exists",
+                            rotation.userId());
+                    return new ApiException(HttpStatus.UNAUTHORIZED,
+                            "Refresh token is invalid or expired");
+                });
+
+        log.info("Refreshed session for username='{}' id={}", user.getUsername(), user.getId());
+        return new AuthResponse(jwtService.generateToken(user), rotation.refreshToken(),
+                UserDto.from(user));
+    }
+
+    /** The pair of tokens and the account behind them — what every sign-in returns. */
+    private AuthResponse session(AppUser user) {
+        return new AuthResponse(jwtService.generateToken(user),
+                refreshTokens.issue(user.getId()),
+                UserDto.from(user));
     }
 }

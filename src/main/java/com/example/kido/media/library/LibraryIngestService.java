@@ -196,6 +196,11 @@ public class LibraryIngestService {
             }
             List<MediaItem> gone = new ArrayList<>();
             for (MediaItem item : page.getContent()) {
+                // A catalogued title has no file for the walk to have seen, and marking
+                // it missing would hide every entry the admin API ever created.
+                if (item.isCatalogOnly()) {
+                    continue;
+                }
                 if (!seen.contains(item.getFilePath())) {
                     item.setMissing(true);
                     item.setUpdatedAt(Instant.now());

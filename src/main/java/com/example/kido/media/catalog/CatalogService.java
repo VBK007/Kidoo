@@ -33,6 +33,7 @@ import com.example.kido.media.dto.CatalogDtos.SubtitleTrackDto;
 import com.example.kido.media.dto.CatalogDtos.TimelineDto;
 import com.example.kido.media.dto.CatalogDtos.TimelineGroupDto;
 import com.example.kido.media.dto.PlayerDtos.AudioTrackDto;
+import com.example.kido.media.engagement.CommentService;
 import com.example.kido.media.engagement.LikeService;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.playback.PlaybackProgress;
@@ -64,17 +65,20 @@ public class CatalogService {
     private final MediaItemRepository items;
     private final PlaybackService playback;
     private final LikeService likes;
+    private final CommentService comments;
     private final MediaPaths paths;
     private final SidecarLocator sidecars;
 
     public CatalogService(MediaItemRepository items,
                           PlaybackService playback,
                           LikeService likes,
+                          CommentService comments,
                           MediaPaths paths,
                           SidecarLocator sidecars) {
         this.items = items;
         this.playback = playback;
         this.likes = likes;
+        this.comments = comments;
         this.paths = paths;
         this.sidecars = sidecars;
     }
@@ -194,7 +198,8 @@ public class CatalogService {
                 progress != null && progress.isWatched(),
                 item.playCount(),
                 item.getLikeCount(),
-                !likes.likedItemIds(profile, List.of(itemId)).isEmpty());
+                !likes.likedItemIds(profile, List.of(itemId)).isEmpty(),
+                comments.countFor(itemId));
     }
 
     /** Library header counts, per-category breakdown and the genre facet list. */

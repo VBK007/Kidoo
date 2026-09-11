@@ -31,8 +31,11 @@ import lombok.extern.slf4j.Slf4j;
 public class MediaPaths {
 
     private final List<LibraryRoot> roots;
+    private final Path artworkDir;
 
     public MediaPaths(MediaProperties props) {
+        this.artworkDir = Path.of(props.getArtworkDir().trim())
+                .toAbsolutePath().normalize();
         List<LibraryRoot> resolved = new ArrayList<>();
         for (MediaProperties.Library library : props.effectiveLibraries()) {
             try {
@@ -82,6 +85,28 @@ public class MediaPaths {
      * @throws ApiException 404 if the file is gone, 403 if it resolves outside every root
      */
     public Path requireWithinRoots(String raw) {
+        return resolveWithin(raw, false);
+    }
+
+    /**
+     * The same check for an image, widened to include the artwork directory.
+     *
+     * <p>Artwork reaches a row from two places: found beside the video during a scan,
+     * which puts it inside a library root, or uploaded through the admin API, which puts
+     * it here. Both are served by the same endpoint, so the gate has to admit both —
+     * and nothing else, which is why this is a second allowed base rather than a flag
+     * that skips the check.
+     */
+    public Path requireImage(String raw) {
+        return resolveWithin(raw, true);
+    }
+
+    /** Where uploaded artwork is written. Created by the caller that writes to it. */
+    public Path artworkDir() {
+        return artworkDir;
+    }
+
+    private Path resolveWithin(String raw, boolean allowArtwork) {
         if (raw == null || raw.isBlank()) {
             throw new ApiException(HttpStatus.NOT_FOUND, "File not available");
         }
@@ -95,6 +120,9 @@ public class MediaPaths {
             throw new ApiException(HttpStatus.NOT_FOUND, "File no longer on disk");
         }
         Path real = realOrNormalized(candidate);
+        if (allowArtwork && real.startsWith(realOrNormalized(artworkDir))) {
+            return real;
+        }
         for (LibraryRoot root : roots) {
             if (real.startsWith(root.path())) {
                 return real;

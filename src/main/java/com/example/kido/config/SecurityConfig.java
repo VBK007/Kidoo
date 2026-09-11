@@ -34,9 +34,13 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        // Only registration and login are public; everything else
-                        // (including /api/auth/me) requires a valid token.
-                        .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login", "/api/auth/firebase").permitAll()
+                        // Only the ways of starting or renewing a session are public;
+                        // everything else (including /api/auth/me) requires a valid
+                        // token. /refresh belongs here rather than behind the filter:
+                        // it is reached exactly when the access token has expired, and
+                        // the refresh token in the body is the credential it checks.
+                        .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login",
+                                "/api/auth/firebase", "/api/auth/refresh").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
                         // The watch party socket authenticates during its handshake:
                         // a browser cannot put a bearer token on a WebSocket, so the

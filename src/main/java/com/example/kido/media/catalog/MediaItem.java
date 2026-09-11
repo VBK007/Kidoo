@@ -108,6 +108,22 @@ public class MediaItem {
     @Builder.Default
     private boolean hidden = false;
 
+    /**
+     * A title entered through the admin API with no file behind it — something the
+     * household means to get hold of, or a disc on the shelf that was never ripped.
+     *
+     * <p>Exempt from the reconciliation sweep, which is the whole reason the flag
+     * exists: that sweep marks any row whose path it did not find on disk as
+     * {@link #missing}, and a catalogued title has no path to find. Without this it
+     * would browse correctly until the first scan and then quietly vanish.
+     *
+     * <p>It still browses and still takes likes and comments. What it cannot do is
+     * play — the playback layer resolves a real file or refuses, unchanged.
+     */
+    @Column(name = "catalog_only", nullable = false)
+    @Builder.Default
+    private boolean catalogOnly = false;
+
     // --- descriptive metadata ---
 
     @Column(nullable = false, length = 512)
