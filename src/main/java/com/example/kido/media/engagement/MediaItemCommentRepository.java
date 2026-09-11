@@ -11,4 +11,7 @@ public interface MediaItemCommentRepository extends JpaRepository<MediaItemComme
                                                                 Pageable pageable);
 
     long countByMediaItemId(String mediaItemId);
+
+    /** Every comment on an item, e.g. when the item itself is being purged. */
+    void deleteByMediaItemId(String mediaItemId);
 }

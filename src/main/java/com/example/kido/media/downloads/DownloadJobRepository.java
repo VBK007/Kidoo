@@ -35,6 +35,13 @@ public interface DownloadJobRepository extends JpaRepository<DownloadJob, String
 
     List<DownloadJob> findByStateIn(List<DownloadJob.State> states);
 
+    /**
+     * Every job for an item, e.g. when the item itself is being purged. Only the row
+     * goes here — any prepared file already sitting in the download cache is reclaimed
+     * by that cache's own retention sweep, not by this delete.
+     */
+    void deleteByMediaItemId(String mediaItemId);
+
     /** Oldest queued job first — the worker takes them in order. */
     Optional<DownloadJob> findFirstByStateOrderByCreatedAtAsc(DownloadJob.State state);
 

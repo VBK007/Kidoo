@@ -59,4 +59,7 @@ public interface WatchEventRepository extends JpaRepository<WatchEvent, String> 
 
     /** Housekeeping: events older than the retention window are not worth keeping. */
     void deleteByOccurredAtLessThan(Instant cutoff);
+
+    /** Every watch event for an item, e.g. when the item itself is being purged. */
+    void deleteByMediaItemId(String mediaItemId);
 }

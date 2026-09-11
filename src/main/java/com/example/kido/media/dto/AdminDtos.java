@@ -174,4 +174,7 @@ public final class AdminDtos {
 
     /** Result of backfilling demo rating/view numbers onto movies that had none. */
     public record SeedResultDto(long moviesUpdated, String detail) {}
+
+    /** Result of removing rows a scan could no longer find on disk. */
+    public record PurgeMissingResultDto(long itemsRemoved, String detail) {}
 }

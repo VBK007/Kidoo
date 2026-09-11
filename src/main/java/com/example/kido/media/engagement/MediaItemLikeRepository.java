@@ -13,6 +13,9 @@ public interface MediaItemLikeRepository extends JpaRepository<MediaItemLike, St
 
     void deleteByProfileIdAndMediaItemId(String profileId, String mediaItemId);
 
+    /** Every like for an item, e.g. when the item itself is being purged. */
+    void deleteByMediaItemId(String mediaItemId);
+
     long countByMediaItemId(String mediaItemId);
 
     /**

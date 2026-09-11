@@ -19,6 +19,7 @@ import com.example.kido.common.ApiException;
 import com.example.kido.media.dto.AdminDtos.DiskTabDto;
 import com.example.kido.media.dto.AdminDtos.HealthTabDto;
 import com.example.kido.media.dto.AdminDtos.PeopleTabDto;
+import com.example.kido.media.dto.AdminDtos.PurgeMissingResultDto;
 import com.example.kido.media.dto.AdminDtos.PurgeResultDto;
 import com.example.kido.media.dto.AdminDtos.SeedResultDto;
 import com.example.kido.media.dto.AdminDtos.SessionDto;
@@ -43,13 +44,16 @@ public class AdminController {
 
     private final AdminService admin;
     private final DiskService disk;
+    private final MissingItemPurgeService missingItems;
     private final String adminKey;
 
     public AdminController(AdminService admin,
                            DiskService disk,
+                           MissingItemPurgeService missingItems,
                            @Value("${app.admin.api-key}") String adminKey) {
         this.admin = admin;
         this.disk = disk;
+        this.missingItems = missingItems;
         this.adminKey = adminKey;
     }
 
@@ -124,6 +128,27 @@ public class AdminController {
                                          @RequestHeader(value = "X-Admin-Key", required = false) String key) {
         requireOwner(user, key);
         return admin.backfillArtwork();
+    }
+
+    /**
+     * Removes rows a scan could no longer find on disk — a file actually deleted, or
+     * (the common case right after a matching fix ships) a row that should never have
+     * been indexed as its own catalog entry, like an image the scanner used to walk
+     * into a shared posters folder before it learned to skip those. Missing rows are
+     * kept by default so a disk being unmounted does not wipe out watch progress; this
+     * is the explicit, owner-triggered "no, it's really gone" for when that default no
+     * longer applies.
+     */
+    @DeleteMapping("/missing-items")
+    public PurgeMissingResultDto purgeMissingItems(
+            @AuthenticationPrincipal AppUser user,
+            @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        requireOwner(user, key);
+        int removed = missingItems.purge();
+        return new PurgeMissingResultDto(removed,
+                removed == 0
+                        ? "Nothing to remove — no item is currently marked missing"
+                        : "Removed " + removed + " item(s) no longer found on disk");
     }
 
     // --- Disk tab ---

@@ -32,6 +32,14 @@ public interface MediaItemRepository
     Page<MediaItem> findByMissingFalse(Pageable pageable);
 
     /**
+     * Every row a scan could no longer find on disk. Unbounded like {@link
+     * #findByMissingFalse()} above — the admin purge action is the only caller, run by
+     * hand rather than on a schedule, so a library large enough for this to matter is
+     * also large enough that its owner would rather page through {@code /disk} first.
+     */
+    List<MediaItem> findByMissingTrue();
+
+    /**
      * Count and bytes of titles every profile has finished and nobody has touched
      * since {@code cutoff}.
      *

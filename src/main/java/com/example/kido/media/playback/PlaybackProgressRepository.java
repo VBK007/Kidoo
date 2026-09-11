@@ -26,6 +26,9 @@ public interface PlaybackProgressRepository extends JpaRepository<PlaybackProgre
 
     void deleteByProfileIdAndMediaItemId(String profileId, String mediaItemId);
 
+    /** Every profile's progress on an item, e.g. when the item itself is being purged. */
+    void deleteByMediaItemId(String mediaItemId);
+
     /** Watch hours per day, for the admin panel's 7-day chart. */
     @Query("""
             select p.profileId, sum(p.positionSeconds) from PlaybackProgress p
