@@ -40,6 +40,8 @@ public class CatalogController {
      * @param category chip value: {@code all} (default), {@code FILM}, {@code ANIME},
      *                 {@code HOME_VIDEO} (or {@code ours}), {@code MUSIC}, {@code PHOTO}
      * @param q        optional title or filename search
+     * @param person   optional exact match against a tagged cast/crew name, for
+     *                 browsing a title's cast list back into the grid
      * @param unwatched restrict to unfinished items, for the {@code UNWATCHED} chip
      * @param minHeight minimum vertical resolution, for the {@code 4K ONLY} chip (2160)
      * @param sort     {@code added} (default, newest first — so a movie just dropped
@@ -52,12 +54,13 @@ public class CatalogController {
                               @RequestParam(defaultValue = "all") String category,
                               @RequestParam(required = false) String q,
                               @RequestParam(required = false) String genre,
+                              @RequestParam(required = false) String person,
                               @RequestParam(defaultValue = "false") boolean unwatched,
                               @RequestParam(required = false) Integer minHeight,
                               @RequestParam(defaultValue = "added") String sort,
                               @RequestParam(defaultValue = "0") int page,
                               @RequestParam(defaultValue = "40") int size) {
-        return service.browse(profile, category, q, genre, sort, unwatched, minHeight, page, size);
+        return service.browse(profile, category, q, genre, person, sort, unwatched, minHeight, page, size);
     }
 
     @GetMapping("/items/{id}")

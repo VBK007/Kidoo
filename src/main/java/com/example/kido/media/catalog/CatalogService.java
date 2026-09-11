@@ -87,6 +87,7 @@ public class CatalogService {
      * @param category optional {@link MediaType} chip value; null or {@code all} for everything
      * @param query    optional case-insensitive substring match on title
      * @param genre    optional exact genre match
+     * @param person   optional exact match against a tagged cast/crew name
      * @param sort     one of {@code title}, {@code added}, {@code year}, {@code rating}
      * @param unwatched restrict to items this profile has not finished
      */
@@ -95,6 +96,7 @@ public class CatalogService {
                               String category,
                               String query,
                               String genre,
+                              String person,
                               String sort,
                               boolean unwatched,
                               Integer minHeight,
@@ -109,6 +111,7 @@ public class CatalogService {
         spec = and(spec, ofCategory(category));
         spec = and(spec, matchesTitle(query));
         spec = and(spec, hasGenre(genre));
+        spec = and(spec, hasPerson(person));
         spec = and(spec, atLeastHeight(minHeight));
 
         Page<MediaItem> results = items.findAll(
@@ -486,6 +489,22 @@ public class CatalogService {
             }
             return cb.equal(cb.lower(root.join("genres", JoinType.INNER)),
                     genre.toLowerCase(Locale.ROOT));
+        };
+    }
+
+    /** Backs browsing a title's cast list back into the grid, e.g. "more with Kristen Stewart". */
+    private static Specification<MediaItem> hasPerson(String person) {
+        if (person == null || person.isBlank()) {
+            return null;
+        }
+        return (root, query, cb) -> {
+            // Same reasoning as hasGenre: the join multiplies rows, so the derived
+            // count query needs the same distinct treatment.
+            if (query != null) {
+                query.distinct(true);
+            }
+            return cb.equal(cb.lower(root.join("people", JoinType.INNER)),
+                    person.toLowerCase(Locale.ROOT));
         };
     }
 
