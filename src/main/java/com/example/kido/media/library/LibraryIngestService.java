@@ -31,6 +31,7 @@ import com.example.kido.media.metadata.FilenameParser;
 import com.example.kido.media.metadata.NfoParser;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.metadata.SidecarMetadata;
+import com.example.kido.media.probe.ImageProbe;
 import com.example.kido.media.probe.MediaChapter;
 import com.example.kido.media.probe.MediaChapterRepository;
 import com.example.kido.media.probe.MediaProbe;
@@ -60,6 +61,7 @@ public class LibraryIngestService {
     private final SidecarLocator sidecars;
     private final FilenameParser filenames;
     private final MediaProbe probe;
+    private final ImageProbe images;
 
     public LibraryIngestService(MediaProperties props,
                                 MediaPaths paths,
@@ -68,7 +70,8 @@ public class LibraryIngestService {
                                 NfoParser nfoParser,
                                 SidecarLocator sidecars,
                                 FilenameParser filenames,
-                                MediaProbe probe) {
+                                MediaProbe probe,
+                                ImageProbe images) {
         this.props = props;
         this.paths = paths;
         this.items = items;
@@ -77,6 +80,7 @@ public class LibraryIngestService {
         this.sidecars = sidecars;
         this.filenames = filenames;
         this.probe = probe;
+        this.images = images;
     }
 
     /** What {@link #ingest} did with a file, so the scanner can keep its counters. */
@@ -229,53 +233,95 @@ public class LibraryIngestService {
         return marked;
     }
 
+    /** Below this, a poster is a banner-style thumbnail rather than real key art. */
+    private static final int MIN_POSTER_WIDTH = 500;
+    private static final int MIN_POSTER_HEIGHT = 750;
+
     /**
-     * Re-derives artwork for every video that still has none.
+     * Re-derives artwork for every video with none, and upgrades one that is present
+     * but too small to be a real poster.
      *
      * <p>{@link #ingest} only resolves {@code posterPath}/{@code backdropPath} for a
      * file it treats as new or changed — a file whose size and modified time already
      * match its row takes the cheap {@link Outcome#UNCHANGED} path and skips metadata
      * entirely, artwork included. That means an improvement to how artwork is matched
      * never reaches an already-indexed file on its own, so the scanner calls this once
-     * at the end of every pass: cheap for a home library (one filesystem check per
-     * posterless row) and it means a looser match — or artwork simply added to a folder
-     * after the fact — catches up within one scan interval instead of needing a manual
-     * trigger.
+     * at the end of every pass: cheap for a home library (one filesystem check per row,
+     * one ffprobe per poster) and it means a looser match, a shared posters folder, or
+     * artwork simply added after the fact all catch up within one scan interval instead
+     * of needing a manual trigger.
      *
-     * @return how many items gained artwork
+     * <p>An existing poster is only ever replaced by one that clears the size floor
+     * itself — trading a bad thumbnail for an equally bad one on every single scan would
+     * be pure churn with nothing to show for it.
+     *
+     * @return how many items' artwork changed
      */
     @Transactional
     public int backfillArtwork() {
         List<MediaItem> updated = new ArrayList<>();
         for (MediaItem item : items.findByMissingFalse()) {
-            if (!item.getType().isVideo() || item.hasPoster()) {
+            if (!item.getType().isVideo()) {
                 continue;
             }
             Path file = Path.of(item.getFilePath());
-            String poster = sidecars.findPoster(file).map(Path::toString).orElse(null);
-            if (poster == null) {
-                // Nothing beside the file itself; try the library's shared posters
-                // folder, matched by title rather than by anything about the video.
-                poster = paths.libraryOf(file)
-                        .flatMap(root -> sidecars.findPosterByTitle(root.path(), item.getTitle()))
-                        .map(Path::toString)
-                        .orElse(null);
+            boolean changed = false;
+
+            if (!item.hasPoster()) {
+                String poster = findAnyPoster(file, item.getTitle());
+                if (poster != null) {
+                    item.setPosterPath(poster);
+                    changed = true;
+                }
+            } else if (isBelowPosterFloor(item.getPosterPath())) {
+                String upgrade = titleMatchedPoster(file, item.getTitle());
+                if (upgrade != null && !upgrade.equals(item.getPosterPath())
+                        && !isBelowPosterFloor(upgrade)) {
+                    item.setPosterPath(upgrade);
+                    changed = true;
+                }
             }
-            String backdrop = sidecars.findBackdrop(file).map(Path::toString).orElse(null);
-            if (poster == null && backdrop == null) {
-                continue;
+
+            if (!item.hasBackdrop()) {
+                String backdrop = sidecars.findBackdrop(file).map(Path::toString).orElse(null);
+                if (backdrop != null) {
+                    item.setBackdropPath(backdrop);
+                    changed = true;
+                }
             }
-            if (poster != null) {
-                item.setPosterPath(poster);
+
+            if (changed) {
+                item.setUpdatedAt(Instant.now());
+                updated.add(item);
             }
-            if (backdrop != null) {
-                item.setBackdropPath(backdrop);
-            }
-            item.setUpdatedAt(Instant.now());
-            updated.add(item);
         }
         items.saveAll(updated);
         return updated.size();
+    }
+
+    private String findAnyPoster(Path file, String title) {
+        String poster = sidecars.findPoster(file).map(Path::toString).orElse(null);
+        return poster != null ? poster : titleMatchedPoster(file, title);
+    }
+
+    /** Nothing beside the file itself; try the library's shared posters folder,
+     * matched by title rather than by anything about the video. */
+    private String titleMatchedPoster(Path file, String title) {
+        return paths.libraryOf(file)
+                .flatMap(root -> sidecars.findPosterByTitle(root.path(), title))
+                .map(Path::toString)
+                .orElse(null);
+    }
+
+    /** Unreadable counts as "not below the floor" — nothing to churn toward if the
+     * current poster's own dimensions cannot be determined. */
+    private boolean isBelowPosterFloor(String posterPath) {
+        if (posterPath == null) {
+            return true;
+        }
+        return images.dimensions(Path.of(posterPath))
+                .map(d -> !d.atLeast(MIN_POSTER_WIDTH, MIN_POSTER_HEIGHT))
+                .orElse(false);
     }
 
     /** Probes on demand for a row indexed while {@code probe-on-scan} was off. */
