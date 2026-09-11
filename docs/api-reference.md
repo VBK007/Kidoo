@@ -31,7 +31,7 @@ isolates transport in `data/remote`, so it is a one-file change on the client.
 
 | Header | When | Notes |
 | --- | --- | --- |
-| `Authorization: Bearer <jwt>` | Everything except `/api/health`, `/api/auth/register`, `/api/auth/login` | Register returns **201** with a token. Pass `"role":"PARENT"` to create an owner account. |
+| `Authorization: Bearer <jwt>` | Everything except `/api/health`, `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh` | Register returns **201** with a token. Pass `"role":"PARENT"` to create an owner account. The same response carries a `refreshToken` — see **Sessions**. |
 | `X-Profile-Id: <profileId>` | All profile-scoped media calls | Resume points, downloads, settings and unwatched marks are per profile, not per account. Omitted → the account's first profile. A profile id from another household returns **404**. |
 | `X-Admin-Key: <key>` | `/api/media/admin/**` and the library scan | Required **in addition to** a PARENT account. Both checks, because the key alone would let a child's device act as owner if it leaked into a shared client build. Failure is **403** either way, so a response cannot confirm a guessed key. |
 | `Authorization: Bearer <guest jwt>` | Watch party guests only | A different kind of token, carried the same way. It has no account behind it and reaches five endpoints for one film — everything else is **403**, including anything taking `X-Profile-Id`. See **Watch together**. |
@@ -164,10 +164,16 @@ at browse time, which only the decision endpoint takes today), and no folder
 ### 4. Movie detail — partial
 
 ```
-GET  /api/media/items/{id}
-GET  /api/media/items/{id}/backdrop
-POST /api/media/items/{id}/playback-decision    # the playback plan card
+GET    /api/media/items/{id}                    # plot, cast, rating, counts
+GET    /api/media/items/{id}/backdrop
+POST   /api/media/items/{id}/playback-decision  # the playback plan card
+PUT    /api/media/items/{id}/like               # and DELETE to take it back
+GET    /api/media/items/{id}/comments           # POST to add, newest first
 ```
+
+The detail payload carries `plot`, `castMembers`, `directors` and the three
+engagement counts — `viewCount`, `likeCount`, `commentCount` — so the screen
+needs one call before it renders and a second only when the thread is opened.
 
 Missing: "Also on the disk" has no related-items endpoint. The cast button has
 no backend — see screen 11.
@@ -332,6 +338,7 @@ list, so the 2×2 grid has nothing to filter by, and no daily time limit, so
 ### 20. Admin panel — built
 
 ```
+POST   /api/media/admin/movies                # add or edit a title + poster
 GET    /api/media/admin/health
 GET    /api/media/admin/people
 GET    /api/media/admin/sessions
@@ -347,6 +354,38 @@ zero-count row — an empty list means a healthy server, not a missing feature.
 ---
 
 ## Endpoint reference
+
+### Sessions
+
+Every sign-in — `POST /api/auth/register`, `/api/auth/login`, `/api/auth/firebase`
+— answers with the same envelope:
+
+```json
+{ "token": "<jwt, sent as Authorization: Bearer>",
+  "refreshToken": "<opaque, sent in the body of /api/auth/refresh>",
+  "user": { "id": "…", "username": "…", "role": "PARENT" } }
+```
+
+**`POST /api/auth/refresh`** — public. Body `{ "refreshToken": "…" }` → the same
+envelope, with a **new** access token and a **new** refresh token.
+
+Three things a client has to get right:
+
+- **Store the refresh token that came back, not the one you sent.** Every refresh
+  rotates: the token you presented is spent the moment it is accepted.
+- **Refresh one call at a time.** Two in flight with the same token means one of
+  them gets **401**; retry that one with whatever its sibling received rather than
+  signing the user out.
+- **A 401 here means sign in again.** Unknown, spent and expired are one answer on
+  purpose, so the endpoint cannot be used to probe for live tokens.
+
+A spent token coming back long after it was rotated is read as a stolen copy, and
+every session on that account is revoked — the real device included. That is the
+intended outcome: by then the two holders cannot be told apart.
+
+A refresh token is good for 30 days idle (`JWT_REFRESH_EXPIRATION_MS`); the access
+token it mints lives for `JWT_EXPIRATION_MS`. Only a SHA-256 of the refresh token
+is stored, so the value in that response is the only copy there will ever be.
 
 ### Catalog
 
@@ -374,7 +413,7 @@ runtimeMinutes, rating, certification, genres[], directors, castMembers,
 studio, quality, tmdbId, imdbId, artist, album, trackNumber,
 capturedAt, place, people[], fileSize, fileName, hasPoster, hasBackdrop,
 mediaInfo, subtitles[], audioTracks[], resumePositionSeconds, watched,
-viewCount, likeCount, liked
+viewCount, likeCount, liked, commentCount
 ```
 
 `mediaInfo`: `container, durationSeconds, videoCodec, width, height, bitrate,
@@ -455,6 +494,47 @@ Bounded by the domain, so neither is paged.
 
 **`GET /api/media/items/{id}/poster`**, **`/backdrop`** → image bytes, cached a
 day. **404** when the item has none.
+
+### Comments
+
+A thread under a title, written by a **profile** and moderated by an **account**.
+The two are deliberately different: a shared login means "dad thought it dragged"
+and "the eight-year-old loved it" have to be told apart by profile to mean
+anything, while who may take a comment down is a question about the account.
+
+**`GET /api/media/items/{id}/comments`** — query `page` `size` (default 20,
+capped 100) → `{ comments[CommentDto], page, size, totalItems, totalPages }`
+
+`CommentDto`:
+```
+id, mediaItemId, profileId, authorName, body, createdAt, editedAt,
+mine, canDelete
+```
+
+**`POST /api/media/items/{id}/comments`** — body `{ "body": "…" }` → **201**
+`CommentDto`. Trimmed on the way in; blank or over 1000 characters is **400**.
+
+**`PUT /api/media/items/{id}/comments/{commentId}`** — the author rewrites their
+own → `CommentDto` with `editedAt` set. Anyone else, a parent included, gets
+**403**: moderation here is removal, never rewording somebody else.
+
+**`DELETE /api/media/items/{id}/comments/{commentId}`** → **204**. Allowed for
+the author, and for a PARENT on the same account — not for a parent of another
+account, so on a machine shared by two families neither can reach the other's
+thread.
+
+Three things worth knowing:
+
+- `mine` and `canDelete` are computed for the profile in `X-Profile-Id`, so the
+  client can render its own bubbles and hide a delete the server would refuse.
+- `authorName` is the profile's **current** name. A rename re-signs everything
+  that profile ever wrote; a deleted profile falls back to the name it had.
+- A `commentId` that exists under a different item is **404**, not somebody
+  else's comment.
+
+Comments are visible to everyone who can see the title, children included.
+There is no profanity filter and no approval queue — a parent removes what
+should not stand.
 
 ### Playback
 
@@ -724,6 +804,64 @@ ffmpeg) or discards a prepared copy.
 PUT takes only the fields that changed.
 
 ### Owner only — admin key **and** PARENT
+
+**`POST /api/media/admin/movies`** — one endpoint for adding a title and for
+editing one, thumbnail included. Send `id` to update, leave it out to insert;
+**201** on insert, **200** on update.
+
+Two content types, same behaviour:
+
+```
+Content-Type: multipart/form-data
+
+  movie     (application/json)  the fields below
+  poster    (image file)        optional
+  backdrop  (image file)        optional
+```
+
+```
+Content-Type: application/json
+
+  the fields below, when there is no artwork to send
+```
+
+Fields on the `movie` part — all optional except `title` on an insert:
+
+```
+id, title, originalTitle, sortTitle, type, year, plot, tagline,
+runtimeMinutes, rating, certification, genres[], directors[], actors[],
+studio, releaseDate, tmdbId, imdbId, quality, filePath, libraryName
+```
+
+`type` is `FILM` (the default for a new title) `ANIME` `HOME_VIDEO` `MUSIC`
+`PHOTO`. `rating` is 0–10, `releaseDate` an ISO date (`1954-04-26`),
+`actors` and `directors` are lists in billing order, `genres` a set.
+
+→ the same fields back, plus `created`, `missing`, `hasPoster`, `hasBackdrop`,
+`posterUrl`, `backdropUrl`, `metadataSource`, `viewCount`, `likeCount`,
+`commentCount`, `addedAt`, `updatedAt`.
+
+Four rules worth building the form against:
+
+- **Omitted is not empty.** A field that is not in the payload is left exactly as
+  it was; an empty string or `[]` clears it. So an edit screen may send only what
+  it changed, and a "clear the tagline" button sends `"tagline": ""`.
+- **A hand-made edit outranks the scanner.** Everything written here is stamped
+  `metadataSource: MANUAL` and locks the type, so the next library scan re-reads
+  the file without putting its own guess back over what was typed.
+- **`filePath` is optional, and its absence is meaningful.** With a path — which
+  must exist inside a configured library — the title is an ordinary playable row.
+  Without one it is catalogued: it browses, takes likes and comments, and comes
+  back with `missing: true`, but there is nothing to play. This is how a title is
+  entered for something not on the disk.
+- **Artwork replaces, never merges.** Sending a `poster` swaps the stored one
+  (any previous format is removed); omitting the part leaves the existing poster
+  alone. JPEG, PNG, WebP or GIF, 10MB per file — anything else is **415**, too
+  large is **413**.
+
+Uploaded artwork is written under `app.media.artwork-dir` (`MEDIA_ARTWORK_DIR`,
+default `data/artwork`), never into a media library, and is served by the same
+`GET /api/media/items/{id}/poster` every other title uses.
 
 **`GET /api/media/admin/health`** →
 ```

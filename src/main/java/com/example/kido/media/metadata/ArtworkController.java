@@ -97,7 +97,7 @@ public class ArtworkController {
         if (storedPath == null || storedPath.isBlank()) {
             throw new ApiException(HttpStatus.NOT_FOUND, "No " + what + " for this item");
         }
-        Path file = paths.requireWithinRoots(storedPath);
+        Path file = paths.requireImage(storedPath);
         streamer.serve(file, imageContentType(file), ARTWORK_CACHE_SECONDS, request, response);
     }
 

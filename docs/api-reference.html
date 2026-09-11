@@ -446,10 +446,14 @@
           <dt>Authorization: Bearer &lt;jwt&gt;</dt>
           <dd>
             Everything except <code>/api/health</code>,
-            <code>/api/auth/register</code> and <code>/api/auth/login</code>.
+            <code>/api/auth/register</code>, <code>/api/auth/login</code> and
+            <code>/api/auth/refresh</code>.
             Register returns <strong>201</strong> with a token; the account needs
             <code>"role":"PARENT"</code> to reach anything under
-            <code>/admin</code>.
+            <code>/admin</code>. Sign-in also returns a <code>refreshToken</code>,
+            traded at <code>POST /api/auth/refresh</code> for a new pair once the
+            access token lapses. It rotates on every use, so store the one that
+            comes back, not the one you sent.
           </dd>
         </div>
         <div>

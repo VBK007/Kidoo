@@ -24,6 +24,12 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 
+    // Schema migrations. ddl-auto built the schema until now, which cannot drop a
+    // column, rename one, narrow a type or backfill data — and leaves no record of
+    // what any given database has actually had done to it.
+    implementation 'org.springframework.boot:spring-boot-flyway'
+    runtimeOnly 'org.flywaydb:flyway-database-postgresql'
+
     // Watch parties keep several devices on the same frame. A pause has to land on
     // every screen at once, which rules out polling: a two-second poll makes the other
     // rooms pause visibly late.

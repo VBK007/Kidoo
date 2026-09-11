@@ -1,6 +1,7 @@
 package com.example.kido;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,6 +9,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Instant;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -18,6 +20,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import com.example.kido.auth.RefreshToken;
+import com.example.kido.auth.RefreshTokenRepository;
 import com.example.kido.user.AppUser;
 import com.example.kido.user.UserRepository;
 
@@ -40,10 +44,14 @@ class AuthFlowIntegrationTest {
     @Autowired
     PasswordEncoder passwordEncoder;
 
+    @Autowired
+    RefreshTokenRepository refreshTokenRepository;
+
     private final HttpClient http = HttpClient.newHttpClient();
 
     @BeforeEach
     void clean() {
+        refreshTokenRepository.deleteAll();
         userRepository.deleteAll();
     }
 
@@ -166,5 +174,100 @@ class AuthFlowIntegrationTest {
         HttpResponse<String> res = post("/api/auth/login",
                 "{\"usernameOrEmail\":\"timmy\",\"password\":\"WRONG\"}", null);
         assertEquals(401, res.statusCode());
+    }
+
+    // --- refresh tokens ---------------------------------------------------
+
+    /** Signs in and returns {access, refresh}. */
+    private String[] signIn() throws Exception {
+        registerTimmy();
+        HttpResponse<String> login = post("/api/auth/login",
+                "{\"usernameOrEmail\":\"timmy\",\"password\":\"secret1\"}", null);
+        assertEquals(200, login.statusCode());
+        return new String[] {str(login.body(), "token"), str(login.body(), "refreshToken")};
+    }
+
+    @Test
+    void sign_in_hands_out_a_refresh_token_and_stores_only_its_hash() throws Exception {
+        String[] tokens = signIn();
+        assertTrue(tokens[1] != null && !tokens[1].isBlank());
+
+        // Two of them: one from register, one from login. Neither is stored in the clear.
+        assertEquals(2, refreshTokenRepository.count());
+        refreshTokenRepository.findAll().forEach(row -> {
+            assertNotEquals(tokens[1], row.getTokenHash());
+            assertNotNull(row.getExpiresAt());
+            assertTrue(!row.isRevoked());
+        });
+    }
+
+    @Test
+    void refresh_returns_a_working_access_token_and_rotates_the_refresh_token() throws Exception {
+        String[] tokens = signIn();
+
+        HttpResponse<String> res = post("/api/auth/refresh",
+                "{\"refreshToken\":\"" + tokens[1] + "\"}", null);
+        assertEquals(200, res.statusCode());
+
+        String access = str(res.body(), "token");
+        String rotated = str(res.body(), "refreshToken");
+        assertTrue(access != null && !access.isBlank());
+        assertNotEquals(tokens[1], rotated);
+        assertEquals("timmy", str(res.body(), "username"));
+
+        // The new access token really authenticates.
+        assertEquals(200, get("/api/auth/me", access).statusCode());
+
+        // And the replacement refreshes in its turn.
+        assertEquals(200, post("/api/auth/refresh",
+                "{\"refreshToken\":\"" + rotated + "\"}", null).statusCode());
+    }
+
+    @Test
+    void a_spent_refresh_token_does_not_work_twice() throws Exception {
+        String[] tokens = signIn();
+        assertEquals(200, post("/api/auth/refresh",
+                "{\"refreshToken\":\"" + tokens[1] + "\"}", null).statusCode());
+
+        HttpResponse<String> replay = post("/api/auth/refresh",
+                "{\"refreshToken\":\"" + tokens[1] + "\"}", null);
+        assertEquals(401, replay.statusCode());
+    }
+
+    @Test
+    void refresh_rejects_an_unknown_token_and_an_empty_one() throws Exception {
+        assertEquals(401, post("/api/auth/refresh",
+                "{\"refreshToken\":\"not-a-real-token\"}", null).statusCode());
+        assertEquals(400, post("/api/auth/refresh", "{\"refreshToken\":\"\"}", null).statusCode());
+    }
+
+    /**
+     * A replay from outside the race window is read as a second holder, and takes the
+     * account's live sessions down with it — including the one that legitimately
+     * rotated. Backdating the revocation is what stands in for waiting out the grace
+     * period.
+     */
+    @Test
+    void a_replayed_refresh_token_ends_every_session_on_the_account() throws Exception {
+        String[] tokens = signIn();
+        HttpResponse<String> first = post("/api/auth/refresh",
+                "{\"refreshToken\":\"" + tokens[1] + "\"}", null);
+        assertEquals(200, first.statusCode());
+        String rotated = str(first.body(), "refreshToken");
+
+        for (RefreshToken row : refreshTokenRepository.findAll()) {
+            if (row.isRevoked()) {
+                row.setRevokedAt(Instant.now().minusSeconds(300));
+                refreshTokenRepository.save(row);
+            }
+        }
+
+        assertEquals(401, post("/api/auth/refresh",
+                "{\"refreshToken\":\"" + tokens[1] + "\"}", null).statusCode());
+
+        // The honest device's token is collateral: it can no longer refresh either.
+        assertEquals(401, post("/api/auth/refresh",
+                "{\"refreshToken\":\"" + rotated + "\"}", null).statusCode());
+        assertTrue(refreshTokenRepository.findAll().stream().allMatch(RefreshToken::isRevoked));
     }
 }
