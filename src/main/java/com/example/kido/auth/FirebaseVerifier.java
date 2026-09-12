@@ -63,6 +63,13 @@ public class FirebaseVerifier {
         try (InputStream stream = openCredentials()) {
             FirebaseOptions options = FirebaseOptions.builder()
                     .setCredentials(GoogleCredentials.fromStream(stream))
+                    // firebase-admin 9.4.0+ defaults to ApacheHttp2Transport, which has
+                    // been unreliable fetching Google's public key certs in this
+                    // environment (manifests as a signature-verification failure on
+                    // every sign-in despite the token and keys both being valid).
+                    // NetHttpTransport is the older, well-tested transport and has
+                    // tested reliably here.
+                    .setHttpTransport(new com.google.api.client.http.javanet.NetHttpTransport())
                     .build();
 
             FirebaseApp app = FirebaseApp.getApps().stream()
@@ -96,7 +103,7 @@ public class FirebaseVerifier {
             // actually ends the session rather than waiting for expiry.
             return Optional.of(current.verifyIdToken(idToken, true));
         } catch (FirebaseAuthException ex) {
-            log.warn("Rejected Firebase ID token: {}", ex.getMessage());
+            log.warn("Rejected Firebase ID token: {}", ex.getMessage(), ex);
             throw new ApiException(HttpStatus.UNAUTHORIZED, "That Google sign-in was not accepted");
         }
     }
