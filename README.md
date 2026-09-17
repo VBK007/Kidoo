@@ -70,6 +70,7 @@ full set and the reasoning behind each default.
 | `DOWNLOADS_ENABLED` | `true` | Offline download jobs |
 | `BILLING_VERIFY` | `dev` | `dev` accepts any token; `google` verifies with Play |
 | `AI_SEARCH_ENABLED` | `false` | Model fallback for the search box; blank `ANTHROPIC_API_KEY` keeps it off |
+| `AI_ASSISTANT_ENABLED` | `false` | Ask-a-question assistant; four read-only tools, same key |
 | `FIREBASE_CREDENTIALS` | `secrets/…json` | Unset ⇒ Google sign-in off, endpoint answers 501 |
 
 ---
@@ -155,6 +156,37 @@ records that a file was opened, so a title abandoned after two minutes thirty
 times over leads it outright. Top viewing sums the watch increments recorded
 during playback — bounded against wall-clock time when written, so a forward
 seek cannot inflate them — and answers what the house actually sat through.
+
+### Knowing what is in there
+
+Four features over one idea: a **`CatalogQuery`** — every filter the catalog can
+express, as one saveable, serialisable object.
+
+- **Collections** are a query somebody named. Seven ship with the server as code
+  (never watched, under 2 hours, 4K, hidden gems…), you can write your own, and
+  the rest the library discovers in its own facets — genre, language, cast,
+  decade — tallied on request so they are never stale. Pin one and it becomes a
+  home rail.
+- **Recommendations** are a query plus a per-profile score: `0.50` taste,
+  `0.30` quality, `0.20` freshness. Taste is derived from what you finished,
+  spent time on, liked, said you wanted — and **walked away from**, which is the
+  only negative signal and the one that stops a recommender pushing what you
+  already rejected. Every pick says why: *Because you watched Kaithi*.
+- **Search by sentence** — *"Tamil films under 2 hours rated over 8"* — is a
+  grammar over the library's own genres, names and languages. No model, no key,
+  works offline, and it hands back what it understood so a wrong reading is
+  fixed by tapping a chip rather than rephrasing at a black box.
+- **Ask a question** in your own words, answered by four read-only tools over
+  all of the above. *"What have we watched more than twice?"* is a tool call,
+  not a new feature.
+
+The last two can call Claude, and both are **off by default**. The search box
+asks it only for sentences the grammar read nothing in; the assistant is a
+separate switch. Neither can do more than the catalog already could: a model
+fills in a `CatalogQuery` or calls a read-only tool, never sees the database,
+and cannot name a profile — who is asking comes from the session. Every way
+either can fail, from an outage to a nonsensical answer, falls back to what the
+server worked out on its own.
 
 ### Playback and streaming
 

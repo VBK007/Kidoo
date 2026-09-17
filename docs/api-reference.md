@@ -491,6 +491,56 @@ during playback instead — real seconds, bounded against wall-clock time when
 they are written, so a forward seek cannot inflate them — and answers what the
 household actually sat through. It is summed across every profile, titles with
 no watch time never appear on it, and `reason` gives the total as `Watched 3h
+### Assistant
+
+Ask about the library in your own words. **Off by default**
+(`app.media.ai.assistant-enabled`, `AI_ASSISTANT_ENABLED`); a separate switch
+from the search fallback, sharing the key, because they are different bargains —
+that is one short call, this is a loop of tool calls per question.
+
+```
+GET  /api/media/assistant        # { "available": false }
+POST /api/media/assistant        # { "question": "what can I finish tonight?" }
+```
+
+```json
+{ "answer": "Three films under two hours you haven't seen: …",
+  "toolCalls": [ { "tool": "search_library",
+                   "arguments": { "max_runtime_minutes": 120, "watched": "NOT_ME" },
+                   "failed": false } ],
+  "answered": true }
+```
+
+**Everything it can do already existed.** The assistant is four read-only tools
+over the catalog, the taste model, the play counts and the collections — so
+*"what have we watched more than twice"* is a tool call, not a new feature. A
+question these cannot answer is a missing tool, which is a small concrete piece
+of work rather than a prompt to be tuned.
+
+| Tool | Answers |
+| --- | --- |
+| `search_library` | any `CatalogQuery` — the same filters as browse, collections and search |
+| `most_played` | play counts, which `CatalogQuery` deliberately cannot sort on |
+| `taste_profile` | what the server believes the caller likes, and what it read that from |
+| `list_collections` | the named collections, so it can point at one rather than rebuild it |
+
+**There is no tool that changes anything.** No delete, no purge, no playback, no
+settings. A model cannot be talked into calling a tool that does not exist, so
+this is enforced by the tool surface rather than asked for in a prompt.
+
+**Who is asking is not a parameter.** The profile and account come from the
+session, so "films I haven't seen" resolves against whoever is holding the phone
+and there is no wording that makes it resolve against a housemate.
+
+`toolCalls[]` comes back with every answer. An assistant that will not say what
+it looked at is one nobody can check — and a wrong answer should point at which
+lookup went wrong, not at the whole feature.
+
+**Always 200.** Off, unreachable or stuck returns something a person can read
+with `answered: false`; the rest of the app is unaffected. The loop is capped at
+six tool-calling turns, and a tool that throws comes back to the model as an
+error it can recover from rather than ending the conversation.
+
 20m`, rounded down to the minute.
 
 **`GET /api/media/home/popular`** — the blended rail alone, same query

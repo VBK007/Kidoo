@@ -66,6 +66,24 @@ public class AiSearchProperties {
      */
     private int cacheSize = 200;
 
+
+    /**
+     * The assistant — a separate switch from the search fallback, sharing the key.
+     *
+     * <p>Separate because they are different bargains. The search fallback is one short
+     * call on a sentence the rules could not read; the assistant is a loop that may call
+     * tools several times per question. Somebody may reasonably want the first and not
+     * the second, and folding them into one flag would take that choice away.
+     */
+    private boolean assistantEnabled = false;
+
+    /** A loop of lookups, so it is allowed longer than the single-shot translation. */
+    private Duration assistantTimeout = Duration.ofSeconds(60);
+
+    /** True when the assistant could actually answer. */
+    public boolean isAssistantUsable() {
+        return assistantEnabled && apiKey != null && !apiKey.isBlank();
+    }
     /** True when a call could actually be made. */
     public boolean isUsable() {
         return enabled && apiKey != null && !apiKey.isBlank();
