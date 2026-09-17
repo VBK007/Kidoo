@@ -159,6 +159,36 @@ public class MediaItem {
     @Column(length = 64)
     private String certification;
 
+    /**
+     * Spoken languages, as canonical ISO 639-1 codes.
+     *
+     * <p>Derived from the probed audio tracks rather than scraped: the container
+     * already carries the answer, and a sidecar rarely does. An unprobed item has none,
+     * which is a known unknown — it is why a library meant to be searched by language
+     * wants {@code app.media.probe-on-scan} left on.
+     *
+     * <p>A set rather than a single column because a dual-audio file is genuinely both,
+     * and a household that keeps one is usually the household that searches by language.
+     */
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "media_item_languages",
+            joinColumns = @JoinColumn(name = "media_item_id"),
+            indexes = @Index(name = "idx_media_item_language", columnList = "language"))
+    @Column(name = "language", length = 16)
+    @Builder.Default
+    private Set<String> languages = new LinkedHashSet<>();
+
+    /**
+     * The first audio track's language — what a player selects by default, and so the
+     * closest thing a container says to "the language this title is in".
+     *
+     * <p>Denormalised out of {@link #languages} because the common filter is "Tamil
+     * films", not "films with a Tamil track somewhere", and those differ on exactly the
+     * dual-audio files that motivated the set.
+     */
+    @Column(name = "primary_language", length = 16)
+    private String primaryLanguage;
+
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "media_item_genres",
             joinColumns = @JoinColumn(name = "media_item_id"),

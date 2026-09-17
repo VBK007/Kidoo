@@ -348,6 +348,7 @@ GET    /api/media/admin/sessions
 DELETE /api/media/admin/sessions/{sessionId}
 GET    /api/media/admin/disk?biggestFiles=20
 DELETE /api/media/admin/disk/caches
+POST   /api/media/admin/backfill-languages    # derive languages from probes
 ```
 
 `watchWeek` arrives with the peak day already flagged, so the chart does not
@@ -504,6 +505,22 @@ opinion is about the title, and an unplugged disk should not lose it.
 
 **`GET /api/media/genres`**, **`GET /api/media/people`** → `String[]`.
 Bounded by the domain, so neither is paged.
+
+**`GET /api/media/languages`** → `[{ code, name }]`, e.g.
+`[{"code":"ta","name":"Tamil"},{"code":"en","name":"English"}]`. Only languages
+the library actually holds, so it doubles as the vocabulary a language filter
+can be validated against. The English name is resolved server-side so no client
+needs its own copy of the ISO table to draw the same chip.
+
+Languages are derived from the **probed audio tracks**, not scraped — the
+container already carries them and a sidecar rarely does. Consequences worth
+knowing: an unprobed title has none (which is one more reason to leave
+`app.media.probe-on-scan` on), and a library indexed before this shipped needs
+one run of `POST /api/media/admin/backfill-languages` rather than a rescan.
+Tags are normalised to ISO 639-1, so `tam`, `ta` and `Tamil` are one language
+and not three. `ItemDetailDto` carries `languages[]` and `primaryLanguage` —
+the latter being the first audio track, which is what a player picks by default
+and so the closest a container comes to saying what language a title is *in*.
 
 **`GET /api/media/items/{id}/poster`**, **`/backdrop`** → image bytes, cached a
 day. **404** when the item has none.

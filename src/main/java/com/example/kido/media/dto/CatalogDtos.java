@@ -129,6 +129,9 @@ public final class CatalogDtos {
             Double rating,
             String certification,
             Set<String> genres,
+            /** Spoken languages as ISO 639-1 codes, empty when the file is unprobed. */
+            Set<String> languages,
+            String primaryLanguage,
             String directors,
             String castMembers,
             String studio,
@@ -176,6 +179,15 @@ public final class CatalogDtos {
             long totalBytes,
             List<CategoryDto> categories,
             List<String> genres) {}
+
+    /**
+     * One language the library holds.
+     *
+     * @param code ISO 639-1 where the language has one, e.g. {@code ta}
+     * @param name its English name, resolved server-side so each client does not need
+     *             its own copy of the ISO table to draw the same chip
+     */
+    public record LanguageDto(String code, String name) {}
 
     /**
      * A group on the home-video timeline — one month, one person or one place,

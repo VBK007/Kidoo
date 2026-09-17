@@ -396,6 +396,24 @@ public class AdminService {
                         : "Found artwork for " + updated + " video(s) that had none");
     }
 
+    /**
+     * Fills in the language facet from probes already on record.
+     *
+     * <p>Separate from a scan because it needs no disk: the audio tracks were stored
+     * the first time each file was probed, and this only re-reads them. Run it once
+     * after upgrading to a build that has languages, and again whenever the tag
+     * normalisation changes.
+     */
+    @Transactional
+    public SeedResultDto backfillLanguages() {
+        int updated = ingest.backfillLanguages();
+        log.info("Backfilled languages for {} items (on-demand)", updated);
+        return new SeedResultDto(updated,
+                updated == 0
+                        ? "Every probed title already had the right languages"
+                        : "Set languages on " + updated + " title(s) from their probes");
+    }
+
     /** Ends a live stream on the owner's instruction. */
     public boolean endSession(String sessionId) {
         return sessions.terminate(sessionId);

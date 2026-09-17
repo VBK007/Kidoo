@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.media.dto.CatalogDtos.ItemDetailDto;
 import com.example.kido.media.dto.CatalogDtos.ItemPageDto;
+import com.example.kido.media.dto.CatalogDtos.LanguageDto;
 import com.example.kido.media.dto.CatalogDtos.ItemSummaryDto;
 import com.example.kido.media.dto.CatalogDtos.LibrarySummaryDto;
 import com.example.kido.media.dto.CatalogDtos.TimelineDto;
@@ -102,6 +103,15 @@ public class CatalogController {
     @GetMapping("/genres")
     public List<String> genres() {
         return service.genres();
+    }
+
+    /**
+     * Languages present in the library, with their English names — the chip row, and
+     * the vocabulary a language filter can be checked against.
+     */
+    @GetMapping("/languages")
+    public List<LanguageDto> languages() {
+        return service.languages();
     }
 
     /** Tagged people, backing the timeline's "By person" chips. */

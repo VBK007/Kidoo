@@ -130,6 +130,20 @@ public interface MediaItemRepository
             """)
     List<String> findDistinctPeople();
 
+    /**
+     * Every language present in the library.
+     *
+     * <p>Serves the client's chip row, and — once there is a query layer above it — the
+     * closed vocabulary a language filter validates against: a library can only be
+     * searched for the languages it actually holds.
+     */
+    @Query("""
+            select distinct l from MediaItem m join m.languages l
+            where m.missing = false and m.hidden = false
+            order by l
+            """)
+    List<String> findDistinctLanguages();
+
     @Query("""
             select coalesce(sum(m.fileSize), 0) from MediaItem m
             where m.missing = false and m.hidden = false

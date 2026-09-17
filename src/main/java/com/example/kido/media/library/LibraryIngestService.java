@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -28,6 +29,7 @@ import com.example.kido.media.catalog.MediaItemRepository;
 import com.example.kido.media.catalog.MediaType;
 import com.example.kido.media.catalog.MetadataSource;
 import com.example.kido.media.metadata.FilenameParser;
+import com.example.kido.media.metadata.Languages;
 import com.example.kido.media.metadata.NfoParser;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.metadata.SidecarMetadata;
@@ -132,6 +134,7 @@ public class LibraryIngestService {
             if (!contentUnchanged) {
                 // The bytes changed, so the cached probe describes a file that is gone.
                 item.setMediaInfo(new MediaInfo());
+                applyLanguages(item);
                 chapters.deleteByMediaItemId(item.getId());
             }
             item.setMissing(false);
@@ -298,6 +301,45 @@ public class LibraryIngestService {
         items.saveAll(updated);
         return updated.size();
     }
+    /**
+     * Restates every item's languages from the probe it already has.
+     *
+     * <p>The languages are a view of {@code probe_audio_tracks}, which existing rows
+     * have been carrying since they were first scanned — so this reads a column nobody
+     * was querying rather than touching a disk. No ffprobe, no rescan: a library indexed
+     * long before the facet existed gets it in one pass.
+     *
+     * <p>Also the repair path for a normalisation change. The mapping from a container's
+     * tag to a canonical code is a guess about spellings encoders use; when it improves,
+     * this is what re-applies it to rows that were stored under the old answer.
+     *
+     * @return how many items' languages changed
+     */
+    @Transactional
+    public int backfillLanguages() {
+        List<MediaItem> updated = new ArrayList<>();
+        for (MediaItem item : items.findByMissingFalse()) {
+            MediaInfo info = item.getMediaInfo();
+            if (info == null || info.getAudioTracks() == null) {
+                continue;
+            }
+            Set<String> derived = Languages.fromAudioTracks(info.getAudioTracks());
+            String primary = derived.isEmpty() ? null : derived.iterator().next();
+
+            if (derived.equals(item.getLanguages())
+                    && Objects.equals(primary, item.getPrimaryLanguage())) {
+                continue;
+            }
+            item.getLanguages().clear();
+            item.getLanguages().addAll(derived);
+            item.setPrimaryLanguage(primary);
+            item.setUpdatedAt(Instant.now());
+            updated.add(item);
+        }
+        items.saveAll(updated);
+        return updated.size();
+    }
+
 
     private String findAnyPoster(Path file, String title) {
         String poster = sidecars.findPoster(file).map(Path::toString).orElse(null);
@@ -365,6 +407,7 @@ public class LibraryIngestService {
         }
         MediaProbe.ProbeResult result = probed.get();
         item.setMediaInfo(result.info());
+        applyLanguages(item);
 
         // Duration from the container is more trustworthy than a sidecar's runtime.
         if (result.info().getDurationSeconds() != null && item.getRuntimeMinutes() == null) {
@@ -569,6 +612,25 @@ public class LibraryIngestService {
         }
         target.clear();
         target.addAll(values);
+    }
+
+    /**
+     * Restates an item's languages from whatever its probe currently says.
+     *
+     * <p>Called on both sides of a probe — after one runs, and when the bytes changed
+     * so the cached probe is discarded — because the languages are a view of the audio
+     * tracks and must not outlive them. Re-derived wholesale rather than merged: a
+     * re-muxed file that lost its Hindi track should lose the facet too.
+     */
+    private static void applyLanguages(MediaItem item) {
+        MediaInfo info = item.getMediaInfo();
+        Set<String> languages = info == null
+                ? Set.of()
+                : Languages.fromAudioTracks(info.getAudioTracks());
+
+        item.getLanguages().clear();
+        item.getLanguages().addAll(languages);
+        item.setPrimaryLanguage(languages.isEmpty() ? null : languages.iterator().next());
     }
 
     private void probeIfNeeded(MediaItem item, Path file) {

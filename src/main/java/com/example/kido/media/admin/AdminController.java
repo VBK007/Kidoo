@@ -131,6 +131,20 @@ public class AdminController {
     }
 
     /**
+     * Derives the language facet from probes already on record — no disk, no ffprobe.
+     *
+     * <p>Every probed row has carried its audio tracks since it was scanned; until
+     * languages existed nothing read them. Run this once after upgrading, and again if
+     * the tag normalisation improves.
+     */
+    @PostMapping("/backfill-languages")
+    public SeedResultDto backfillLanguages(@AuthenticationPrincipal AppUser user,
+                                           @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        requireOwner(user, key);
+        return admin.backfillLanguages();
+    }
+
+    /**
      * Removes rows a scan could no longer find on disk — a file actually deleted, or
      * (the common case right after a matching fix ships) a row that should never have
      * been indexed as its own catalog entry, like an image the scanner used to walk

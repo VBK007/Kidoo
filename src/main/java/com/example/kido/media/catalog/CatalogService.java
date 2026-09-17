@@ -27,6 +27,7 @@ import com.example.kido.media.dto.CatalogDtos.CategoryDto;
 import com.example.kido.media.dto.CatalogDtos.ItemDetailDto;
 import com.example.kido.media.dto.CatalogDtos.ItemPageDto;
 import com.example.kido.media.dto.CatalogDtos.ItemSummaryDto;
+import com.example.kido.media.dto.CatalogDtos.LanguageDto;
 import com.example.kido.media.dto.CatalogDtos.LibrarySummaryDto;
 import com.example.kido.media.dto.CatalogDtos.MediaInfoDto;
 import com.example.kido.media.dto.CatalogDtos.SubtitleTrackDto;
@@ -35,6 +36,7 @@ import com.example.kido.media.dto.CatalogDtos.TimelineGroupDto;
 import com.example.kido.media.dto.PlayerDtos.AudioTrackDto;
 import com.example.kido.media.engagement.CommentService;
 import com.example.kido.media.engagement.LikeService;
+import com.example.kido.media.metadata.Languages;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.playback.PlaybackProgress;
 import com.example.kido.media.playback.PlaybackService;
@@ -178,6 +180,8 @@ public class CatalogService {
                 item.getRating(),
                 item.getCertification(),
                 item.getGenres(),
+                item.getLanguages(),
+                item.getPrimaryLanguage(),
                 item.getDirectors(),
                 item.getCastMembers(),
                 item.getStudio(),
@@ -333,6 +337,20 @@ public class CatalogService {
     @Transactional(readOnly = true)
     public List<String> genres() {
         return items.findDistinctGenres();
+    }
+
+    /**
+     * Languages in the library, each with its English name.
+     *
+     * <p>The name is resolved here rather than on the client because the mapping from
+     * {@code ta} to "Tamil" is an ISO table, and shipping one to every client so each
+     * can render the same chip would be three copies of it.
+     */
+    @Transactional(readOnly = true)
+    public List<LanguageDto> languages() {
+        return items.findDistinctLanguages().stream()
+                .map(code -> new LanguageDto(code, Languages.displayName(code)))
+                .toList();
     }
 
     @Transactional(readOnly = true)
