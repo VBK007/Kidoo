@@ -15,8 +15,6 @@ import java.util.Set;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
-import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,18 +38,21 @@ import com.example.kido.media.metadata.Languages;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.playback.PlaybackProgress;
 import com.example.kido.media.playback.PlaybackService;
+import com.example.kido.media.query.CatalogQuery;
+import com.example.kido.media.query.CatalogQuery.WatchedBy;
+import com.example.kido.media.query.CatalogQuerySpecs;
+import com.example.kido.media.query.CatalogSort;
 import com.example.kido.profile.Profile;
 
-import jakarta.persistence.criteria.JoinType;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * Browsing, searching and detail lookups over the indexed library.
  *
- * <p>Filters are optional and combinable, so they are assembled as JPA
- * {@link Specification}s: a predicate for an absent filter is simply not added. The
- * JPQL alternative — {@code where (:genre is null or g = :genre)} — makes PostgreSQL
- * fail to infer the bind parameter's type when the value is null.
+ * <p>Every filtered listing goes through {@link CatalogQuery}: the browse endpoint
+ * translates its chip parameters into one, and {@link CatalogQuerySpecs} turns that into
+ * the database query. Nothing here composes predicates by hand any more, so a stored
+ * collection and a typed URL reach the catalog by exactly the same path.
  */
 @Slf4j
 @Service
@@ -86,11 +87,17 @@ public class CatalogService {
     }
 
     /**
+     * The browse endpoint's parameters, translated to a {@link CatalogQuery}.
+     *
+     * <p>The chip values stay here rather than in the query object: {@code ours} and
+     * {@code 4K ONLY} are this client's vocabulary, and a saved query should hold what
+     * was meant — a type and a height — not the label a particular screen used for it.
+     *
      * @param category optional {@link MediaType} chip value; null or {@code all} for everything
      * @param query    optional case-insensitive substring match on title
      * @param genre    optional exact genre match
      * @param person   optional exact match against a tagged cast/crew name
-     * @param sort     one of {@code title}, {@code added}, {@code year}, {@code rating}
+     * @param sort     a {@link CatalogSort} key
      * @param unwatched restrict to items this profile has not finished
      */
     @Transactional(readOnly = true)
@@ -105,35 +112,52 @@ public class CatalogService {
                               int page,
                               int size) {
 
+        CatalogQuery built = CatalogQuery.builder()
+                .types(typeOf(category))
+                .titleContains(query)
+                .genres(genre == null || genre.isBlank() ? null : Set.of(genre))
+                .people(person == null || person.isBlank() ? null : Set.of(person))
+                .minHeight(minHeight)
+                .watched(unwatched ? WatchedBy.NOT_ME : WatchedBy.ANYONE)
+                .sort(sort)
+                .build();
+
+        return search(profile, built, page, size);
+    }
+
+    /**
+     * Runs a {@link CatalogQuery} and returns a page of tiles.
+     *
+     * <p>The one way to ask the catalog anything. Whatever composed the query — the
+     * browse endpoint above, a stored collection, a parsed sentence — reaches the
+     * database through here, so the filters, the paging and the totals behave the same
+     * for all of them and are worth testing once.
+     */
+    @Transactional(readOnly = true)
+    public ItemPageDto search(Profile profile, CatalogQuery query, int page, int size) {
+        CatalogQuery validated = query.validated();
         int pageSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
 
-        // Composed explicitly rather than chained: Specification.and rejects a null
-        // argument, so an absent filter has to be skipped rather than passed through.
-        Specification<MediaItem> spec = browsable();
-        spec = and(spec, ofCategory(category));
-        spec = and(spec, matchesTitle(query));
-        spec = and(spec, hasGenre(genre));
-        spec = and(spec, hasPerson(person));
-        spec = and(spec, atLeastHeight(minHeight));
-
         Page<MediaItem> results = items.findAll(
-                spec, PageRequest.of(Math.max(0, page), pageSize, sortOf(sort)));
-
-        List<String> ids = results.getContent().stream().map(MediaItem::getId).toList();
-        Map<String, PlaybackProgress> progress = playback.progressByItemId(profile, ids);
-        Set<String> liked = likes.likedItemIds(profile, ids);
-
-        List<ItemSummaryDto> summaries = results.getContent().stream()
-                .filter(item -> !unwatched || isUnwatched(progress.get(item.getId())))
-                .map(item -> toSummary(item, progress.get(item.getId()), liked))
-                .toList();
+                CatalogQuerySpecs.toSpecification(validated, profile == null ? null : profile.getId()),
+                PageRequest.of(Math.max(0, page), pageSize,
+                        CatalogSort.of(validated.sort()).sort()));
 
         return new ItemPageDto(
-                summaries,
+                summarise(profile, results.getContent()),
                 results.getNumber(),
                 results.getSize(),
                 results.getTotalElements(),
                 results.getTotalPages());
+    }
+
+    /** Chip label to type. Unknown labels are a client bug, so they are a 400. */
+    private static Set<MediaType> typeOf(String category) {
+        if (category == null || category.isBlank() || category.equalsIgnoreCase("all")) {
+            return null;
+        }
+        return Set.of(MediaType.parse(category).orElseThrow(() -> new ApiException(
+                HttpStatus.BAD_REQUEST, "Unknown category '" + category + "'")));
     }
 
     /** Recently-added rail on the client's home screen. */
@@ -455,103 +479,6 @@ public class CatalogService {
                 progress != null && progress.isWatched(),
                 progress == null ? null : progress.percentComplete(),
                 likedIds.contains(item.getId()));
-    }
-
-    private static boolean isUnwatched(PlaybackProgress progress) {
-        return progress == null || !progress.isWatched();
-    }
-
-    // --- specifications ---
-
-    private static Specification<MediaItem> and(Specification<MediaItem> base,
-                                                Specification<MediaItem> extra) {
-        return extra == null ? base : base.and(extra);
-    }
-
-    /** Missing and deliberately-hidden items are indexed but never browsable. */
-    private static Specification<MediaItem> browsable() {
-        return (root, query, cb) -> cb.and(
-                cb.isFalse(root.get("missing")),
-                cb.isFalse(root.get("hidden")));
-    }
-
-    private static Specification<MediaItem> ofCategory(String category) {
-        if (category == null || category.isBlank() || category.equalsIgnoreCase("all")) {
-            return null;
-        }
-        MediaType type = MediaType.parse(category).orElseThrow(() -> new ApiException(
-                HttpStatus.BAD_REQUEST, "Unknown category '" + category + "'"));
-        return (root, query, cb) -> cb.equal(root.get("type"), type);
-    }
-
-    private static Specification<MediaItem> matchesTitle(String rawQuery) {
-        if (rawQuery == null || rawQuery.isBlank()) {
-            return null;
-        }
-        String pattern = "%" + rawQuery.trim().toLowerCase(Locale.ROOT) + "%";
-        return (root, query, cb) -> cb.or(
-                cb.like(cb.lower(root.get("title")), pattern),
-                cb.like(cb.lower(root.get("sortTitle")), pattern),
-                cb.like(cb.lower(root.get("fileName")), pattern));
-    }
-
-    private static Specification<MediaItem> hasGenre(String genre) {
-        if (genre == null || genre.isBlank()) {
-            return null;
-        }
-        return (root, query, cb) -> {
-            // A join onto the element collection multiplies rows, so the count query
-            // Spring Data derives for paging needs the same distinct treatment.
-            if (query != null) {
-                query.distinct(true);
-            }
-            return cb.equal(cb.lower(root.join("genres", JoinType.INNER)),
-                    genre.toLowerCase(Locale.ROOT));
-        };
-    }
-
-    /** Backs browsing a title's cast list back into the grid, e.g. "more with Kristen Stewart". */
-    private static Specification<MediaItem> hasPerson(String person) {
-        if (person == null || person.isBlank()) {
-            return null;
-        }
-        return (root, query, cb) -> {
-            // Same reasoning as hasGenre: the join multiplies rows, so the derived
-            // count query needs the same distinct treatment.
-            if (query != null) {
-                query.distinct(true);
-            }
-            return cb.equal(cb.lower(root.join("people", JoinType.INNER)),
-                    person.toLowerCase(Locale.ROOT));
-        };
-    }
-
-    /** Backs the client's {@code 4K ONLY} filter chip. */
-    private static Specification<MediaItem> atLeastHeight(Integer minHeight) {
-        if (minHeight == null || minHeight <= 0) {
-            return null;
-        }
-        return (root, query, cb) ->
-                cb.greaterThanOrEqualTo(root.get("mediaInfo").get("height"), minHeight);
-    }
-
-    private static Sort sortOf(String sort) {
-        String key = sort == null ? "title" : sort.toLowerCase(Locale.ROOT);
-        return switch (key) {
-            case "added" -> Sort.by(Sort.Direction.DESC, "addedAt");
-            case "captured" -> Sort.by(Sort.Order.desc("capturedAt").nullsLast());
-            case "year" -> Sort.by(Sort.Order.desc("year").nullsLast(), Sort.Order.asc("sortTitle"));
-            case "rating" -> Sort.by(Sort.Order.desc("rating").nullsLast(),
-                    Sort.Order.asc("sortTitle"));
-            case "likes" -> Sort.by(Sort.Order.desc("likeCount"), Sort.Order.asc("sortTitle"));
-            case "title" -> Sort.by(Sort.Direction.ASC, "sortTitle");
-            // No "views" here on purpose: a play count is the sum of two columns, and a
-            // Sort cannot express that. Most-watched ordering lives on the home screen's
-            // rail, which sorts on the sum in JPQL.
-            default -> throw new ApiException(HttpStatus.BAD_REQUEST,
-                    "Unknown sort '" + sort + "' (expected title, added, captured, year, "
-                            + "rating or likes)");
-        };
     }
 
     /** Exposed for callers that need the entity without the 410-on-missing behaviour. */

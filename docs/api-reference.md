@@ -150,6 +150,11 @@ There is no `sort=views`: a play count is the sum of two columns and a JPA
 `Sort` cannot express that. Most-watched ordering is the home screen's
 `most-watched` rail, which sorts on the sum in JPQL.
 
+**`unwatched=true` now filters in the database.** It used to be applied to a page
+after that page came back, which meant `?unwatched=true&size=40` could return
+fewer than 40 unwatched titles while `totalItems` counted the watched ones too.
+Both are fixed; a client that worked around the short pages can stop.
+
 ### 3. Search — partial
 
 ```

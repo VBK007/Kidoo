@@ -311,15 +311,15 @@ concrete, small piece of work rather than a prompt to be tuned.
 
 ## Order, and why
 
-| Stage | Ships | Depends on | Size |
-| --- | --- | --- | --- |
-| 0.1 Languages | A facet three features need | — | S |
-| 1 `CatalogQuery` | Nothing visible | 0.1 | M |
-| 2 Smart Collections | Real, visible feature | 1 | M |
-| 3 Recommendations | The headline feature | 1, taste model | L |
-| 4 NL search (rules) | Works offline, free | 1 | M |
-| 5 NL search (LLM) | Covers the rest | 4 | S |
-| 6 Assistant | The distinctive one | 1–5 | M |
+| Stage | Ships | Depends on | Size | Status |
+| --- | --- | --- | --- | --- |
+| 0.1 Languages | A facet three features need | — | S | **done** |
+| 1 `CatalogQuery` | Nothing visible | 0.1 | M | **done** |
+| 2 Smart Collections | Real, visible feature | 1 | M | next |
+| 3 Recommendations | The headline feature | 1, taste model | L | |
+| 4 NL search (rules) | Works offline, free | 1 | M | |
+| 5 NL search (LLM) | Covers the rest | 4 | S | |
+| 6 Assistant | The distinctive one | 1–5 | M | |
 
 Stage 1 is the only stage that ships nothing a user can see, and it is the one
 that makes stages 2, 4 and 5 small. Doing it out of order means writing the
