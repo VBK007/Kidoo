@@ -2,6 +2,7 @@ package com.example.kido.media.home;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +24,7 @@ import com.example.kido.media.dto.HomeDtos.HomeRailDto;
 import com.example.kido.media.dto.HomeDtos.RankingWeightsDto;
 import com.example.kido.media.home.PopularityRanker.Scored;
 import com.example.kido.media.playback.PlaybackService;
+import com.example.kido.media.session.WatchEventRepository;
 import com.example.kido.profile.Profile;
 
 import lombok.extern.slf4j.Slf4j;
@@ -36,7 +38,9 @@ import lombok.extern.slf4j.Slf4j;
  * it was rated, how often it has been played, and how many people in the house liked
  * it. {@link PopularityRanker} holds that arithmetic and why it is shaped the way it
  * is. The single-signal rails below it are kept because they are legible in a way a
- * blend is not: "most watched" is a claim a person can check.
+ * blend is not: "most watched" is a claim a person can check. Watch time is the one
+ * signal an item row cannot answer by itself, so that rail is aggregated from the
+ * recorded watch increments rather than read off a counter column.
  */
 @Slf4j
 @Service
@@ -63,13 +67,16 @@ public class HomeService {
     private final MediaItemRepository items;
     private final CatalogService catalog;
     private final PlaybackService playback;
+    private final WatchEventRepository watchEvents;
 
     public HomeService(MediaItemRepository items,
                        CatalogService catalog,
-                       PlaybackService playback) {
+                       PlaybackService playback,
+                       WatchEventRepository watchEvents) {
         this.items = items;
         this.catalog = catalog;
         this.playback = playback;
+        this.watchEvents = watchEvents;
     }
 
     /**
@@ -85,15 +92,17 @@ public class HomeService {
         List<MediaItem> topRated = items.findTopRated(requested, railPage);
         List<MediaItem> mostPlayed = items.findMostPlayed(requested, railPage);
         List<MediaItem> mostLiked = items.findMostLiked(requested, railPage);
+        Map<String, Double> watchSeconds = watchTimeByItem(requested, railPage);
+        List<MediaItem> topViewing = inRankOrder(watchSeconds.keySet());
         List<Scored> ranked = rank(requested, railSize);
         List<MediaItem> popular = ranked.stream().map(Scored::item).toList();
 
         // Every rail is drawn from the same set of entities, so watch progress and this
         // profile's likes are resolved once for the whole screen instead of once per
-        // rail — four rails of twenty would otherwise be eight queries just to decide
+        // rail — five rails of twenty would otherwise be ten queries just to decide
         // which hearts are filled.
         Map<String, ItemSummaryDto> summaries =
-                summarise(profile, popular, topRated, mostPlayed, mostLiked);
+                summarise(profile, popular, topRated, mostPlayed, mostLiked, topViewing);
         Map<String, Scored> scores = scoresById(ranked);
 
         List<HomeRailDto> rails = new ArrayList<>();
@@ -103,6 +112,12 @@ public class HomeService {
                 topRated, summaries, id -> null, PopularityRanker::ratingLabel);
         addRail(rails, "most-watched", "Most watched", "views",
                 mostPlayed, summaries, id -> null, PopularityRanker::viewLabel);
+        // Next to most-watched deliberately: side by side the pair says what neither
+        // says alone — what gets started, and what actually gets watched.
+        addRail(rails, "top-viewing", "Top viewing", "watchTime",
+                topViewing, summaries, id -> null,
+                item -> PopularityRanker.watchTimeLabel(
+                        watchSeconds.getOrDefault(item.getId(), 0.0)));
         addRail(rails, "most-liked", "Most liked", "likes",
                 mostLiked, summaries, id -> null, PopularityRanker::likeLabel);
 
@@ -166,6 +181,44 @@ public class HomeService {
 
         return PopularityRanker.rank(
                 candidates.values(), items.averageRating(requested), limit);
+    }
+
+    /**
+     * Seconds watched per item for the top of the watch-time ranking, ranking order
+     * preserved by the map.
+     */
+    private Map<String, Double> watchTimeByItem(List<MediaType> types, Pageable page) {
+        Map<String, Double> seconds = new LinkedHashMap<>();
+        for (Object[] row : watchEvents.topItemsByWatchTime(types, page)) {
+            seconds.put((String) row[0], ((Number) row[1]).doubleValue());
+        }
+        return seconds;
+    }
+
+    /**
+     * Loads the ranked ids as entities, keeping the order they were given in — {@code
+     * findAllById} promises none, and here the order is the ranking itself.
+     *
+     * <p>An id with no row behind it is dropped rather than carried as a gap: an item
+     * can be purged in the moment between the aggregate and this read, and a rail is
+     * better one poster short than holding a blank.
+     */
+    private List<MediaItem> inRankOrder(Collection<String> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<String, MediaItem> byId = new LinkedHashMap<>();
+        for (MediaItem item : items.findAllById(ids)) {
+            byId.put(item.getId(), item);
+        }
+        List<MediaItem> ordered = new ArrayList<>(ids.size());
+        for (String id : ids) {
+            MediaItem item = byId.get(id);
+            if (item != null) {
+                ordered.add(item);
+            }
+        }
+        return ordered;
     }
 
     /** Adds a rail unless it would be an empty heading. */

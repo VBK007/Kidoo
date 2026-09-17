@@ -455,13 +455,14 @@ a bare heading, so a fresh library returns `"rails": []`:
 | `popular` | `popularity` | The blend of all three signals |
 | `top-rated` | `rating` | `rating` desc; unrated titles are excluded |
 | `most-watched` | `views` | plays desc, direct and transcoded together |
+| `top-viewing` | `watchTime` | seconds watched desc, summed across the household |
 | `most-liked` | `likes` | `likeCount` desc |
 | `recently-added` | `added` | `addedAt` desc |
 
 `score` is 0–1 and is present only on `popular`; elsewhere it is null, because a
 single-signal rail's position is already its own number. `reason` is a subtitle
 naming why the title is there — `Rated 8.4`, `Played 30 times`, `Liked by 3 in
-your house`.
+your house`, `Watched 3h 20m`.
 
 **How `popular` is ranked.** Each signal is normalised to 0–1 and then weighted
 `0.40` rating, `0.35` views, `0.25` likes. Rating leads because it is the only
@@ -471,6 +472,15 @@ would let one endlessly-rewatched favourite push every other title to zero and
 collapse the rail into a rating sort. An unrated title is scored at the
 library's mean rating, not zero, so home footage the scraper never matched can
 still surface. Candidates are the union of the top 100 by each signal.
+
+**`top-viewing` and `most-watched` are not the same rail.** A play count records
+that a file was opened, so a title abandoned after two minutes thirty times over
+leads `most-watched` outright. `top-viewing` sums the watch increments recorded
+during playback instead — real seconds, bounded against wall-clock time when
+they are written, so a forward seek cannot inflate them — and answers what the
+household actually sat through. It is summed across every profile, titles with
+no watch time never appear on it, and `reason` gives the total as `Watched 3h
+20m`, rounded down to the minute.
 
 **`GET /api/media/home/popular`** — the blended rail alone, same query
 parameters. → one rail object.

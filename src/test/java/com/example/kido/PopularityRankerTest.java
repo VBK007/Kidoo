@@ -139,4 +139,21 @@ class PopularityRankerTest {
         assertEquals("Played 30 times", reasons.get("Played"));
         assertEquals("Rated 9.1", reasons.get("Rated"));
     }
+
+    /**
+     * The watch-time subtitle, which is the only thing on the Top viewing rail that
+     * tells a person what "top" means there. Minutes and hours because seconds would
+     * claim a precision a sum of bounded increments does not have.
+     */
+    @Test
+    void watchTimeReadsAsMinutesAndHours() {
+        assertEquals("Not watched yet", PopularityRanker.watchTimeLabel(0));
+        assertEquals("Watched under a minute", PopularityRanker.watchTimeLabel(42));
+        assertEquals("Watched 45m", PopularityRanker.watchTimeLabel(45 * 60));
+        assertEquals("Watched 1h", PopularityRanker.watchTimeLabel(3600));
+        assertEquals("Watched 3h 20m", PopularityRanker.watchTimeLabel(3600 * 3 + 20 * 60));
+        // Part-minutes are dropped rather than rounded up, so the label never
+        // overstates what was watched.
+        assertEquals("Watched 2h 5m", PopularityRanker.watchTimeLabel(7559.9));
+    }
 }

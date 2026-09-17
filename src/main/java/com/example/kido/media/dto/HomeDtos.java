@@ -33,7 +33,8 @@ public final class HomeDtos {
      * @param key      stable identifier the client keys its row state on
      * @param title    the row heading, as shown
      * @param rankedBy which signal ordered it: {@code popularity}, {@code rating},
-     *                 {@code views}, {@code likes} or {@code added}
+     *                 {@code views}, {@code watchTime}, {@code likes} or
+     *                 {@code added}
      */
     public record HomeRailDto(String key, String title, String rankedBy,
                               List<HomeItemDto> items) {}

@@ -3,9 +3,12 @@ package com.example.kido.media.session;
 import java.time.Instant;
 import java.util.List;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+
+import com.example.kido.media.catalog.MediaType;
 
 /**
  * Aggregation is done in Java over a bounded window rather than with SQL date
@@ -56,6 +59,34 @@ public interface WatchEventRepository extends JpaRepository<WatchEvent, String> 
             group by e.mediaItemId
             """)
     List<Object[]> secondsByItem();
+
+    /**
+     * The titles the household has spent the most time on, most first.
+     *
+     * <p>Distinct from the play count the {@code most-watched} rail sorts on: that
+     * counts how many times a file was started, so five minutes of a film someone
+     * gave up on outranks another watched end to end. Summing the increments recorded
+     * here answers the question a count of starts only approximates.
+     *
+     * <p>The type and visibility filter is a subquery rather than a join because a
+     * watch event holds a bare item id and no association to the item. Filtering in
+     * SQL rather than over-fetching and discarding afterwards means the pageable is an
+     * exact page of eligible titles instead of a pool that might come back short. Ties
+     * are broken by id so the rail does not reshuffle between two requests that see
+     * the same data.
+     *
+     * @return {@code [mediaItemId, secondsWatched]} rows, longest-watched first
+     */
+    @Query("""
+            select e.mediaItemId, sum(e.secondsWatched) from WatchEvent e
+            where e.mediaItemId in (
+                select m.id from MediaItem m
+                where m.missing = false and m.hidden = false and m.type in :types)
+            group by e.mediaItemId
+            order by sum(e.secondsWatched) desc, e.mediaItemId asc
+            """)
+    List<Object[]> topItemsByWatchTime(@Param("types") List<MediaType> types,
+                                       Pageable pageable);
 
     /** Housekeeping: events older than the retention window are not worth keeping. */
     void deleteByOccurredAtLessThan(Instant cutoff);

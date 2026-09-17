@@ -23,6 +23,8 @@ import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.catalog.MediaItemRepository;
 import com.example.kido.media.catalog.MediaType;
 import com.example.kido.media.engagement.MediaItemLikeRepository;
+import com.example.kido.media.session.WatchEvent;
+import com.example.kido.media.session.WatchEventRepository;
 
 /**
  * The home screen end to end: likes are recorded per profile, play counts and ratings
@@ -43,6 +45,9 @@ class MediaHomeIntegrationTest {
 
     @Autowired
     MediaItemLikeRepository likes;
+
+    @Autowired
+    WatchEventRepository watchEvents;
 
     private final HttpClient http = HttpClient.newHttpClient();
     private String token;
@@ -97,6 +102,7 @@ class MediaHomeIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         likes.deleteAll();
+        watchEvents.deleteAll();
         items.deleteAll();
         String[] credentials = registerWithProfile("home");
         token = credentials[0];
@@ -119,6 +125,22 @@ class MediaHomeIntegrationTest {
                 .rating(rating)
                 .directPlayCount(directPlays)
                 .transcodeCount(transcodes)
+                .build());
+    }
+
+    /**
+     * Credits watched time to a title, the way a run of progress reports would.
+     *
+     * <p>Written as an event row rather than driven through the progress endpoint
+     * because the increment recorded there is bounded against wall-clock elapsed time —
+     * a test that reported its way to three hours of viewing would have to take three
+     * hours to do it.
+     */
+    private void recordWatchTime(MediaItem film, double seconds) {
+        watchEvents.save(WatchEvent.builder()
+                .profileId(profileId)
+                .mediaItemId(film.getId())
+                .secondsWatched(seconds)
                 .build());
     }
 
@@ -191,15 +213,16 @@ class MediaHomeIntegrationTest {
     @Test
     void homeReturnsEveryRailAndTheWeightsBehindThem() throws Exception {
         insertFilm("Acclaimed", 9.2, 1, 0);
-        insertFilm("Rewatched", 6.5, 30, 10);
+        MediaItem rewatched = insertFilm("Rewatched", 6.5, 30, 10);
         MediaItem loved = insertFilm("Loved", 6.0, 2, 0);
         send("PUT", "/api/media/items/" + loved.getId() + "/like", null, token);
+        recordWatchTime(rewatched, 3600);
 
         HttpResponse<String> home = send("GET", "/api/media/home", null, token);
         assertEquals(200, home.statusCode(), home.body());
 
-        for (String rail : List.of("popular", "top-rated", "most-watched", "most-liked",
-                "recently-added")) {
+        for (String rail : List.of("popular", "top-rated", "most-watched", "top-viewing",
+                "most-liked", "recently-added")) {
             assertTrue(home.body().contains("\"key\":\"" + rail + "\""),
                     "missing rail " + rail + " in " + home.body());
         }
@@ -214,13 +237,71 @@ class MediaHomeIntegrationTest {
         insertFilm("Acclaimed", 9.2, 1, 0);
         insertFilm("Rewatched", 6.5, 30, 10);
         MediaItem loved = insertFilm("Loved", 6.0, 2, 0);
+        MediaItem absorbing = insertFilm("Absorbing", 6.0, 1, 0);
         send("PUT", "/api/media/items/" + loved.getId() + "/like", null, token);
+        recordWatchTime(absorbing, 7200);
 
         String body = send("GET", "/api/media/home", null, token).body();
 
         assertEquals("Acclaimed", firstTitleOfRail(body, "top-rated"));
         assertEquals("Rewatched", firstTitleOfRail(body, "most-watched"));
+        assertEquals("Absorbing", firstTitleOfRail(body, "top-viewing"));
         assertEquals("Loved", firstTitleOfRail(body, "most-liked"));
+    }
+
+    /**
+     * The reason the rail was added: a play count only says a file was opened. A title
+     * someone bailed on after two minutes, thirty times over, outranks everything on
+     * most-watched while barely registering here.
+     */
+    @Test
+    void topViewingRanksByTimeWatchedNotTimesStarted() throws Exception {
+        MediaItem abandoned = insertFilm("Abandoned", 7.0, 30, 0);
+        MediaItem finished = insertFilm("Finished", 7.0, 2, 0);
+        recordWatchTime(abandoned, 30 * 120.0);
+        // Two sittings, because the rail sums a title's events rather than reading the
+        // largest one.
+        recordWatchTime(finished, 4000);
+        recordWatchTime(finished, 3200);
+
+        String body = send("GET", "/api/media/home", null, token).body();
+
+        assertEquals("Abandoned", firstTitleOfRail(body, "most-watched"), body);
+        assertEquals(List.of("Finished", "Abandoned"),
+                titlesOfRail(railBody(body, "top-viewing")), body);
+        // The subtitle has to name the signal, or "top" means nothing on this rail.
+        assertTrue(railBody(body, "top-viewing").contains("\"reason\":\"Watched 2h\""),
+                railBody(body, "top-viewing"));
+        assertTrue(body.contains("\"rankedBy\":\"watchTime\""), body);
+    }
+
+    /** A title nobody has watched must not appear on the rail at all. */
+    @Test
+    void topViewingOmitsTitlesWithNoWatchTime() throws Exception {
+        MediaItem watched = insertFilm("Watched", 7.0, 1, 0);
+        insertFilm("Untouched", 9.5, 0, 0);
+        recordWatchTime(watched, 1800);
+
+        String body = send("GET", "/api/media/home", null, token).body();
+
+        assertEquals(List.of("Watched"), titlesOfRail(railBody(body, "top-viewing")), body);
+    }
+
+    /**
+     * Events outlive the item they belong to for as long as a purge takes, and a rail
+     * built from them must not carry an id it can no longer draw.
+     */
+    @Test
+    void topViewingSkipsItemsThatAreNoLongerInTheLibrary() throws Exception {
+        MediaItem gone = insertFilm("Gone", 7.0, 1, 0);
+        MediaItem present = insertFilm("Present", 7.0, 1, 0);
+        recordWatchTime(gone, 7200);
+        recordWatchTime(present, 1800);
+        items.delete(gone);
+
+        String body = send("GET", "/api/media/home", null, token).body();
+
+        assertEquals(List.of("Present"), titlesOfRail(railBody(body, "top-viewing")), body);
     }
 
     /**

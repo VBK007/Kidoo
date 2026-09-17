@@ -168,6 +168,34 @@ public final class PopularityRanker {
         return count == 1 ? "Liked in your house" : "Liked by " + count + " in your house";
     }
 
+    /**
+     * Time actually spent on a title, phrased for a poster subtitle.
+     *
+     * <p>Rounded down to the minute and never to seconds: the sum is a pile of
+     * increments bounded against wall-clock time, so its last few seconds are an
+     * estimate and printing them would claim a precision the number does not have.
+     *
+     * @param seconds total watched across the household
+     */
+    public static String watchTimeLabel(double seconds) {
+        long total = (long) Math.floor(seconds);
+        if (total <= 0) {
+            return "Not watched yet";
+        }
+        long minutes = total / 60;
+        if (minutes == 0) {
+            return "Watched under a minute";
+        }
+        long hours = minutes / 60;
+        if (hours == 0) {
+            return "Watched " + minutes + "m";
+        }
+        long remainder = minutes % 60;
+        return remainder == 0
+                ? "Watched " + hours + "h"
+                : "Watched " + hours + "h " + remainder + "m";
+    }
+
     private static String sortKey(MediaItem item) {
         if (item.getSortTitle() != null) {
             return item.getSortTitle();
