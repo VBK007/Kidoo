@@ -459,6 +459,7 @@ a bare heading, so a fresh library returns `"rails": []`:
 | `key` | `rankedBy` | Order |
 | --- | --- | --- |
 | `popular` | `popularity` | The blend of all three signals |
+| `collection:<id>` | `collection` | one per pinned collection, in the owner’s order |
 | `top-rated` | `rating` | `rating` desc; unrated titles are excluded |
 | `most-watched` | `views` | plays desc, direct and transcoded together |
 | `top-viewing` | `watchTime` | seconds watched desc, summed across the household |
@@ -490,6 +491,87 @@ no watch time never appear on it, and `reason` gives the total as `Watched 3h
 
 **`GET /api/media/home/popular`** — the blended rail alone, same query
 parameters. → one rail object.
+
+### Collections
+
+A collection is a saved search with a name on it — the same `CatalogQuery` the
+browse endpoint builds from its parameters. That is why one endpoint opens any
+of them and why every response carries its `query`: a client can render it as
+removable chips, copy it into a new collection, or explain why a title is in
+the list.
+
+```
+GET    /api/media/collections                 # all three kinds
+GET    /api/media/collections/{id}            # one
+GET    /api/media/collections/{id}/items      # its titles, paged
+POST   /api/media/collections                 # save one
+PUT    /api/media/collections/{id}            # edit, rename or pin
+DELETE /api/media/collections/{id}
+```
+
+`{id}` takes three forms, so a client holds one string and never has to
+remember which sort it has:
+
+| Kind | `id` | Who defines it | What may be changed |
+| --- | --- | --- | --- |
+| `BUILTIN` | `builtin:<key>` | ships with the server | name, icon, pin, order |
+| `CUSTOM` | a uuid | the account | everything |
+| `DISCOVERED` | `discovered:<key>` | the library's own facets | nothing |
+
+**Built-ins** are code, not seeded rows: a fresh account stores nothing and
+still lists all seven, and a later version can improve a definition without a
+data migration. A row appears only when one is pinned or renamed, which is also
+why `DELETE` on a built-in *restores* it rather than removing it.
+
+```
+never-watched · under-two-hours · four-k · highly-rated
+hidden-gems   · this-year       · our-own
+```
+
+**Discovered** collections are the groupings the library already contains —
+genre, language, cast or crew, decade — tallied on request rather than
+materialised, so they are never stale. A group needs **3** titles (5 for a
+decade) before it becomes one, and at most 12 per kind are returned. Keys are
+lowercased (`discovered:genre:action`); the facet's stored casing is display,
+not identity.
+
+There is deliberately **no franchise grouping**. It would need either a
+metadata provider's collection id — this server has none, `tmdbId` comes from
+an NFO sidecar and nothing looks it up — or a guess at the title, and a guess
+loose enough to catch *The Godfather Part II* also groups *Kaithi* with
+*Kaithi (2019) 1080p*. Every other grouping comes from a facet something
+actually read.
+
+**Pinning** puts a rail on the home screen, directly after `popular` and above
+the server's own rankings: somebody chose it, and a choice outranks a ranking.
+The rail's `key` is `collection:<id>` and its `rankedBy` is `collection`. A
+pinned collection with no members is omitted rather than sent as a bare
+heading.
+
+Create and update take the same body, and an omitted field on an update is left
+alone — so pinning is `{"pinned":true}` and nothing else:
+
+```json
+{ "name": "Great Tamil action", "icon": "🔥", "pinned": true, "sortOrder": 0,
+  "query": { "genres": ["action"], "languages": ["ta"],
+             "primaryLanguageOnly": true, "rating": { "min": 8.0 } } }
+```
+
+Every field of `query` is optional and absent means "no opinion":
+`types[]` `titleContains` `genres[]` `genreMatch` (`ANY`/`ALL`) `people[]`
+`languages[]` `primaryLanguageOnly` `year{min,max}` `runtimeMinutes{min,max}`
+`rating{min,max}` `minHeight` `watched` `liked` `sort`.
+
+`watched` is where per-person and per-household part company:
+`ANYONE` (no filter) · `ME` · `NOT_ME` · `SOMEONE` · `NOBODY`. "I haven't seen
+it" and "nobody here has seen it" are different questions, and a household
+Never-watched rail depends on telling them apart. A collection whose query uses
+`ME`/`NOT_ME` or `liked` is scoped to the profile that saved it; everything
+else belongs to the household.
+
+A query whose bounds cross (`year: {min: 2020, max: 2010}`) is a **400** rather
+than an empty list — returning nothing would look like a library with no such
+films instead of a typo.
 
 ### Likes
 

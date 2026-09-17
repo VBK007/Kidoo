@@ -29,21 +29,6 @@ import com.example.kido.media.query.CatalogSort;
  */
 class CatalogQueryTest {
 
-    @Test
-    void anEmptyQueryIsTheWholeLibrary() {
-        assertTrue(CatalogQuery.builder().build().isUnfiltered());
-        // A sort is an order, not a filter — it narrows nothing.
-        assertTrue(CatalogQuery.builder().sort("title").build().isUnfiltered());
-    }
-
-    @Test
-    void anyFilterMakesItFiltered() {
-        assertFalse(CatalogQuery.builder().titleContains("inception").build().isUnfiltered());
-        assertFalse(CatalogQuery.builder().minHeight(2160).build().isUnfiltered());
-        assertFalse(CatalogQuery.builder().watched(WatchedBy.NOBODY).build().isUnfiltered());
-        assertFalse(CatalogQuery.builder().liked(true).build().isUnfiltered());
-    }
-
     /**
      * Facets are compared lowercased in SQL, so they are lowercased once here instead
      * of per row.
@@ -75,7 +60,6 @@ class CatalogQueryTest {
         assertNull(query.titleContains());
         assertNull(query.genres());
         assertNull(query.types());
-        assertTrue(query.isUnfiltered());
     }
 
     /**

@@ -3,6 +3,7 @@ package com.example.kido.media.home;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -13,6 +14,7 @@ import com.example.kido.media.dto.HomeDtos.HomeDto;
 import com.example.kido.media.dto.HomeDtos.HomeRailDto;
 import com.example.kido.media.web.ActiveProfile;
 import com.example.kido.profile.Profile;
+import com.example.kido.user.AppUser;
 
 /** The home screen, composed server-side. Profile-scoped like everything else. */
 @RestController
@@ -33,10 +35,11 @@ public class HomeController {
      * @param limit posters per rail, capped at 50
      */
     @GetMapping("/home")
-    public HomeDto home(@ActiveProfile Profile profile,
+    public HomeDto home(@AuthenticationPrincipal AppUser user,
+                        @ActiveProfile Profile profile,
                         @RequestParam(required = false) String types,
                         @RequestParam(defaultValue = "20") int limit) {
-        return service.home(profile, parseTypes(types), limit);
+        return service.home(user, profile, parseTypes(types), limit);
     }
 
     /**

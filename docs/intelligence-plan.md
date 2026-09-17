@@ -315,8 +315,8 @@ concrete, small piece of work rather than a prompt to be tuned.
 | --- | --- | --- | --- | --- |
 | 0.1 Languages | A facet three features need | — | S | **done** |
 | 1 `CatalogQuery` | Nothing visible | 0.1 | M | **done** |
-| 2 Smart Collections | Real, visible feature | 1 | M | next |
-| 3 Recommendations | The headline feature | 1, taste model | L | |
+| 2 Smart Collections | Real, visible feature | 1 | M | **done** |
+| 3 Recommendations | The headline feature | 1, taste model | L | next |
 | 4 NL search (rules) | Works offline, free | 1 | M | |
 | 5 NL search (LLM) | Covers the rest | 4 | S | |
 | 6 Assistant | The distinctive one | 1–5 | M | |

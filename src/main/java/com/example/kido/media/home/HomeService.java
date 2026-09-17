@@ -17,7 +17,9 @@ import com.example.kido.media.catalog.CatalogService;
 import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.catalog.MediaItemRepository;
 import com.example.kido.media.catalog.MediaType;
+import com.example.kido.media.collection.CollectionService;
 import com.example.kido.media.dto.CatalogDtos.ItemSummaryDto;
+import com.example.kido.media.dto.CollectionDtos.CollectionDto;
 import com.example.kido.media.dto.HomeDtos.HomeDto;
 import com.example.kido.media.dto.HomeDtos.HomeItemDto;
 import com.example.kido.media.dto.HomeDtos.HomeRailDto;
@@ -26,6 +28,7 @@ import com.example.kido.media.home.PopularityRanker.Scored;
 import com.example.kido.media.playback.PlaybackService;
 import com.example.kido.media.session.WatchEventRepository;
 import com.example.kido.profile.Profile;
+import com.example.kido.user.AppUser;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -68,15 +71,18 @@ public class HomeService {
     private final CatalogService catalog;
     private final PlaybackService playback;
     private final WatchEventRepository watchEvents;
+    private final CollectionService collections;
 
     public HomeService(MediaItemRepository items,
                        CatalogService catalog,
                        PlaybackService playback,
-                       WatchEventRepository watchEvents) {
+                       WatchEventRepository watchEvents,
+                       CollectionService collections) {
         this.items = items;
         this.catalog = catalog;
         this.playback = playback;
         this.watchEvents = watchEvents;
+        this.collections = collections;
     }
 
     /**
@@ -84,7 +90,7 @@ public class HomeService {
      * @param limit posters per rail
      */
     @Transactional(readOnly = true)
-    public HomeDto home(Profile profile, List<MediaType> types, int limit) {
+    public HomeDto home(AppUser owner, Profile profile, List<MediaType> types, int limit) {
         List<MediaType> requested = types == null || types.isEmpty() ? DEFAULT_TYPES : types;
         int railSize = Math.min(Math.max(1, limit), MAX_RAIL_SIZE);
         Pageable railPage = PageRequest.of(0, railSize);
@@ -108,6 +114,9 @@ public class HomeService {
         List<HomeRailDto> rails = new ArrayList<>();
         addRail(rails, "popular", "Popular in your library", "popularity",
                 popular, summaries, scores::get, PopularityRanker::ratingLabel);
+        // Pinned collections sit second, above the server's own judgements: somebody
+        // chose these, and a choice outranks a ranking.
+        rails.addAll(pinnedRails(owner, profile, railSize));
         addRail(rails, "top-rated", "Top rated", "rating",
                 topRated, summaries, id -> null, PopularityRanker::ratingLabel);
         addRail(rails, "most-watched", "Most watched", "views",
@@ -140,6 +149,48 @@ public class HomeService {
                         PopularityRanker.VIEW_WEIGHT,
                         PopularityRanker.LIKE_WEIGHT),
                 Instant.now().toString());
+    }
+
+    /**
+     * A rail for each collection the owner pinned.
+     *
+     * <p>A collection is a query, so this is one search per pinned rail — which is the
+     * cost of letting somebody put an arbitrary filter on their home screen, and the
+     * reason pinning is deliberate rather than automatic. An empty one is dropped: a
+     * heading over nothing is worse than a missing row, and a collection can legitimately
+     * empty out as the library changes.
+     */
+    private List<HomeRailDto> pinnedRails(AppUser owner, Profile profile, int railSize) {
+        if (owner == null) {
+            return List.of();
+        }
+        List<HomeRailDto> rails = new ArrayList<>();
+        for (CollectionDto collection : collections.pinned(owner, profile)) {
+            List<ItemSummaryDto> found =
+                    catalog.search(profile, collection.query(), 0, railSize).items();
+            if (found.isEmpty()) {
+                continue;
+            }
+            rails.add(new HomeRailDto(
+                    "collection:" + collection.id(),
+                    collection.name(),
+                    "collection",
+                    found.stream()
+                            .map(summary -> new HomeItemDto(summary, null, reasonFor(summary)))
+                            .toList()));
+        }
+        return rails;
+    }
+
+    /**
+     * A collection says why a title is on the rail — the filter does — so the tile
+     * subtitle falls back to the one fact every tile has room for.
+     */
+    private static String reasonFor(ItemSummaryDto summary) {
+        if (summary.rating() != null) {
+            return String.format(java.util.Locale.ROOT, "Rated %.1f", summary.rating());
+        }
+        return "In your library";
     }
 
     /** The blended rail on its own, without the rest of the screen. */

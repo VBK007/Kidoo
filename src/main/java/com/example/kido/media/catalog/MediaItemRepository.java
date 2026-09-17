@@ -144,6 +144,52 @@ public interface MediaItemRepository
             """)
     List<String> findDistinctLanguages();
 
+    // --- facet tallies, for collections the server discovers rather than is told ---
+    //
+    // One grouped query per facet instead of a count per value: a library with four
+    // hundred distinct cast names would otherwise be four hundred round trips to decide
+    // which of them deserve a collection. Each returns [value, count] ordered by count,
+    // so the caller can take the top few and stop.
+
+    @Query("""
+            select g, count(m) from MediaItem m join m.genres g
+            where m.missing = false and m.hidden = false and m.type in :types
+            group by g
+            order by count(m) desc, g asc
+            """)
+    List<Object[]> countByGenre(@Param("types") List<MediaType> types);
+
+    @Query("""
+            select p, count(m) from MediaItem m join m.people p
+            where m.missing = false and m.hidden = false and m.type in :types
+            group by p
+            order by count(m) desc, p asc
+            """)
+    List<Object[]> countByPerson(@Param("types") List<MediaType> types);
+
+    @Query("""
+            select l, count(m) from MediaItem m join m.languages l
+            where m.missing = false and m.hidden = false and m.type in :types
+            group by l
+            order by count(m) desc, l asc
+            """)
+    List<Object[]> countByLanguage(@Param("types") List<MediaType> types);
+
+    /**
+     * Per year, not per decade: bucketing is arithmetic on a column, and integer
+     * division is one of the things H2 and PostgreSQL do not agree about. A library
+     * spans a century at most, so the grouping into decades is cheaper done in Java
+     * than it is to make portable in SQL.
+     */
+    @Query("""
+            select m.year, count(m) from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.year is not null
+            group by m.year
+            order by m.year asc
+            """)
+    List<Object[]> countByYear(@Param("types") List<MediaType> types);
+
     @Query("""
             select coalesce(sum(m.fileSize), 0) from MediaItem m
             where m.missing = false and m.hidden = false

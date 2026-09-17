@@ -134,16 +134,6 @@ public record CatalogQuery(
         }
     }
 
-    /** True when nothing is being asked for — the whole browsable library. */
-    public boolean isUnfiltered() {
-        return isBlank(types) && (titleContains == null || titleContains.isBlank())
-                && isBlank(genres) && isBlank(people) && isBlank(languages)
-                && isRangeBlank(year) && isRangeBlank(runtimeMinutes) && isRangeBlank(rating)
-                && minHeight == null
-                && (watched == null || watched == WatchedBy.ANYONE)
-                && liked == null;
-    }
-
     /**
      * The same query with junk removed and contradictions rejected.
      *
@@ -215,13 +205,5 @@ public record CatalogQuery(
 
     private static Range blankToNull(Range range) {
         return range == null || range.isEmpty() ? null : range;
-    }
-
-    private static boolean isBlank(Set<?> values) {
-        return values == null || values.isEmpty();
-    }
-
-    private static boolean isRangeBlank(Range range) {
-        return range == null || range.isEmpty();
     }
 }
