@@ -9,6 +9,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -186,7 +190,9 @@ class MediaCommentIntegrationTest {
     @Test
     void a_thread_reads_newest_first_and_pages() throws Exception {
         postComment(token, childProfileId, "first");
+        letTheClockTick();
         postComment(token, childProfileId, "second");
+        letTheClockTick();
         postComment(token, childProfileId, "third");
 
         HttpResponse<String> firstPage = send("GET",
@@ -199,6 +205,62 @@ class MediaCommentIntegrationTest {
         // Newest first: the last thing said leads the thread.
         assertTrue(firstPage.body().indexOf("third") < firstPage.body().indexOf("second"));
         assertTrue(!firstPage.body().contains("\"body\":\"first\""));
+    }
+
+    /**
+     * Comments posted in the same breath share a timestamp — the clock behind
+     * {@code Instant.now()} advances in ticks of about 15ms, not continuously — so the
+     * order has to be settled by something else or it is not an order at all.
+     *
+     * <p>What that costs is not cosmetic. Each page is its own query, so an order that
+     * can differ between two of them shows one comment twice and loses another
+     * completely. This posts four without waiting, which is exactly the case a single
+     * timestamp cannot separate, and checks that paging through them still yields each
+     * one once.
+     *
+     * <p>Worth being straight about what this does and does not prove: it passes against
+     * H2 with or without the tiebreak, because H2 happens to return these rows in a
+     * consistent order anyway. Neither database promises that — the risk is a planner
+     * choosing differently for page 2 than for page 1, which is far likelier on
+     * PostgreSQL with a real table behind it. So this pins the property rather than
+     * reproducing the failure, and would catch a future change that dropped the
+     * tiebreak on a database less forgiving than this one.
+     */
+    @Test
+    void paging_a_thread_neither_repeats_nor_loses_a_comment() throws Exception {
+        for (int i = 0; i < 4; i++) {
+            postComment(token, childProfileId, "comment" + i);
+        }
+
+        List<String> seen = new ArrayList<>();
+        for (int page = 0; page < 2; page++) {
+            HttpResponse<String> response = send("GET", "/api/media/items/" + itemId
+                    + "/comments?page=" + page + "&size=2", null, token, childProfileId);
+            assertEquals(200, response.statusCode(), response.body());
+            Matcher matcher = Pattern.compile("\"body\":\"(comment\\d)\"")
+                    .matcher(response.body());
+            while (matcher.find()) {
+                seen.add(matcher.group(1));
+            }
+        }
+
+        assertEquals(4, seen.size(), "every comment appears exactly once: " + seen);
+        assertEquals(Set.of("comment0", "comment1", "comment2", "comment3"),
+                new HashSet<>(seen), "no comment is repeated or lost: " + seen);
+    }
+
+    /**
+     * Waits for the wall clock to advance, so two comments cannot share a timestamp.
+     *
+     * <p>A spin rather than a fixed sleep: it returns as soon as the clock ticks, which
+     * is what the test actually needs, and does not guess at how coarse that clock is on
+     * whatever machine this runs on.
+     */
+    private static void letTheClockTick() {
+        Instant start = Instant.now();
+        while (!Instant.now().isAfter(start)) {
+            Thread.onSpinWait();
+        }
     }
 
     @Test

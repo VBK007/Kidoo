@@ -229,6 +229,15 @@ public interface MediaItemRepository
     /** Timeline items still lacking a capture date — the client tagging nudge. */
     long countByTypeInAndCapturedAtIsNullAndMissingFalseAndHiddenFalse(List<MediaType> types);
 
-    Page<MediaItem> findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDesc(
+    /**
+     * The home-video timeline, newest shoot date first.
+     *
+     * <p>The id breaks ties for the same reason it does on a comment thread, and it
+     * matters more here: a capture date is a day, not an instant, so a whole afternoon's
+     * clips share one — and the client pages through this and merges groups as it
+     * scrolls, so an order that differs between two pages shows one clip twice and drops
+     * another.
+     */
+    Page<MediaItem> findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDescIdDesc(
             List<MediaType> types, Pageable pageable);
 }
