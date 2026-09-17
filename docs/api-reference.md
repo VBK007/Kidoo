@@ -514,7 +514,7 @@ GET /api/media/search?q=Show me Tamil movies under 2 hours with rating > 8
                "label": "Under 2 hours", "matched": "under 2 hours" },
              { "field": "rating", "value": ">=8.0",
                "label": "Rated 8+", "matched": "rating > 8" } ],
-  "understoodNothing": false,
+  "understoodNothing": false, "interpretedBy": "rules",
   "results": { "items": [], "page": 0, "size": 40, "totalItems": 1, "totalPages": 1 } }
 ```
 
@@ -555,6 +555,43 @@ Whatever no rule claims becomes a **title search** — a guess, but one that com
 back as a term like any other and can be dismissed. Filler (`show me`, `some`,
 `films`) is dropped rather than searched for. `understoodNothing` is true when no
 rule matched at all.
+
+#### The model fallback — off by default
+
+A sentence the rules read **nothing at all** in can be handed to Claude, which
+answers with the same `CatalogQuery` the rules produce. `interpretedBy` says
+which parser ran: `rules` or `model`.
+
+```
+app.media.ai.enabled=false        # AI_SEARCH_ENABLED
+app.media.ai.api-key=             # ANTHROPIC_API_KEY — blank means off whatever
+                                  # `enabled` says
+app.media.ai.model=claude-opus-5
+app.media.ai.effort=low           # a translation into a schema, not a problem
+app.media.ai.timeout=8s
+app.media.ai.cache-size=200
+```
+
+**The model never sees the database.** It fills in a flat schema which is mapped
+to a `CatalogQuery` — so every specification, page, permission check and test
+downstream is unchanged, and its blast radius is a filter it is allowed to get
+wrong. The library's vocabulary is sent with the request *and enforced on the
+way back*: a genre this library has never held is dropped even if the model
+names one.
+
+**Nothing it does can make search worse.** Off, unconfigured, unreachable, slow,
+refused, or answering with something the catalog would reject — every one of
+those falls back to what the rules understood, and none of them is an error the
+caller sees. A crossed range from the model is *not* a 400: the person typed a
+sentence, and blaming them for what a model did would be wrong.
+
+It is asked only when the rules read nothing, so the common path costs nothing
+and needs no network. `/search/interpret` never asks it at all — that fires per
+keystroke.
+
+`terms[]` is empty on a `model` answer: chips describe a span-by-span reading of
+the sentence, and a whole-query answer has no spans to attribute.
+
 
 parameters. → one rail object.
 ### Recommendations

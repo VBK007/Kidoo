@@ -2,6 +2,7 @@ package com.example.kido;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
@@ -19,6 +20,7 @@ import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -30,6 +32,7 @@ import com.example.kido.media.catalog.MediaType;
 import com.example.kido.media.playback.PlaybackProgress;
 import com.example.kido.media.playback.PlaybackProgressRepository;
 import com.example.kido.profile.Profile;
+import com.example.kido.media.search.ai.QueryTranslator;
 import com.example.kido.profile.ProfileRepository;
 
 /**
@@ -54,6 +57,10 @@ class MediaSearchIntegrationTest {
 
     @Autowired
     ProfileRepository profiles;
+
+    /** Empty unless app.media.ai.enabled is on, which it is not in this suite. */
+    @Autowired
+    ObjectProvider<QueryTranslator> translators;
 
     private final HttpClient http = HttpClient.newHttpClient();
     private String token;
@@ -308,6 +315,25 @@ class MediaSearchIntegrationTest {
         assertTrue(body.contains("\"totalItems\":5"), body);
         assertTrue(body.contains("\"totalPages\":3"), body);
         assertEquals(2, countOccurrences(body, "\"year\":2019"), body);
+    }
+
+    // --- the model is off by default ---
+
+    /**
+     * The shipped default. A home media server must search a disk it already has with no
+     * account anywhere and no internet, so the translator bean does not even exist unless
+     * somebody turns it on.
+     */
+    @Test
+    void searchWorksWithNoModelConfigured() throws Exception {
+        seedLibrary();
+
+        String body = search("tamil films");
+
+        assertTrue(body.contains("\"interpretedBy\":\"rules\""), body);
+        assertTrue(body.contains("Kaithi"), body);
+        assertNull(translators.getIfAvailable(),
+                "no translator bean should exist with app.media.ai.enabled unset");
     }
 
     // --- helpers ---

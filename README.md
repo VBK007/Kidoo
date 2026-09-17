@@ -69,6 +69,7 @@ full set and the reasoning behind each default.
 | `TRICKPLAY_ENABLED` | `false` | Sprite-sheet scrubbing (decodes whole files) |
 | `DOWNLOADS_ENABLED` | `true` | Offline download jobs |
 | `BILLING_VERIFY` | `dev` | `dev` accepts any token; `google` verifies with Play |
+| `AI_SEARCH_ENABLED` | `false` | Model fallback for the search box; blank `ANTHROPIC_API_KEY` keeps it off |
 | `FIREBASE_CREDENTIALS` | `secrets/…json` | Unset ⇒ Google sign-in off, endpoint answers 501 |
 
 ---

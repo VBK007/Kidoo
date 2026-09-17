@@ -335,8 +335,8 @@ concrete, small piece of work rather than a prompt to be tuned.
 | 2 Smart Collections | Real, visible feature | 1 | M | **done** |
 | 3 Recommendations | The headline feature | 1, taste model | L | **done** |
 | 4 NL search (rules) | Works offline, free | 1 | M | **done** |
-| 5 NL search (LLM) | Covers the rest | 4 | S | next |
-| 6 Assistant | The distinctive one | 1–5 | M | |
+| 5 NL search (LLM) | Covers the rest | 4 | S | **done** |
+| 6 Assistant | The distinctive one | 1–5 | M | next |
 
 Stage 1 is the only stage that ships nothing a user can see, and it is the one
 that makes stages 2, 4 and 5 small. Doing it out of order means writing the

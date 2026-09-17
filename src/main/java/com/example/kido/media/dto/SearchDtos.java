@@ -32,13 +32,19 @@ public final class SearchDtos {
     /**
      * @param query          what actually ran — the same object the browse endpoint
      *                       builds, so a client can edit it and re-run it directly
-     * @param understoodNothing true when no rule matched, which is the case a
-     *                       model-backed parser would be asked to take over
+     * @param understoodNothing true when no rule matched — the case the model-backed
+     *                       fallback is asked to take over
+     * @param interpretedBy  {@code rules} or {@code model}: which parser produced the
+     *                       query that ran. A client drawing chips should trust
+     *                       {@code terms} only for {@code rules} — the model answers
+     *                       with a whole query rather than a span-by-span reading of
+     *                       the sentence, so there is nothing to attribute to words
      */
     public record SearchResultDto(
             String query_text,
             CatalogQuery query,
             List<SearchTermDto> terms,
             boolean understoodNothing,
+            String interpretedBy,
             ItemPageDto results) {}
 }
