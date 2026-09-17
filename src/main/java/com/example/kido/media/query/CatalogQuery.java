@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 
 import com.example.kido.common.ApiException;
 import com.example.kido.media.catalog.MediaType;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import lombok.Builder;
 
@@ -124,11 +125,19 @@ public record CatalogQuery(
             return new Range(min, max);
         }
 
+        // Both are derived from the two components and neither is part of the wire
+        // contract. Without this Jackson auto-detects them as properties and writes
+        // "empty" and "impossible" into every serialised query — visible in API
+        // responses, and sent back by any client that edits a returned query and posts
+        // it to another endpoint.
+
+        @JsonIgnore
         public boolean isEmpty() {
             return min == null && max == null;
         }
 
         /** True when the bounds cross, which no item could ever satisfy. */
+        @JsonIgnore
         public boolean isImpossible() {
             return min != null && max != null && min > max;
         }

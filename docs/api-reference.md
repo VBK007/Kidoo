@@ -155,16 +155,19 @@ after that page came back, which meant `?unwatched=true&size=40` could return
 fewer than 40 unwatched titles while `totalItems` counted the watched ones too.
 Both are fixed; a client that worked around the short pages can stop.
 
-### 3. Search — partial
+### 3. Search — built
 
 ```
-GET /api/media/items?q=inception     # matches title, sort title and filename
+GET /api/media/search?q=Tamil films under 2 hours rated over 8
+GET /api/media/search/interpret?q=...   # the parse alone, for live chips
+GET /api/media/items?q=inception        # plain title substring match
 GET /api/media/people
 ```
 
-Missing: no `NEEDS TRANSCODE` hint on results (that needs device capabilities
-at browse time, which only the decision endpoint takes today), and no folder
-"Jump to" facet.
+`/search` reads the whole phrase — see **Search by sentence** below. Missing:
+no `NEEDS TRANSCODE` hint on results (that needs device capabilities at browse
+time, which only the decision endpoint takes today), and no folder "Jump to"
+facet.
 
 ### 4. Movie detail — partial
 
@@ -491,6 +494,68 @@ no watch time never appear on it, and `reason` gives the total as `Watched 3h
 20m`, rounded down to the minute.
 
 **`GET /api/media/home/popular`** — the blended rail alone, same query
+### Search by sentence
+
+**`GET /api/media/search`** — the whole phrase, not a title substring.
+Query: `q`, `page`, `size`. Separate from `GET /api/media/items?q=`, which is and
+stays a plain title match.
+
+```
+GET /api/media/search?q=Show me Tamil movies under 2 hours with rating > 8
+```
+
+```json
+{ "query_text": "Show me Tamil movies under 2 hours with rating > 8",
+  "query": { "languages": ["ta"], "primaryLanguageOnly": true,
+             "runtimeMinutes": { "max": 120 }, "rating": { "min": 8.0 } },
+  "terms": [ { "field": "language", "value": "ta",
+               "label": "Tamil", "matched": "tamil" },
+             { "field": "runtime", "value": "<=120",
+               "label": "Under 2 hours", "matched": "under 2 hours" },
+             { "field": "rating", "value": ">=8.0",
+               "label": "Rated 8+", "matched": "rating > 8" } ],
+  "understoodNothing": false,
+  "results": { "items": [], "page": 0, "size": 40, "totalItems": 1, "totalPages": 1 } }
+```
+
+**No model, no network, no key.** The entities in a sentence — genres, cast
+names, languages — are a list this server already holds, so the usual hard part
+of natural-language search is not hard here. A word the library has never seen
+cannot become a filter for it: `acton` does not resolve to `action`, it falls
+through to a title search, which is visible and dismissible.
+
+**`terms[]` is the feature, not instrumentation.** Draw it as removable chips. A
+search box that silently reinterprets what somebody typed is one they can only
+rephrase at; showing the parse lets them fix a wrong reading by tapping. Each
+term carries `matched` — the words it was read from — so it is clear what was
+consumed.
+
+**`GET /api/media/search/interpret?q=…`** → `terms[]` alone, for a box that shows
+chips as somebody types rather than after they press return.
+
+What it understands:
+
+| Shape | Examples |
+| --- | --- |
+| runtime | `under 2 hours` · `under two hours` · `less than 90 minutes` · `2 hours or less` · `over 3 hours` |
+| rating | `rating above 8` · `rating > 8` · `imdb over 8` · `8+ rating` · `highly rated` |
+| year | `from the 90s` · `1990s` · `the 20s` · `from 2015` · `before 2000` · `after 2010` · `this year` |
+| quality | `4k` · `uhd` · `1080p` · `hd` |
+| watch state | `never watched` · `nobody has watched` · `unwatched` · `i haven't seen` · `we watched` |
+| liked | `films i liked` · `my favourites` |
+| order | `newest` · `best` · `top rated` · `most liked` |
+| type | `anime` · `home videos` · `photos` · `music` |
+| entities | any genre, cast name or language **the library actually holds** |
+
+A two-digit decade picks the century people mean: `the 90s` is 1990 and `the
+20s` is 2020. A language typed into a search box means the film's own language,
+not a dub it happens to carry, so it sets `primaryLanguageOnly`.
+
+Whatever no rule claims becomes a **title search** — a guess, but one that comes
+back as a term like any other and can be dismissed. Filler (`show me`, `some`,
+`films`) is dropped rather than searched for. `understoodNothing` is true when no
+rule matched at all.
+
 parameters. → one rail object.
 ### Recommendations
 
