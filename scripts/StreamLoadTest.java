@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -84,6 +85,9 @@ public final class StreamLoadTest {
     private static int rampSeconds = 10;
     private static long chunkBytes = 2L * 1024 * 1024;
 
+    /** How often the live line prints. */
+    private static final long TICK_MS = 5000L;
+
     // --- what it measured --------------------------------------------------
 
     private static final LongAdder bytesRead = new LongAdder();
@@ -94,6 +98,20 @@ public final class StreamLoadTest {
     private static final AtomicLong decisionsTranscode = new AtomicLong();
     private static final LongAdder viewersKeptUp = new LongAdder();
     private static final LongAdder viewersFellBehind = new LongAdder();
+
+    /** How many viewers are holding an open stream right now. */
+    private static final AtomicInteger active = new AtomicInteger();
+    private static final AtomicInteger peakActive = new AtomicInteger();
+
+    /**
+     * Bytes each viewer has pulled so far, keyed by viewer number.
+     *
+     * The live count that matters is not how many *started* — it is how many are
+     * still getting frames. A viewer whose socket has stalled is still "active"
+     * by any count the server keeps, and is watching a frozen picture. Comparing
+     * this map between ticks separates the two.
+     */
+    private static final Map<Integer, Long> viewerBytes = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws Exception {
         parse(args);
@@ -154,7 +172,7 @@ public final class StreamLoadTest {
                     // thundering herd nobody will ever produce, and it would
                     // hide the steady-state behaviour underneath it.
                     Thread.sleep((long) (rampSeconds * 1000L * ((double) index / Math.max(1, viewers))));
-                    viewer(client, deadline);
+                    viewer(client, deadline, index);
                 } catch (Exception e) {
                     count("viewer:" + e.getClass().getSimpleName());
                 } finally {
@@ -165,17 +183,36 @@ public final class StreamLoadTest {
 
         // Progress while it runs, so a run that is going badly can be stopped
         // without waiting for the summary.
+        System.out.printf("   time   active  playing  stalled   Mbps    server   errors%n");
         Thread reporter = startDaemon(() -> {
-            long last = 0;
+            long lastBytes = 0;
+            Map<Integer, Long> lastPerViewer = new java.util.HashMap<>();
             try {
                 while (done.getCount() > 0) {
-                    Thread.sleep(5000);
+                    Thread.sleep(TICK_MS);
+
                     long now = bytesRead.sum();
-                    double mbps = (now - last) * 8.0 / 5.0 / 1_000_000.0;
-                    last = now;
-                    System.out.printf("  %5ds  %6.1f Mbps  %d requests  %d errors%n",
+                    double mbps = (now - lastBytes) * 8.0 / (TICK_MS / 1000.0) / 1_000_000.0;
+                    lastBytes = now;
+
+                    // Playing = pulled bytes since the last tick. Stalled = holds
+                    // an open stream and did not. That second number is the one
+                    // worth watching: it is the count of people staring at a
+                    // frozen frame while the server still thinks they are fine.
+                    Map<Integer, Long> snapshot = new java.util.HashMap<>(viewerBytes);
+                    int playing = 0;
+                    for (Map.Entry<Integer, Long> entry : snapshot.entrySet()) {
+                        if (entry.getValue() > lastPerViewer.getOrDefault(entry.getKey(), -1L)) {
+                            playing++;
+                        }
+                    }
+                    lastPerViewer = snapshot;
+
+                    int live = active.get();
+                    System.out.printf("  %5ds  %6d  %7d  %7d  %6.1f  %8s  %6d%n",
                             (System.nanoTime() - startedAt) / 1_000_000_000L,
-                            mbps, requests.sum(), totalFailures());
+                            live, playing, Math.max(0, live - playing), mbps,
+                            serverSessions(client), totalFailures());
                 }
             } catch (InterruptedException ignored) {
                 // Finished.
@@ -196,7 +233,7 @@ public final class StreamLoadTest {
     }
 
     /** One viewer: decide, then pull the stream until the clock runs out. */
-    private static void viewer(HttpClient client, long deadline) throws Exception {
+    private static void viewer(HttpClient client, long deadline, int index) throws Exception {
         String body = """
                 {"deviceName":"loadtest","videoCodecs":["h264","hevc","vp9","av1"],\
                 "audioCodecs":["aac","mp3","ac3","eac3","opus","vorbis","flac","dts"],\
@@ -225,9 +262,14 @@ public final class StreamLoadTest {
         String url = base + field(json, "url");
 
         long offset = 0;
-        long viewerBytes = 0;
+        long pulled = 0;
         long viewerStart = System.currentTimeMillis();
 
+        // From here this viewer is watching, and stays counted until it stops
+        // for any reason — the clock, a refused range, a dropped socket.
+        peakActive.accumulateAndGet(active.incrementAndGet(), Math::max);
+        viewerBytes.put(index, 0L);
+        try {
         while (System.currentTimeMillis() < deadline) {
             long from = offset;
             long to = offset + chunkBytes - 1;
@@ -252,8 +294,10 @@ public final class StreamLoadTest {
             long read = drain(response.body());
             bytesRead.add(read);
             requests.increment();
-            viewerBytes += read;
+            pulled += read;
             offset += read;
+            // What the live "playing" column reads between ticks.
+            viewerBytes.put(index, pulled);
 
             if (read < chunkBytes) {
                 offset = 0; // Reached the end; loop the file rather than stop.
@@ -264,20 +308,64 @@ public final class StreamLoadTest {
                 // the run settles at "watching" rather than "downloading".
                 double elapsed = (System.currentTimeMillis() - viewerStart) / 1000.0;
                 double shouldHaveRead = elapsed * assumedBitsPerSecond() / 8.0;
-                if (viewerBytes > shouldHaveRead) {
-                    long sleep = (long) ((viewerBytes - shouldHaveRead) / (assumedBitsPerSecond() / 8.0) * 1000);
+                if (pulled > shouldHaveRead) {
+                    long sleep = (long) ((pulled - shouldHaveRead) / (assumedBitsPerSecond() / 8.0) * 1000);
                     Thread.sleep(Math.min(sleep, 5000));
                 }
             }
         }
 
-        double achieved = viewerBytes * 8.0 / Math.max(1, (System.currentTimeMillis() - viewerStart) / 1000.0);
+        double achieved = pulled * 8.0 / Math.max(1, (System.currentTimeMillis() - viewerStart) / 1000.0);
         if (achieved >= assumedBitsPerSecond() * 0.95) {
             viewersKeptUp.increment();
         } else {
             viewersFellBehind.increment();
         }
+        } finally {
+            active.decrementAndGet();
+            viewerBytes.remove(index);
+        }
     }
+
+    /**
+     * What the server itself thinks is playing, as a cross-check.
+     *
+     * Worth having beside our own count because the two disagreeing is a finding
+     * in itself: sessions that outlive the socket mean the owner's "live streams"
+     * panel is lying, and "end this stream" is aimed at rows nobody is watching.
+     *
+     * Owner-only, so a non-owner login simply gets a dash rather than an error —
+     * the load test is still perfectly useful without it.
+     */
+    private static String serverSessions(HttpClient client) {
+        if (!sessionPollWorks) {
+            return "-";
+        }
+        try {
+            HttpResponse<String> response = client.send(
+                    authed(HttpRequest.newBuilder(URI.create(base + "/api/media/admin/sessions")))
+                            .timeout(Duration.ofSeconds(5))
+                            .GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                sessionPollWorks = false;
+                return "-";
+            }
+            // Counting `"sessionId":` occurrences beats parsing for one number.
+            int count = 0;
+            int at = 0;
+            while ((at = response.body().indexOf("\"sessionId\"", at)) >= 0) {
+                count++;
+                at++;
+            }
+            return String.valueOf(count);
+        } catch (Exception e) {
+            sessionPollWorks = false;
+            return "-";
+        }
+    }
+
+    private static volatile boolean sessionPollWorks = true;
 
     /** What one viewer needs per second. 1.6 Mbps is this library's 536p direct play. */
     private static double assumedBitsPerSecond() {
@@ -383,6 +471,7 @@ public final class StreamLoadTest {
         System.out.printf("  ran for            %.1fs%n", seconds);
         System.out.printf("  decisions          %d direct, %d transcode%n",
                 decisionsDirect.get(), decisionsTranscode.get());
+        System.out.printf("  peak concurrent    %d streaming at once%n", peakActive.get());
         System.out.printf("  range requests     %d%n", requests.sum());
         System.out.printf("  served             %.2f GB%n", bytesRead.sum() / 1e9);
         System.out.printf("  throughput         %.1f Mbps sustained%n", mbps);

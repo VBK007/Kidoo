@@ -42,6 +42,35 @@ gracefully, and what gives way first.
 - `--mode saturate` — everyone pulls flat out. Answers "what is the ceiling",
   and will look worse than any real evening.
 
+## The live table
+
+While it runs it prints a line every five seconds:
+
+```
+   time   active  playing  stalled   Mbps    server   errors
+      5s      12       12        0    19.2        12       0
+     10s      47       46        1    74.1        47       0
+     15s     100       88       12   158.6       100       0
+     20s     100       61       39    97.3       100       7
+```
+
+- **active** — viewers holding an open stream right now.
+- **playing** — of those, how many actually pulled bytes in the last five
+  seconds. This is the real answer to "how many are watching".
+- **stalled** — `active - playing`. Someone whose socket has gone quiet is still
+  a live session as far as the server is concerned, and is looking at a frozen
+  frame. **This is the column that tells you where the limit is**: throughput
+  plateaus long before it does, and a run can look healthy on Mbps alone while
+  half the room is buffering.
+- **server** — what `GET /api/media/admin/sessions` says is playing, polled
+  each tick. Owner-only; a dash means the login is not an owner, which costs
+  nothing else.
+- **errors** — cumulative, broken down in the summary.
+
+`server` drifting above `active` is a finding in its own right: sessions
+outliving their sockets means the owner's live-streams panel is overcounting,
+and "end this stream" is aimed at rows nobody is watching.
+
 ## What to watch for
 
 | Symptom | Likely cause |
