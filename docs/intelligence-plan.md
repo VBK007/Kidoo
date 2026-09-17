@@ -73,8 +73,15 @@ to copy the shape from, but the household variant is new.
 
 `WatchEventRepository.deleteByOccurredAtLessThan` exists and has **no caller**,
 so the full history is available for a taste model. That is luck, not design. A
-taste model must not silently degrade the day someone wires that sweep up, so
-store the derived taste (§3) rather than recomputing from raw events forever.
+taste model must not silently degrade the day someone wires that sweep up.
+
+> **Corrected while building §3.** This originally concluded "so store the
+> derived taste rather than recomputing it". That reasoning does not survive:
+> a stored taste is only useful while it is refreshed, and a refresh reads the
+> same pruned events — so a table buys staleness, not durability. The actual
+> defence is the weighting: a *finish* is the heaviest signal and lives on
+> `PlaybackProgress`, which nothing prunes. Watch time is a secondary signal and
+> degrades gracefully if the sweep is ever enabled.
 
 ---
 
@@ -164,13 +171,16 @@ scorer — not a change to the first one.
 
 ### The taste profile
 
-Derived, stored, refreshed on a schedule and on demand:
+Derived per request, over the facets an item already carries:
 
-```sql
-media_profile_taste(
-  profile_id, facet_kind,   -- GENRE | PERSON | LANGUAGE | DECADE | RUNTIME_BAND
-  facet_value, weight, updated_at)
 ```
+Facet(kind, value)  -- GENRE | PERSON | LANGUAGE | DECADE
+TasteProfile        -- Map<Facet, weight>, plus the title that established each
+```
+
+**No table**, contrary to the sketch this plan started with — see the correction
+under §0.3. Four reads and some arithmetic over a few hundred rows is cheap next
+to what the home screen already does, and it is never stale.
 
 Weights come from signals the server already records, in descending order of how
 much they mean:
@@ -191,13 +201,20 @@ applies, for the same reason (one favourite otherwise flattens the rest).
 
 `RecommendationScorer`, pure and static like `PopularityRanker`, so the ordering
 is testable without a database:
+```
+score = taste_match × 0.50     -- mean of the profile's weights over the item's facets
+      + quality     × 0.30     -- its rating, or the library's mean where it has none
+      + freshness   × 0.20     -- how recently it appeared on the disk
+```
 
-```
-score = taste_match × 0.45     -- overlap of item facets with profile weights
-      + quality     × 0.25     -- the existing blended popularity score
-      + freshness   × 0.15     -- unseen and recently added
-      + availability× 0.15     -- direct-playable, on disk, right length for the hour
-```
+**The availability term was dropped while building this.** Every candidate that
+reaches the scorer is already present, visible and of a playable type — the
+candidate query says so — so a term for it would score every row identically and
+read like a factor while doing nothing.
+
+Taste match is the **mean** of the facets an item carries, not the maximum: the
+maximum lets one favourite actor in a bit part drag up a film that is wrong in
+every other way, and the mean also lets a disliked facet pull a title back down.
 
 Two rules that matter more than the weights:
 
@@ -316,8 +333,8 @@ concrete, small piece of work rather than a prompt to be tuned.
 | 0.1 Languages | A facet three features need | — | S | **done** |
 | 1 `CatalogQuery` | Nothing visible | 0.1 | M | **done** |
 | 2 Smart Collections | Real, visible feature | 1 | M | **done** |
-| 3 Recommendations | The headline feature | 1, taste model | L | next |
-| 4 NL search (rules) | Works offline, free | 1 | M | |
+| 3 Recommendations | The headline feature | 1, taste model | L | **done** |
+| 4 NL search (rules) | Works offline, free | 1 | M | next |
 | 5 NL search (LLM) | Covers the rest | 4 | S | |
 | 6 Assistant | The distinctive one | 1–5 | M | |
 

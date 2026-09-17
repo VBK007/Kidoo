@@ -88,6 +88,19 @@ public interface WatchEventRepository extends JpaRepository<WatchEvent, String> 
     List<Object[]> topItemsByWatchTime(@Param("types") List<MediaType> types,
                                        Pageable pageable);
 
+    /**
+     * Seconds this profile has spent on each title it has touched.
+     *
+     * <p>Per profile, unlike {@link #secondsByItem()}: taste is a statement about a
+     * person, and one housemate watching something twice says nothing about another.
+     */
+    @Query("""
+            select e.mediaItemId, coalesce(sum(e.secondsWatched), 0) from WatchEvent e
+            where e.profileId = :profileId
+            group by e.mediaItemId
+            """)
+    List<Object[]> secondsByItemForProfile(@Param("profileId") String profileId);
+
     /** Housekeeping: events older than the retention window are not worth keeping. */
     void deleteByOccurredAtLessThan(Instant cutoff);
 

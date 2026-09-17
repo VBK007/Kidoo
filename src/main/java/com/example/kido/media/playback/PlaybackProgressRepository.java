@@ -29,6 +29,16 @@ public interface PlaybackProgressRepository extends JpaRepository<PlaybackProgre
     /** Every profile's progress on an item, e.g. when the item itself is being purged. */
     void deleteByMediaItemId(String mediaItemId);
 
+    /**
+     * Everything this profile has ever started.
+     *
+     * <p>Unbounded, and deliberately: it is the input to the taste model, which is a
+     * statement about a person rather than a page of results. A household profile
+     * accumulates hundreds of these, not millions â and the alternative, paging through
+     * them to build one vector, would be slower for no benefit.
+     */
+    List<PlaybackProgress> findByProfileId(String profileId);
+
     /** Watch hours per day, for the admin panel's 7-day chart. */
     @Query("""
             select p.profileId, sum(p.positionSeconds) from PlaybackProgress p

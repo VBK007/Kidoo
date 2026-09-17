@@ -19,6 +19,16 @@ public interface MediaItemLikeRepository extends JpaRepository<MediaItemLike, St
     long countByMediaItemId(String mediaItemId);
 
     /**
+     * Everything this profile has ever liked — the input to its taste model.
+     *
+     * <p>Named apart from the batched lookup below rather than overloading it: one
+     * answers "which of these did they like", the other "what do they like", and those
+     * read the same at a call site while meaning very different things.
+     */
+    @Query("select l.mediaItemId from MediaItemLike l where l.profileId = :profileId")
+    List<String> findAllLikedItemIds(@Param("profileId") String profileId);
+
+    /**
      * Which of these items this profile has liked.
      *
      * <p>One query per listing rather than one per tile: a grid of 40 posters would

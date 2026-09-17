@@ -458,6 +458,7 @@ a bare heading, so a fresh library returns `"rails": []`:
 
 | `key` | `rankedBy` | Order |
 | --- | --- | --- |
+| `for-you` | `recommendation` | taste + quality + freshness, per profile |
 | `popular` | `popularity` | The blend of all three signals |
 | `collection:<id>` | `collection` | one per pinned collection, in the owner’s order |
 | `top-rated` | `rating` | `rating` desc; unrated titles are excluded |
@@ -491,6 +492,60 @@ no watch time never appear on it, and `reason` gives the total as `Watched 3h
 
 **`GET /api/media/home/popular`** — the blended rail alone, same query
 parameters. → one rail object.
+### Recommendations
+
+**`GET /api/media/recommendations`** — what to watch, for the profile asking.
+Query: `types` (default `FILM,ANIME`), `limit` (capped at 50).
+
+```json
+{ "items": [ { "item": {}, "score": 0.784,
+               "reason": "Because you watched Kaithi",
+               "taste": 0.92, "quality": 0.8, "freshness": 0.4 } ],
+  "taste": [ { "kind": "genre", "value": "action",
+               "weight": 1.0, "evidence": "Kaithi" } ],
+  "basedOn": 12, "coldStart": false }
+```
+
+This is the one endpoint whose whole purpose is to differ between two people in
+the same house, so it is profile-scoped rather than account-scoped.
+
+**How a pick is scored.** `0.50` taste + `0.30` quality + `0.20` freshness.
+Taste leads because it is the only thing separating this from the rails that
+already exist; quality is there because a taste match nobody rates well is how a
+recommender ends up defending its own choices. Taste match is the **mean** of the
+facets a title carries, not the maximum — the maximum would let one favourite
+actor in a bit part drag up a film that is wrong in every other way.
+
+**What the taste is built from**, strongest first:
+
+| Signal | Weight | Why there |
+| --- | --- | --- |
+| Finished it | `1.0` | Nothing a person can do says more |
+| Watched most of it | `0.8` × fraction seen | Scaled, so an hour of a box set is not devotion |
+| Liked it | `0.6` | Deliberate, but an order of magnitude rarer |
+| Said so at first run | `0.3` | Behaviour beats it the moment there is any |
+| **Walked away from it** | **`−0.5`** | Started, under 15% watched, untouched for 21 days |
+
+Abandonment is the only negative and was the one signal already being recorded
+and never read. Without it a recommender confidently pushes what somebody has
+already rejected. Weights are normalised **per facet kind**, so a genre weight
+and a language weight are comparable — everybody has a most-watched language and
+it would otherwise sit at 1.0 and flatten every genre against it.
+
+**It is computed per request, not stored.** A stored taste is only useful while
+it is refreshed, and a refresh reads the same history, so a table buys staleness
+rather than durability. Four reads and some arithmetic over a few hundred rows is
+cheap beside what the home screen already does, and it is never out of date.
+
+`taste[]` is returned so a client can show what the server believes and a person
+can see where it is wrong. `coldStart` is true when there is no history at all —
+the picks are then quality and freshness alone, which is a sensible first screen
+rather than guesses presented as knowledge.
+
+Excluded from picks: anything this profile has **finished** (that is a rewatch,
+a different feature) and anything **half-watched** (it belongs on
+continue-watching, and in both places the screen looks thinner than it is).
+
 
 ### Collections
 

@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 
 import org.springframework.data.domain.PageRequest;
@@ -24,8 +25,10 @@ import com.example.kido.media.dto.HomeDtos.HomeDto;
 import com.example.kido.media.dto.HomeDtos.HomeItemDto;
 import com.example.kido.media.dto.HomeDtos.HomeRailDto;
 import com.example.kido.media.dto.HomeDtos.RankingWeightsDto;
+import com.example.kido.media.dto.RecommendationDtos.RecommendationsDto;
 import com.example.kido.media.home.PopularityRanker.Scored;
 import com.example.kido.media.playback.PlaybackService;
+import com.example.kido.media.recommend.RecommendationService;
 import com.example.kido.media.session.WatchEventRepository;
 import com.example.kido.profile.Profile;
 import com.example.kido.user.AppUser;
@@ -72,17 +75,20 @@ public class HomeService {
     private final PlaybackService playback;
     private final WatchEventRepository watchEvents;
     private final CollectionService collections;
+    private final RecommendationService recommendations;
 
     public HomeService(MediaItemRepository items,
                        CatalogService catalog,
                        PlaybackService playback,
                        WatchEventRepository watchEvents,
-                       CollectionService collections) {
+                       CollectionService collections,
+                       RecommendationService recommendations) {
         this.items = items;
         this.catalog = catalog;
         this.playback = playback;
         this.watchEvents = watchEvents;
         this.collections = collections;
+        this.recommendations = recommendations;
     }
 
     /**
@@ -112,10 +118,15 @@ public class HomeService {
         Map<String, Scored> scores = scoresById(ranked);
 
         List<HomeRailDto> rails = new ArrayList<>();
+        // Tonight's picks lead, because they are the only rail addressed to the person
+        // holding the phone rather than to the library. It is omitted when there is
+        // nothing to say — a cold profile gets the rails below, which are what a library
+        // with no history has always shown.
+        recommendedRail(profile, railSize).ifPresent(rails::add);
         addRail(rails, "popular", "Popular in your library", "popularity",
                 popular, summaries, scores::get, PopularityRanker::ratingLabel);
-        // Pinned collections sit second, above the server's own judgements: somebody
-        // chose these, and a choice outranks a ranking.
+        // Pinned collections sit next, above the server's own judgements: somebody chose
+        // these, and a choice outranks a ranking.
         rails.addAll(pinnedRails(owner, profile, railSize));
         addRail(rails, "top-rated", "Top rated", "rating",
                 topRated, summaries, id -> null, PopularityRanker::ratingLabel);
@@ -150,6 +161,28 @@ public class HomeService {
                         PopularityRanker.LIKE_WEIGHT),
                 Instant.now().toString());
     }
+    /**
+     * Tonight's picks, when there is anything to pick from.
+     *
+     * <p>Empty rather than filler when the library has nothing this profile has not
+     * already finished — a rail that says "for you" over the same titles as the rail
+     * below it teaches people to ignore both.
+     */
+    private Optional<HomeRailDto> recommendedRail(Profile profile, int railSize) {
+        RecommendationsDto picks =
+                recommendations.forProfile(profile, DEFAULT_TYPES, railSize);
+        if (picks.items().isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(new HomeRailDto(
+                "for-you",
+                picks.coldStart() ? "Worth a look" : "Tonight's picks",
+                "recommendation",
+                picks.items().stream()
+                        .map(pick -> new HomeItemDto(pick.item(), pick.score(), pick.reason()))
+                        .toList()));
+    }
+
 
     /**
      * A rail for each collection the owner pinned.
