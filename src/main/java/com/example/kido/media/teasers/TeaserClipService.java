@@ -5,14 +5,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -385,12 +388,72 @@ public class TeaserClipService {
         return clips.findByMediaItemIdOrderBySortOrderAscCreatedAtDesc(mediaItemId);
     }
 
+    /**
+     * One page of the global shorts feed, and the seed that dealt it.
+     *
+     * <p>A caller that has a seed passes it back with every later page; one that arrives
+     * without one is given a fresh seed here, to thread through the rest of the scroll.
+     */
+    public record FeedPage(List<TeaserClip> clips, int seed, int page, int size,
+                           long totalItems, int totalPages) {}
+
+    /**
+     * The global feed, shuffled rather than ordered.
+     *
+     * <p>Shorts are watched as a reel, one after another until something catches — so a
+     * fixed order means the same few clips are the only ones anybody ever reaches, and
+     * the rest sit behind a scroll nobody makes. Randomising is what gives every clip a
+     * turn at being first.
+     *
+     * <p>What this deliberately is <em>not</em> is {@code order by random()} per query.
+     * The feed is paged and each page is its own query, so re-dealing the deck for page 2
+     * would show clips already seen on page 1 and skip others entirely — the same defect
+     * the comment thread's tiebreak exists to prevent, except certain rather than
+     * occasional.
+     *
+     * <p>So the shuffle is seeded. One seed is one permutation of the whole feed, stable
+     * for as long as the caller keeps handing it back, and the next viewer through gets a
+     * different seed and so a different order. The permutation is computed here rather
+     * than in SQL because it has to be reproducible across pages and identical on
+     * PostgreSQL and H2, which share no hash function that would do it in the database.
+     *
+     * <p>The seed is an int rather than a long because it is echoed to a JavaScript
+     * client, which would silently round anything past 2^53 and hand back a seed that is
+     * not the one it was given. Four billion permutations is more than a feed needs.
+     *
+     * <p>The one thing a seed cannot hold still is the feed's membership: publishing a
+     * clip mid-scroll inserts it into the shuffled list and shifts everything after it,
+     * so a page turned across that edit can still repeat or skip one. That is true of any
+     * paged feed over a live table, and not worth a snapshot to fix.
+     */
     @Transactional(readOnly = true)
-    public Page<TeaserClip> feed(int page, int size) {
+    public FeedPage feed(int page, int size, Integer seed) {
         int pageSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
-        return clips.findByPublishedTrueAndStateOrderBySortOrderAscCreatedAtDesc(
-                TeaserClip.State.READY,
-                PageRequest.of(Math.max(0, page), pageSize, Sort.by(Sort.Direction.ASC, "sortOrder")));
+        int pageNumber = Math.max(0, page);
+        int usedSeed = seed != null ? seed : ThreadLocalRandom.current().nextInt();
+
+        List<String> order = new ArrayList<>(clips.findShuffleableFeedIds(TeaserClip.State.READY));
+        Collections.shuffle(order, new Random(usedSeed));
+        // Hand-pinned clips are not part of the draw; they sit above it.
+        order.addAll(0, clips.findPinnedFeedIds(TeaserClip.State.READY));
+
+        // Long arithmetic deliberately: a caller is free to ask for page 2,000,000,000,
+        // where int multiplication wraps negative and would slice from the wrong end.
+        int from = (int) Math.min((long) pageNumber * pageSize, order.size());
+        int to = (int) Math.min((long) from + pageSize, order.size());
+
+        List<String> ids = order.subList(from, to);
+        Map<String, TeaserClip> rows = clips.findAllById(ids).stream()
+                .collect(Collectors.toMap(TeaserClip::getId, clip -> clip));
+        // findAllById answers in no particular order, and a clip deleted between the two
+        // queries does not answer at all; the id list is what carries the order.
+        List<TeaserClip> content = ids.stream()
+                .map(rows::get)
+                .filter(Objects::nonNull)
+                .toList();
+
+        int totalPages = (order.size() + pageSize - 1) / pageSize;
+        return new FeedPage(content, usedSeed, pageNumber, pageSize, order.size(), totalPages);
     }
 
     /** @throws ApiException 404 when the clip is unknown or belongs to a different item */

@@ -74,8 +74,14 @@ public final class TeaserClipDtos {
         }
     }
 
+    /**
+     * @param seed the shuffle this page was dealt from — pass it back on every later page
+     *             of the same scroll, or the next page is a fresh shuffle that repeats
+     *             clips already seen and skips others
+     */
     public record TeaserFeedPageDto(
             List<TeaserClipDto> items,
+            int seed,
             int page,
             int size,
             long totalItems,

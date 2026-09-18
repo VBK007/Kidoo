@@ -5,7 +5,6 @@ import java.nio.file.Path;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -168,19 +167,28 @@ public class TeaserClipController {
         streamer.serve(file, MediaFiles.contentType(file.getFileName().toString()), 86_400, request, response);
     }
 
-    /** The global discovery feed, published clips across every movie, newest-ranked first. */
+    /**
+     * The global discovery feed: published clips across every movie, shuffled.
+     *
+     * <p>Every response carries the {@code seed} its order came from. Send it back on
+     * page 1, 2, 3 and so on to keep scrolling the same shuffle; omit it and the server
+     * deals a new one, which is what a client wants when the viewer pulls to refresh and
+     * nothing else.
+     */
     @GetMapping("/teasers")
     public TeaserFeedPageDto feed(
             @AuthenticationPrincipal AppUser user,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "10") int size) {
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) Integer seed) {
 
-        Page<TeaserClip> result = teasers.feed(page, size);
-        List<TeaserClipDto> items = result.getContent().stream()
+        TeaserClipService.FeedPage result = teasers.feed(page, size, seed);
+        List<TeaserClipDto> items = result.clips().stream()
                 .map(clip -> TeaserClipDto.from(clip, catalog.find(clip.getMediaItemId()).orElse(null)))
                 .toList();
         return new TeaserFeedPageDto(
-                items, result.getNumber(), result.getSize(), result.getTotalElements(), result.getTotalPages());
+                items, result.seed(), result.page(), result.size(),
+                result.totalItems(), result.totalPages());
     }
 
     private void requireAdmin(String key) {
