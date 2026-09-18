@@ -23,6 +23,7 @@ import com.example.kido.media.dto.CatalogDtos.MediaInfoDto;
 import com.example.kido.media.dto.PlaybackDtos.ClientCapabilitiesRequest;
 import com.example.kido.media.dto.PlaybackDtos.PlaybackDecisionDto;
 import com.example.kido.media.library.LibraryIngestService;
+import com.example.kido.media.music.TrackPreviewService;
 import com.example.kido.media.session.PlaybackSessionRegistry;
 import com.example.kido.media.together.WatchPartyGrants;
 import com.example.kido.media.web.ActiveProfile;
@@ -60,6 +61,7 @@ public class StreamController {
     private final PlaybackSessionRegistry sessions;
     private final PlaybackStarter starter;
     private final WatchPartyGrants grants;
+    private final TrackPreviewService previews;
 
     public StreamController(CatalogService catalog,
                             MediaPaths paths,
@@ -68,7 +70,8 @@ public class StreamController {
                             LibraryIngestService ingest,
                             PlaybackSessionRegistry sessions,
                             PlaybackStarter starter,
-                            WatchPartyGrants grants) {
+                            WatchPartyGrants grants,
+                            TrackPreviewService previews) {
         this.catalog = catalog;
         this.paths = paths;
         this.streamer = streamer;
@@ -77,6 +80,7 @@ public class StreamController {
         this.sessions = sessions;
         this.starter = starter;
         this.grants = grants;
+        this.previews = previews;
     }
 
     /**
@@ -128,6 +132,22 @@ public class StreamController {
         long written = streamer.serve(file, MediaFiles.contentType(item.getFileName()),
                 VIDEO_CACHE_SECONDS, request, response);
         sessions.recordBytes(sessionId, written);
+    }
+
+    /**
+     * A short audio preview clip for a track — generated on first request, served from
+     * cache after that. No session, no playback decision: previews are short enough to
+     * always direct-play and are not counted as a real play.
+     */
+    @GetMapping("/preview")
+    public void preview(@AuthenticationPrincipal GuestPrincipal guest,
+                        @PathVariable String id,
+                        HttpServletRequest request,
+                        HttpServletResponse response) throws IOException {
+        grants.requirePlayable(guest, id);
+        MediaItem item = catalog.require(id);
+        Path file = previews.resolve(item);
+        streamer.serve(file, "audio/mpeg", VIDEO_CACHE_SECONDS, request, response);
     }
 
     /** Diagnostics for the app's debug screen: what the server thinks is in the file. */

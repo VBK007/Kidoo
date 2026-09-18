@@ -134,6 +134,10 @@ public class MediaProperties {
     @Setter
     private MusicArtwork musicArtwork = new MusicArtwork();
 
+    @Getter
+    @Setter
+    private MusicPreview musicPreview = new MusicPreview();
+
     /**
      * Offline copies prepared for a device to take away.
      *
@@ -274,6 +278,28 @@ public class MediaProperties {
          * that rather than trying to hug it.
          */
         private int minRequestIntervalMs = 3000;
+    }
+
+    /**
+     * Short audio previews for tracks, generated on first request rather than queued
+     * like {@link Teasers} — trimming an mp3 is sub-second with no video to decode or
+     * crop, so there is nothing here worth an async job for.
+     */
+    @Getter
+    @Setter
+    public static class MusicPreview {
+
+        private boolean enabled = true;
+
+        /** Where in the track the preview starts, as a fraction of its duration. */
+        private double startFraction = 0.25;
+
+        private int clipSeconds = 20;
+
+        /** Cached previews live here. Never inside a media library. */
+        private String cacheDir = "data/music-previews";
+
+        private int timeoutSeconds = 15;
     }
 
     /** One configured library root. */

@@ -64,6 +64,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/media/guest/playback-decision")
                         .hasRole("GUEST")
                         .requestMatchers(HttpMethod.GET, "/api/media/items/*/stream",
+                                "/api/media/items/*/preview",
                                 "/api/media/items/*/subtitles/*",
                                 "/api/media/items/*/poster",
                                 "/api/media/items/*/backdrop",
