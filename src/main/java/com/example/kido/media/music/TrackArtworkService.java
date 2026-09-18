@@ -10,7 +10,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Locale;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Service;
@@ -76,31 +78,46 @@ public class TrackArtworkService {
         if (!props.getMusicArtwork().isEnabled()) {
             return null;
         }
-        String query = searchQuery(item);
-        if (query.isBlank()) {
-            return null;
-        }
-        try {
-            String artworkUrl = search(query);
-            if (artworkUrl == null) {
-                return null;
+        for (String query : searchQueries(item)) {
+            try {
+                String artworkUrl = search(query);
+                if (artworkUrl != null) {
+                    return download(item.getId(), artworkUrl);
+                }
+            } catch (Exception ex) {
+                // A network blip should not look different from "no match" to the
+                // caller; both just mean move to the next candidate query, if any.
+                log.debug("Music artwork lookup failed for '{}': {}", query, ex.getMessage());
             }
-            return download(item.getId(), artworkUrl);
-        } catch (Exception ex) {
-            // A network blip should not look different from "no match" to the caller;
-            // both just mean try again never, since this is a best-effort fallback.
-            log.debug("Music artwork lookup failed for '{}': {}", query, ex.getMessage());
-            return null;
         }
+        return null;
     }
 
-    private static String searchQuery(MediaItem item) {
+    /**
+     * Every field on these files came from a folder guess or an ID3 tag written by
+     * whichever download site handed it out, so one query is often not enough: a
+     * credits-list artist ({@code "A, B, C"}) or a site-watermarked title can each
+     * individually sink an otherwise-findable match. Tried in order, most specific
+     * first, stopping at the first hit — most tracks resolve on the first query, so
+     * this only costs extra throttled calls on the ones that would otherwise have
+     * gone unmatched entirely.
+     */
+    private static List<String> searchQueries(MediaItem item) {
         String artist = clean(item.getArtist());
         String title = clean(item.getTitle());
         if (title.isBlank()) {
-            return "";
+            return List.of();
         }
-        return artist.isBlank() ? title : artist + " " + title;
+        Set<String> queries = new LinkedHashSet<>();
+        if (!artist.isBlank()) {
+            queries.add(artist + " " + title);
+            String firstArtist = artist.split("\\s*,\\s*")[0];
+            if (!firstArtist.equals(artist)) {
+                queries.add(firstArtist + " " + title);
+            }
+        }
+        queries.add(title);
+        return List.copyOf(queries);
     }
 
     private static String clean(String value) {
