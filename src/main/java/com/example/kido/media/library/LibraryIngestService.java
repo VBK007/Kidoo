@@ -13,6 +13,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -467,6 +468,15 @@ public class LibraryIngestService {
         }
         if (item.getType() == MediaType.MUSIC) {
             applyAudioTags(item, result.audioTags());
+            // The "video" stream ffprobe just found on an audio file is virtually
+            // always an embedded cover (ID3 APIC and equivalents report that way) —
+            // extract it once, unless a sidecar image already won during ingest.
+            if (!item.hasPoster() && result.info().getVideoCodec() != null) {
+                String cover = extractEmbeddedCoverArt(item, file);
+                if (cover != null) {
+                    item.setPosterPath(cover);
+                }
+            }
         }
         item.setUpdatedAt(Instant.now());
         MediaItem saved = items.save(item);
@@ -622,6 +632,51 @@ public class LibraryIngestService {
         }
         if (tags.track() != null) {
             item.setTrackNumber(tags.track());
+        }
+    }
+
+    /**
+     * Pulls a track's embedded cover out to a normal poster file, the same way an
+     * admin-uploaded poster is stored ({@code <artworkDir>/<itemId>/poster.jpg}), so
+     * {@code ArtworkController}'s existing {@code /poster} endpoint needs no changes to
+     * serve it. Re-encodes to JPEG rather than copying the stream verbatim — the
+     * embedded picture is occasionally PNG, and a fixed, known-decodable output format
+     * is worth a re-encode that costs nothing on an image this small.
+     *
+     * @return the absolute path written, or null if ffmpeg found nothing to extract
+     */
+    private String extractEmbeddedCoverArt(MediaItem item, Path file) {
+        Path directory = paths.artworkDir().resolve(item.getId());
+        Path target = directory.resolve("poster.jpg");
+        try {
+            Files.createDirectories(directory);
+            List<String> command = List.of(
+                    props.getFfmpegPath(),
+                    "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+                    "-i", file.toString(),
+                    "-map", "0:v:0", "-vframes", "1", "-vcodec", "mjpeg",
+                    target.toString());
+            Process process = new ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .start();
+            boolean finished = process.waitFor(props.getProbeTimeoutSeconds(), TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                log.debug("Cover art extraction timed out for {}", file);
+                return null;
+            }
+            if (process.exitValue() != 0 || !Files.exists(target) || Files.size(target) == 0) {
+                log.debug("No embedded cover art in {}", file);
+                Files.deleteIfExists(target);
+                return null;
+            }
+            return target.toString();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (IOException ex) {
+            log.warn("Cover art extraction failed for {}: {}", file, ex.getMessage());
+            return null;
         }
     }
 
