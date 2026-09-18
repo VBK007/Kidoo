@@ -276,7 +276,7 @@ public class CatalogService {
         // anyway.
         int pageSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
         Page<MediaItem> pageOfItems = items
-                .findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDesc(
+                .findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDescIdDesc(
                         TIMELINE_TYPES, PageRequest.of(Math.max(0, page), pageSize));
         List<MediaItem> found = pageOfItems.getContent();
 

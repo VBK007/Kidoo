@@ -68,7 +68,7 @@ public class CommentService {
     public CommentPageDto list(Profile profile, AppUser user, String itemId, int page, int size) {
         requireItem(itemId);
         int pageSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
-        Page<MediaItemComment> found = comments.findByMediaItemIdOrderByCreatedAtDesc(
+        Page<MediaItemComment> found = comments.findByMediaItemIdOrderByCreatedAtDescIdDesc(
                 itemId, PageRequest.of(Math.max(0, page), pageSize));
 
         Map<String, String> names = currentNames(found.getContent());
