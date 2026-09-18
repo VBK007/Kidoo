@@ -636,7 +636,10 @@ public class LibraryIngestService {
                 item.setArtist(artistFolder.getFileName().toString());
             }
         }
-        item.setPosterPath(sidecars.findPoster(file).map(Path::toString).orElse(null));
+        // Additive only: a sidecar image found now is worth taking, but finding none
+        // this time must never clear a poster that came from embedded art or the
+        // iTunes fallback — both run after this method, on files no sidecar ever had.
+        sidecars.findPoster(file).map(Path::toString).ifPresent(item::setPosterPath);
     }
 
     /**
@@ -748,9 +751,14 @@ public class LibraryIngestService {
             replaceStrings(item.getGenres(), Set.of(), item::setGenres);
         }
 
-        // Re-resolved every scan: artwork is often added to a folder afterwards.
-        item.setPosterPath(sidecars.findPoster(file).map(Path::toString).orElse(null));
-        item.setBackdropPath(sidecars.findBackdrop(file).map(Path::toString).orElse(null));
+        // Additive only: a sidecar found now is worth taking (artwork is often added to
+        // a folder after the fact, which is why this re-checks every scan at all), but
+        // finding none this time must never clear a poster/backdrop that came from
+        // somewhere else — TMDB backfill, an admin upload, or a track's embedded art.
+        // backfillArtwork() is what already handles "no poster yet, try harder"; this
+        // is only ever supposed to opportunistically upgrade, never regress.
+        sidecars.findPoster(file).map(Path::toString).ifPresent(item::setPosterPath);
+        sidecars.findBackdrop(file).map(Path::toString).ifPresent(item::setBackdropPath);
     }
 
     /** {@code VID_20240102_181500} and friends read badly as titles. */
