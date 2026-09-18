@@ -341,19 +341,21 @@ public class LibraryIngestService {
     }
 
     /**
-     * Fills in a plot from TMDB for every video missing one, and pre-warms the cast
-     * photo cache for every credited name — both open, free lookups, run automatically
-     * at the end of every scan so new movies get them without anyone asking.
+     * Fills in plot, rating and cast from TMDB for every video missing any of them, and
+     * pre-warms the cast photo cache for every credited name — all open, free lookups,
+     * run automatically at the end of every scan so new movies get them without anyone
+     * asking.
      *
-     * <p>An existing plot is never touched, and only when {@link
-     * MediaItem#isMetadataScannerOwned()} — the same guard {@link #applyMetadata} uses
-     * before overwriting anything else, so a plot someone edited by hand is exactly as
-     * safe from this as every other manually-set field already is. Cast photos need no
-     * such guard: they never write to {@code MediaItem} at all, only to their own cache
-     * keyed by name, and re-warming an already-cached name is a local lookup, not a
-     * TMDB call — see {@link CastPhotoService#photoFor}.
+     * <p>A field that already has a value is never touched, and enrichment is only
+     * attempted at all when {@link MediaItem#isMetadataScannerOwned()} — the same
+     * guard {@link #applyMetadata} uses before overwriting anything else, so data
+     * someone edited by hand is exactly as safe from this as every other manually-set
+     * field already is. Cast photos need no such guard: they never write to {@code
+     * MediaItem} at all, only to their own cache keyed by name, and re-warming an
+     * already-cached name is a local lookup, not a TMDB call — see {@link
+     * CastPhotoService#photoFor}.
      *
-     * @return how many items got a plot they did not have before
+     * @return how many items got at least one of these fields they did not have before
      */
     @Transactional
     public int backfillMetadata() {
@@ -362,9 +364,10 @@ public class LibraryIngestService {
             if (!item.getType().isVideo()) {
                 continue;
             }
-            if (item.isMetadataScannerOwned()
-                    && (item.getPlot() == null || item.getPlot().isBlank())
-                    && tmdbMovies.enrichPlot(item)) {
+            boolean missingSomething = item.getPlot() == null || item.getPlot().isBlank()
+                    || item.getRating() == null
+                    || item.getCastMembers() == null || item.getCastMembers().isBlank();
+            if (item.isMetadataScannerOwned() && missingSomething && tmdbMovies.enrich(item)) {
                 item.setUpdatedAt(Instant.now());
                 updated.add(item);
             }
