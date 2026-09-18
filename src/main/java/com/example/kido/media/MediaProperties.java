@@ -126,6 +126,10 @@ public class MediaProperties {
     @Setter
     private Teasers teasers = new Teasers();
 
+    @Getter
+    @Setter
+    private CastPhotos castPhotos = new CastPhotos();
+
     /**
      * Offline copies prepared for a device to take away.
      *
@@ -206,6 +210,42 @@ public class MediaProperties {
 
         /** Whether a newly generated clip is visible in the feed without a separate publish call. */
         private boolean publishByDefault = false;
+    }
+
+    /**
+     * Cast/crew photos fetched from TMDB and cached locally.
+     *
+     * <p>Never inside a media library, same reasoning as {@link #artworkDir}: this is
+     * fetched-once, persistent, user-facing content, not a working file. Dormant
+     * (every lookup returns not-found, no outbound calls made) whenever {@link #apiKey}
+     * is blank, so the feature stays optional exactly like the media library itself does
+     * with no roots configured.
+     */
+    @Getter
+    @Setter
+    public static class CastPhotos {
+
+        private boolean enabled = true;
+
+        /** TMDB v3 API key. Blank disables outbound lookups entirely. */
+        private String apiKey = "";
+
+        /** Where fetched photos are cached. Never inside a media library. */
+        private String cacheDir = "data/cast-photos";
+
+        /** TMDB image size variant for a person's profile photo. */
+        private String imageSize = "w300";
+
+        private int timeoutSeconds = 8;
+
+        /**
+         * Floor on the gap between outbound TMDB calls, shared across cast-photo and
+         * movie-plot lookups via {@code TmdbRateLimiter} — a scan can trigger dozens of
+         * these back to back, and TMDB's free tier has no documented limit worth
+         * relying on, so this is a deliberately conservative self-throttle rather than
+         * an attempt to hug an exact published ceiling.
+         */
+        private int minRequestIntervalMs = 250;
     }
 
     /** One configured library root. */

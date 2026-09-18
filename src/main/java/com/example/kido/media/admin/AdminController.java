@@ -145,6 +145,18 @@ public class AdminController {
     }
 
     /**
+     * Fetches a plot from TMDB for every video that still has none, and pre-warms the
+     * cast photo cache. Run this after adding a TMDB key, or after adding movies
+     * outside a normal scan cycle.
+     */
+    @PostMapping("/backfill-metadata")
+    public SeedResultDto backfillMetadata(@AuthenticationPrincipal AppUser user,
+                                          @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        requireOwner(user, key);
+        return admin.backfillMetadata();
+    }
+
+    /**
      * Removes rows a scan could no longer find on disk — a file actually deleted, or
      * (the common case right after a matching fix ships) a row that should never have
      * been indexed as its own catalog entry, like an image the scanner used to walk

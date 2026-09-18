@@ -86,12 +86,15 @@ public class LibraryScanner {
             }
             status.countMissing(ingest.markMissing(seenPaths));
             int backfilled = ingest.backfillArtwork();
+            // Open, free-for-personal-use metadata (TMDB) -- a movie with a plot
+            // already keeps it untouched; only fills what a scan left empty.
+            int metadataBackfilled = ingest.backfillMetadata();
             status.finish(null);
             log.info("Library scan finished: {} seen, {} added, {} updated, {} unchanged, "
-                            + "{} missing, {} failed, {} backfilled artwork",
+                            + "{} missing, {} failed, {} backfilled artwork, {} backfilled metadata",
                     status.getFilesSeen().get(), status.getAdded().get(), status.getUpdated().get(),
                     status.getUnchanged().get(), status.getMarkedMissing().get(),
-                    status.getFailed().get(), backfilled);
+                    status.getFailed().get(), backfilled, metadataBackfilled);
         } catch (Exception ex) {
             log.error("Library scan failed", ex);
             status.finish(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());

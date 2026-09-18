@@ -414,6 +414,22 @@ public class AdminService {
                         : "Set languages on " + updated + " title(s) from their probes");
     }
 
+    /**
+     * Fetches a plot from TMDB for every video missing one, and pre-warms the cast
+     * photo cache for every credited name. Runs automatically at the end of every
+     * scan too; this endpoint exists for someone who does not want to wait for the
+     * next scan interval, same reasoning as {@link #backfillArtwork()}.
+     */
+    @Transactional
+    public SeedResultDto backfillMetadata() {
+        int updated = ingest.backfillMetadata();
+        log.info("Backfilled metadata for {} items (on-demand)", updated);
+        return new SeedResultDto(updated,
+                updated == 0
+                        ? "No video was missing a plot TMDB could supply"
+                        : "Filled in a plot for " + updated + " video(s) from TMDB");
+    }
+
     /** Ends a live stream on the owner's instruction. */
     public boolean endSession(String sessionId) {
         return sessions.terminate(sessionId);

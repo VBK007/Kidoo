@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.example.kido.media.MediaFiles;
 import com.example.kido.media.MediaPaths;
 import com.example.kido.media.MediaProperties;
+import com.example.kido.media.cast.CastPhotoService;
 import com.example.kido.media.catalog.MediaInfo;
 import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.catalog.MediaItemRepository;
@@ -37,6 +38,7 @@ import com.example.kido.media.probe.ImageProbe;
 import com.example.kido.media.probe.MediaChapter;
 import com.example.kido.media.probe.MediaChapterRepository;
 import com.example.kido.media.probe.MediaProbe;
+import com.example.kido.media.tmdb.TmdbMovieService;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -64,6 +66,8 @@ public class LibraryIngestService {
     private final FilenameParser filenames;
     private final MediaProbe probe;
     private final ImageProbe images;
+    private final TmdbMovieService tmdbMovies;
+    private final CastPhotoService castPhotos;
 
     public LibraryIngestService(MediaProperties props,
                                 MediaPaths paths,
@@ -73,7 +77,9 @@ public class LibraryIngestService {
                                 SidecarLocator sidecars,
                                 FilenameParser filenames,
                                 MediaProbe probe,
-                                ImageProbe images) {
+                                ImageProbe images,
+                                TmdbMovieService tmdbMovies,
+                                CastPhotoService castPhotos) {
         this.props = props;
         this.paths = paths;
         this.items = items;
@@ -83,6 +89,8 @@ public class LibraryIngestService {
         this.filenames = filenames;
         this.probe = probe;
         this.images = images;
+        this.tmdbMovies = tmdbMovies;
+        this.castPhotos = castPhotos;
     }
 
     /** What {@link #ingest} did with a file, so the scanner can keep its counters. */
@@ -301,6 +309,50 @@ public class LibraryIngestService {
         items.saveAll(updated);
         return updated.size();
     }
+
+    /**
+     * Fills in a plot from TMDB for every video missing one, and pre-warms the cast
+     * photo cache for every credited name — both open, free lookups, run automatically
+     * at the end of every scan so new movies get them without anyone asking.
+     *
+     * <p>An existing plot is never touched, and only when {@link
+     * MediaItem#isMetadataScannerOwned()} — the same guard {@link #applyMetadata} uses
+     * before overwriting anything else, so a plot someone edited by hand is exactly as
+     * safe from this as every other manually-set field already is. Cast photos need no
+     * such guard: they never write to {@code MediaItem} at all, only to their own cache
+     * keyed by name, and re-warming an already-cached name is a local lookup, not a
+     * TMDB call — see {@link CastPhotoService#photoFor}.
+     *
+     * @return how many items got a plot they did not have before
+     */
+    @Transactional
+    public int backfillMetadata() {
+        List<MediaItem> updated = new ArrayList<>();
+        for (MediaItem item : items.findByMissingFalse()) {
+            if (!item.getType().isVideo()) {
+                continue;
+            }
+            if (item.isMetadataScannerOwned()
+                    && (item.getPlot() == null || item.getPlot().isBlank())
+                    && tmdbMovies.enrichPlot(item)) {
+                item.setUpdatedAt(Instant.now());
+                updated.add(item);
+            }
+            for (String name : splitCastMembers(item.getCastMembers())) {
+                castPhotos.photoFor(name);
+            }
+        }
+        items.saveAll(updated);
+        return updated.size();
+    }
+
+    private static List<String> splitCastMembers(String joined) {
+        if (joined == null || joined.isBlank()) {
+            return List.of();
+        }
+        return List.of(joined.split("\\s*,\\s*"));
+    }
+
     /**
      * Restates every item's languages from the probe it already has.
      *
