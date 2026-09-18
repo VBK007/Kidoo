@@ -122,6 +122,10 @@ public class MediaProperties {
     @Setter
     private Downloads downloads = new Downloads();
 
+    @Getter
+    @Setter
+    private Teasers teasers = new Teasers();
+
     /**
      * Offline copies prepared for a device to take away.
      *
@@ -162,6 +166,46 @@ public class MediaProperties {
 
         /** Default vertical resolution when the client does not ask for one. */
         private int defaultHeight = 720;
+    }
+
+    /**
+     * Curated vertical (9:16) preview clips cut from a movie's own file.
+     *
+     * <p>Never inside a media library, same reasoning as {@link #artworkDir}: this is
+     * server-generated, user-facing content that must survive a reboot, so it lives
+     * beside artwork rather than in {@code ${java.io.tmpdir}} like the transcode and
+     * download scratch space.
+     */
+    @Getter
+    @Setter
+    public static class Teasers {
+
+        private boolean enabled = true;
+
+        /** Where generated clips are written. Never inside a media library. */
+        private String outputDir = "data/teaser-clips";
+
+        /** Bounds on a requested clip's length, so nobody accidentally cuts a whole act. */
+        private int minClipSeconds = 5;
+        private int maxClipSeconds = 30;
+
+        /** Fixed output frame size every clip is scaled to, for a consistent feed. */
+        private int outputWidth = 720;
+        private int outputHeight = 1280;
+
+        /** A clip is a few seconds of source, so a fast preset costs little quality. */
+        private String preset = "fast";
+        private int crf = 22;
+        private int maxBitrateKbps = 3000;
+
+        /** Ceiling on one generation job; trimming+cropping this little is normally quick. */
+        private int timeoutMinutes = 10;
+
+        /** -1 (fully left) .. 1 (fully right), 0 = centred. Used when a request omits it. */
+        private double defaultHorizontalOffset = 0.0;
+
+        /** Whether a newly generated clip is visible in the feed without a separate publish call. */
+        private boolean publishByDefault = false;
     }
 
     /** One configured library root. */

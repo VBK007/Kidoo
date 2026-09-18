@@ -66,7 +66,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/media/items/*/stream",
                                 "/api/media/items/*/subtitles/*",
                                 "/api/media/items/*/poster",
-                                "/api/media/items/*/backdrop")
+                                "/api/media/items/*/backdrop",
+                                "/api/media/items/*/teasers",
+                                "/api/media/items/*/teasers/*/file")
                         .hasAnyRole("CHILD", "PARENT", "GUEST")
                         .requestMatchers("/api/media/transcode/**")
                         .hasAnyRole("CHILD", "PARENT", "GUEST")
