@@ -35,6 +35,7 @@ import com.example.kido.media.metadata.Languages;
 import com.example.kido.media.metadata.NfoParser;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.metadata.SidecarMetadata;
+import com.example.kido.media.music.TrackArtworkService;
 import com.example.kido.media.probe.ImageProbe;
 import com.example.kido.media.probe.MediaChapter;
 import com.example.kido.media.probe.MediaChapterRepository;
@@ -69,6 +70,7 @@ public class LibraryIngestService {
     private final ImageProbe images;
     private final TmdbMovieService tmdbMovies;
     private final CastPhotoService castPhotos;
+    private final TrackArtworkService trackArtwork;
 
     public LibraryIngestService(MediaProperties props,
                                 MediaPaths paths,
@@ -80,7 +82,8 @@ public class LibraryIngestService {
                                 MediaProbe probe,
                                 ImageProbe images,
                                 TmdbMovieService tmdbMovies,
-                                CastPhotoService castPhotos) {
+                                CastPhotoService castPhotos,
+                                TrackArtworkService trackArtwork) {
         this.props = props;
         this.paths = paths;
         this.items = items;
@@ -92,6 +95,7 @@ public class LibraryIngestService {
         this.images = images;
         this.tmdbMovies = tmdbMovies;
         this.castPhotos = castPhotos;
+        this.trackArtwork = trackArtwork;
     }
 
     /** What {@link #ingest} did with a file, so the scanner can keep its counters. */
@@ -273,35 +277,14 @@ public class LibraryIngestService {
     public int backfillArtwork() {
         List<MediaItem> updated = new ArrayList<>();
         for (MediaItem item : items.findByMissingFalse()) {
-            if (!item.getType().isVideo()) {
+            boolean changed;
+            if (item.getType().isVideo()) {
+                changed = backfillVideoArtwork(item);
+            } else if (item.getType() == MediaType.MUSIC) {
+                changed = backfillTrackArtwork(item);
+            } else {
                 continue;
             }
-            Path file = Path.of(item.getFilePath());
-            boolean changed = false;
-
-            if (!item.hasPoster()) {
-                String poster = findAnyPoster(file, item.getTitle());
-                if (poster != null) {
-                    item.setPosterPath(poster);
-                    changed = true;
-                }
-            } else if (isBelowPosterFloor(item.getPosterPath())) {
-                String upgrade = titleMatchedPoster(file, item.getTitle());
-                if (upgrade != null && !upgrade.equals(item.getPosterPath())
-                        && !isBelowPosterFloor(upgrade)) {
-                    item.setPosterPath(upgrade);
-                    changed = true;
-                }
-            }
-
-            if (!item.hasBackdrop()) {
-                String backdrop = sidecars.findBackdrop(file).map(Path::toString).orElse(null);
-                if (backdrop != null) {
-                    item.setBackdropPath(backdrop);
-                    changed = true;
-                }
-            }
-
             if (changed) {
                 item.setUpdatedAt(Instant.now());
                 updated.add(item);
@@ -309,6 +292,52 @@ public class LibraryIngestService {
         }
         items.saveAll(updated);
         return updated.size();
+    }
+
+    private boolean backfillVideoArtwork(MediaItem item) {
+        Path file = Path.of(item.getFilePath());
+        boolean changed = false;
+
+        if (!item.hasPoster()) {
+            String poster = findAnyPoster(file, item.getTitle());
+            if (poster != null) {
+                item.setPosterPath(poster);
+                changed = true;
+            }
+        } else if (isBelowPosterFloor(item.getPosterPath())) {
+            String upgrade = titleMatchedPoster(file, item.getTitle());
+            if (upgrade != null && !upgrade.equals(item.getPosterPath())
+                    && !isBelowPosterFloor(upgrade)) {
+                item.setPosterPath(upgrade);
+                changed = true;
+            }
+        }
+
+        if (!item.hasBackdrop()) {
+            String backdrop = sidecars.findBackdrop(file).map(Path::toString).orElse(null);
+            if (backdrop != null) {
+                item.setBackdropPath(backdrop);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    /**
+     * At most one iTunes lookup per track, ever: {@code musicArtworkCheckedAt} is
+     * stamped whether or not a match was found, which is what stops a track this API
+     * simply has nothing for from being re-queried on every future scan.
+     */
+    private boolean backfillTrackArtwork(MediaItem item) {
+        if (item.hasPoster() || item.getMusicArtworkCheckedAt() != null) {
+            return false;
+        }
+        String artwork = trackArtwork.fetchAndStore(item);
+        item.setMusicArtworkCheckedAt(Instant.now());
+        if (artwork != null) {
+            item.setPosterPath(artwork);
+        }
+        return true;
     }
 
     /**

@@ -282,6 +282,16 @@ public class MediaItem {
     @Column(name = "backdrop_path", length = 1024)
     private String backdropPath;
 
+    /**
+     * When a music track's external album-art lookup last ran, regardless of whether
+     * it found anything. Null means never attempted — the one thing that gates a retry,
+     * since an outbound call for every posterless track on every scan would eventually
+     * mean permanently unmatchable tracks (mislabeled files, no such release) get
+     * looked up forever.
+     */
+    @Column(name = "music_artwork_checked_at")
+    private Instant musicArtworkCheckedAt;
+
     // --- probe cache ---
 
     @Embedded

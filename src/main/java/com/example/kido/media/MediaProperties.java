@@ -130,6 +130,10 @@ public class MediaProperties {
     @Setter
     private CastPhotos castPhotos = new CastPhotos();
 
+    @Getter
+    @Setter
+    private MusicArtwork musicArtwork = new MusicArtwork();
+
     /**
      * Offline copies prepared for a device to take away.
      *
@@ -246,6 +250,30 @@ public class MediaProperties {
          * an attempt to hug an exact published ceiling.
          */
         private int minRequestIntervalMs = 250;
+    }
+
+    /**
+     * Fallback album art for a track with no cover embedded in the file itself, looked
+     * up by artist and title against Apple's iTunes Search API — chosen over the
+     * alternatives because it needs no API key or registered app (unlike Spotify) and
+     * has solid coverage of commercially released film music, which is most of what a
+     * home library actually holds.
+     */
+    @Getter
+    @Setter
+    public static class MusicArtwork {
+
+        private boolean enabled = true;
+
+        private int timeoutSeconds = 8;
+
+        /**
+         * Floor on the gap between outbound iTunes calls. iTunes publishes no official
+         * rate limit for the unauthenticated search endpoint; the commonly cited
+         * unofficial guidance is around 20 calls/minute, so this defaults well under
+         * that rather than trying to hug it.
+         */
+        private int minRequestIntervalMs = 3000;
     }
 
     /** One configured library root. */
