@@ -419,6 +419,14 @@ public final class SearchQueryParser {
             types.add(MediaType.MUSIC);
             terms.add(new Term("type", "MUSIC", "Music", text.lastMatch()));
         }
+        if (text.take("\\bseries\\b") != null) {
+            types.add(MediaType.SERIES);
+            terms.add(new Term("type", "SERIES", "Series", text.lastMatch()));
+        }
+        if (text.take("\\bvideo ?songs?\\b") != null) {
+            types.add(MediaType.VIDEO_SONG);
+            terms.add(new Term("type", "VIDEO_SONG", "Video Songs", text.lastMatch()));
+        }
         if (!types.isEmpty()) {
             query.types(types);
         }

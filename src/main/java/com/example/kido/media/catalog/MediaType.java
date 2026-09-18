@@ -6,10 +6,14 @@ import java.util.Optional;
 /**
  * What kind of thing an item is.
  *
- * <p>The five values map onto the client's category chips (All · Films · Anime · Ours ·
- * Music). {@code HOME_VIDEO} is "Ours" — it is a separate type rather than a flag
- * because home footage is browsed as a chronological timeline instead of a poster wall,
- * and is described by capture date, people and place rather than by year and rating.
+ * <p>These map onto the client's category chips (All · Films · Anime · Series · Video
+ * Songs · Ours · Music). {@code HOME_VIDEO} is "Ours" — it is a separate type rather
+ * than a flag because home footage is browsed as a chronological timeline instead of a
+ * poster wall, and is described by capture date, people and place rather than by year
+ * and rating. {@code SERIES} and {@code VIDEO_SONG} exist as separate types for the
+ * same reason {@code ANIME} does: a household that keeps a TV series or music-video
+ * clips separate from its films already sorted them into their own folder, and browsing
+ * wants that distinction kept rather than collapsed into "Films".
  *
  * <p>A type is assigned from the library root a file was found under, not guessed from
  * its name: nothing in a filename reliably distinguishes a film from an anime, whereas
@@ -19,6 +23,8 @@ public enum MediaType {
 
     FILM("Films", Kind.VIDEO),
     ANIME("Anime", Kind.VIDEO),
+    SERIES("Series", Kind.VIDEO),
+    VIDEO_SONG("Video Songs", Kind.VIDEO),
     HOME_VIDEO("Ours", Kind.VIDEO),
     MUSIC("Music", Kind.AUDIO),
     PHOTO("Photos", Kind.IMAGE);
@@ -76,6 +82,8 @@ public enum MediaType {
             case "photo", "photos", "camera_roll" -> Optional.of(PHOTO);
             case "song", "songs", "audio" -> Optional.of(MUSIC);
             case "home", "home_videos", "our" -> Optional.of(HOME_VIDEO);
+            case "series", "show", "shows", "tv" -> Optional.of(SERIES);
+            case "video_song", "video_songs", "videosong", "videosongs" -> Optional.of(VIDEO_SONG);
             default -> Optional.empty();
         };
     }

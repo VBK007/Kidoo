@@ -442,7 +442,7 @@ public class LibraryIngestService {
     /** Probes on demand for a row indexed while {@code probe-on-scan} was off. */
     @Transactional
     public MediaItem ensureProbed(MediaItem item, Path file) {
-        if (!item.getType().isVideo()) {
+        if (item.getType().kind() == MediaType.Kind.IMAGE) {
             return item;
         }
         if (item.getMediaInfo() != null && item.getMediaInfo().isProbed()) {
@@ -464,6 +464,9 @@ public class LibraryIngestService {
         // Duration from the container is more trustworthy than a sidecar's runtime.
         if (result.info().getDurationSeconds() != null && item.getRuntimeMinutes() == null) {
             item.setRuntimeMinutes((int) Math.round(result.info().getDurationSeconds() / 60.0));
+        }
+        if (item.getType() == MediaType.MUSIC) {
+            applyAudioTags(item, result.audioTags());
         }
         item.setUpdatedAt(Instant.now());
         MediaItem saved = items.save(item);
@@ -597,6 +600,31 @@ public class LibraryIngestService {
         item.setPosterPath(sidecars.findPoster(file).map(Path::toString).orElse(null));
     }
 
+    /**
+     * Prefers a track's own embedded tags over {@link #applyMusicMetadata}'s
+     * folder/filename guess, field by field — the same precedence
+     * {@link #applyVideoMetadata} gives an {@code .nfo} sidecar over a parsed filename.
+     * A file with no tags at all (or only some) keeps the guess for whatever is missing.
+     */
+    private void applyAudioTags(MediaItem item, MediaProbe.AudioTags tags) {
+        if (tags == null) {
+            return;
+        }
+        if (tags.title() != null) {
+            item.setTitle(tags.title());
+            item.setSortTitle(FilenameParser.sortTitle(tags.title()));
+        }
+        if (tags.artist() != null) {
+            item.setArtist(tags.artist());
+        }
+        if (tags.album() != null) {
+            item.setAlbum(tags.album());
+        }
+        if (tags.track() != null) {
+            item.setTrackNumber(tags.track());
+        }
+    }
+
     /** Films and anime: sidecar {@code .nfo} first, filename as the fallback. */
     private void applyVideoMetadata(MediaItem item, Path file, String fileName) {
         FilenameParser.Parsed parsed = filenames.parse(MediaFiles.baseName(fileName));
@@ -686,7 +714,7 @@ public class LibraryIngestService {
     }
 
     private void probeIfNeeded(MediaItem item, Path file) {
-        if (!props.isProbeOnScan() || !item.getType().isVideo()) {
+        if (!props.isProbeOnScan() || item.getType().kind() == MediaType.Kind.IMAGE) {
             return;
         }
         if (item.getMediaInfo() != null && item.getMediaInfo().isProbed()) {

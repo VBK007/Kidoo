@@ -97,7 +97,7 @@ public enum BuiltinCollection {
      */
     private static final class Defaults {
         /** Poster tiles, not the camera roll — the same default the home screen uses. */
-        static final Set<MediaType> VIDEO = Set.of(MediaType.FILM, MediaType.ANIME);
+        static final Set<MediaType> VIDEO = Set.of(MediaType.FILM, MediaType.ANIME, MediaType.SERIES);
 
         private Defaults() {}
     }

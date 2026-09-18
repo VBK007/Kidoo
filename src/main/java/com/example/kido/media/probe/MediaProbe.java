@@ -47,7 +47,11 @@ public class MediaProbe {
                     + ":stream=index,codec_type,codec_name,profile,width,height,channels,bit_rate"
                     + ":stream_tags=language,title"
                     + ":chapter=id,start_time,end_time"
-                    + ":chapter_tags=title";
+                    + ":chapter_tags=title"
+                    // ID3 (or equivalent container) tags for audio files — artist/album/
+                    // title/track are what LibraryIngestService prefers over its
+                    // folder-guessed music metadata when a file actually carries them.
+                    + ":format_tags=artist,album,title,track";
 
     private final MediaProperties props;
 
@@ -88,7 +92,8 @@ public class MediaProbe {
             if (sections.format.isEmpty() && sections.streams.isEmpty()) {
                 return Optional.empty();
             }
-            return Optional.of(new ProbeResult(toMediaInfo(sections), toChapters(sections)));
+            return Optional.of(new ProbeResult(
+                    toMediaInfo(sections), toChapters(sections), toAudioTags(sections)));
 
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -230,6 +235,21 @@ public class MediaProbe {
         return builder.build();
     }
 
+    /**
+     * Embedded tags off the container's own {@code [FORMAT]} block — ID3 for mp3, the
+     * equivalent for other audio containers. Null fields mean the file carries no tag
+     * for that one, which is what lets a caller prefer these but fall back field by
+     * field to a folder/filename guess.
+     */
+    private AudioTags toAudioTags(Sections sections) {
+        Integer track = intOf(sections.format.get("TAG:track"));
+        return new AudioTags(
+                blankToNull(sections.format.get("TAG:title")),
+                blankToNull(sections.format.get("TAG:artist")),
+                blankToNull(sections.format.get("TAG:album")),
+                track);
+    }
+
     private List<ChapterData> toChapters(Sections sections) {
         List<ChapterData> chapters = new ArrayList<>();
         int index = 0;
@@ -317,8 +337,14 @@ public class MediaProbe {
     }
 
     /** Everything one ffprobe run yielded. */
-    public record ProbeResult(MediaInfo info, List<ChapterData> chapters) {}
+    public record ProbeResult(MediaInfo info, List<ChapterData> chapters, AudioTags audioTags) {}
 
     /** A chapter before it is attached to an item. */
     public record ChapterData(int index, double startSeconds, Double endSeconds, String title) {}
+
+    /**
+     * Embedded tags read off an audio file's own container — not persisted here, just
+     * handed to the caller to prefer over a folder/filename guess field by field.
+     */
+    public record AudioTags(String title, String artist, String album, Integer track) {}
 }

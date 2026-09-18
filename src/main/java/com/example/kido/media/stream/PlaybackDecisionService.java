@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import com.example.kido.media.catalog.MediaInfo;
 import com.example.kido.media.catalog.MediaItem;
+import com.example.kido.media.catalog.MediaType;
 import com.example.kido.media.dto.PlaybackDtos.ClientCapabilitiesRequest;
 
 /**
@@ -57,6 +58,20 @@ public class PlaybackDecisionService {
      */
     public Decision decide(MediaItem item, ClientCapabilitiesRequest caps) {
         List<String> reasons = new ArrayList<>();
+
+        if (item.getType().kind() == MediaType.Kind.AUDIO) {
+            // The whole codec/container matrix below is about video: whether a container
+            // is directly playable, whether the video codec is supported, whether height
+            // or bitrate exceed a client ceiling. None of that applies to a file with no
+            // video stream, and there is no audio transcode path to fall back to, so
+            // routing audio through it would only ever end in a dead-end 415. Every
+            // extension this library indexes as audio (mp3, aac, ogg, opus, flac, wav,
+            // m4a...) already plays natively in a browser or ExoPlayer over plain HTTP,
+            // which /stream already serves with the right content type.
+            reasons.add("Direct play: audio is served as-is, no transcode path exists");
+            return new Decision(true, reasons, null);
+        }
+
         MediaInfo info = item.getMediaInfo();
 
         if (info == null || !info.isProbed()) {
