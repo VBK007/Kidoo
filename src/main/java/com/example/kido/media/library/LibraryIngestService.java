@@ -317,6 +317,16 @@ public class LibraryIngestService {
     private static final Set<String> RECOGNISED_MUSIC_LANGUAGES = Set.of("ta", "te", "hi", "kn", "ml");
 
     /**
+     * The parent folder name {@code applyMusicMetadata} takes as the album for a file
+     * with no real album folder of its own — a library's own top level, filed under
+     * itself. Neither name means anything to search for or to cache an answer under:
+     * hundreds of unrelated tracks from a flat "just dumped here" folder all carry one
+     * of these two literal strings, and treating that as one shared album would answer
+     * every one of them with whichever track happened to be resolved first.
+     */
+    private static final Set<String> PLACEHOLDER_ALBUMS = Set.of("music", "songs");
+
+    /**
      * Best-effort language guess for every music/video-song row with none yet, so the
      * music home screen can keep a household's preferred language from swamping every
      * shelf with whatever else happens to share a mood or decade.
@@ -329,15 +339,20 @@ public class LibraryIngestService {
      * title or file path; failing that, TMDB's {@code original_language} for a movie
      * search on the album name, since most albums here are exactly one film's
      * soundtrack and TMDB knows what language that film was made in even when the
-     * folder name doesn't say; and only then falls back to Tamil, this household's
-     * confirmed default for everything the film library couldn't otherwise place either
-     * (see the movie category tagging convention). Wrong guesses are still expected and
-     * meant to be correctable later, not blocking here.
+     * folder name doesn't say; failing that too, the same TMDB check against the
+     * track's own title, on the chance it happens to share the film's name; and only
+     * then falls back to Tamil, this household's confirmed default for everything the
+     * film library couldn't otherwise place either (see the movie category tagging
+     * convention). Wrong guesses are still expected and meant to be correctable later,
+     * not blocking here.
      *
-     * <p>Resolved once per album, not once per track — a soundtrack's 8 tracks share one
-     * TMDB lookup instead of repeating it eight times, which matters both for how long a
-     * scan takes and for how much of the shared {@link com.example.kido.media.tmdb.TmdbRateLimiter}'s
-     * budget this spends against every other TMDB caller.
+     * <p>Resolved once per album, not once per track, for every album except a flat
+     * folder's placeholder ({@link #PLACEHOLDER_ALBUMS}) — a real soundtrack's 8 tracks
+     * share one TMDB lookup instead of repeating it eight times, which matters both for
+     * how long a scan takes and for how much of the shared {@link
+     * com.example.kido.media.tmdb.TmdbRateLimiter}'s budget this spends against every
+     * other TMDB caller. A placeholder album has no such shared answer to cache, so
+     * those go by title individually instead.
      *
      * @return how many rows got a language they did not have before
      */
@@ -350,8 +365,12 @@ public class LibraryIngestService {
         Map<String, String> languageByAlbum = new HashMap<>();
         List<MediaItem> updated = new ArrayList<>();
         for (MediaItem item : candidates) {
-            String albumKey = nullToEmpty(item.getAlbum()).toLowerCase(Locale.ROOT);
-            String language = languageByAlbum.computeIfAbsent(albumKey, key -> guessMusicLanguage(item));
+            String album = nullToEmpty(item.getAlbum()).trim();
+            boolean realAlbum = !album.isEmpty() && !PLACEHOLDER_ALBUMS.contains(album.toLowerCase(Locale.ROOT));
+            String language = realAlbum
+                    ? languageByAlbum.computeIfAbsent(album.toLowerCase(Locale.ROOT),
+                            key -> guessMusicLanguage(item, true))
+                    : guessMusicLanguage(item, false);
             item.setPrimaryLanguage(language);
             updated.add(item);
         }
@@ -359,7 +378,14 @@ public class LibraryIngestService {
         return updated.size();
     }
 
-    private String guessMusicLanguage(MediaItem item) {
+    /**
+     * @param hasRealAlbum whether {@code item}'s album is a real soundtrack folder worth
+     *                      searching TMDB by — a flat-folder placeholder isn't a title,
+     *                      so this instead falls straight to the track's own title as a
+     *                      last resort, on the chance the track happens to share its
+     *                      name with the film it's from (common for a title song).
+     */
+    private String guessMusicLanguage(MediaItem item, boolean hasRealAlbum) {
         String haystack = String.join(" ",
                         nullToEmpty(item.getAlbum()), nullToEmpty(item.getArtist()),
                         nullToEmpty(item.getTitle()), nullToEmpty(item.getFilePath()))
@@ -369,13 +395,25 @@ public class LibraryIngestService {
                 return keyword.getValue();
             }
         }
-        if (item.getAlbum() != null && !item.getAlbum().isBlank()) {
-            String tmdbLanguage = tmdbMovies.originalLanguageFor(item.getAlbum(), item.getYear());
-            if (tmdbLanguage != null && RECOGNISED_MUSIC_LANGUAGES.contains(tmdbLanguage)) {
-                return tmdbLanguage;
+        if (hasRealAlbum) {
+            String albumLanguage = languageFromTmdb(item.getAlbum(), item.getYear());
+            if (albumLanguage != null) {
+                return albumLanguage;
             }
         }
+        String titleLanguage = languageFromTmdb(item.getTitle(), item.getYear());
+        if (titleLanguage != null) {
+            return titleLanguage;
+        }
         return "ta";
+    }
+
+    private String languageFromTmdb(String query, Integer year) {
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        String language = tmdbMovies.originalLanguageFor(query, year);
+        return language != null && RECOGNISED_MUSIC_LANGUAGES.contains(language) ? language : null;
     }
 
     private static String nullToEmpty(String value) {
