@@ -39,16 +39,20 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>{@link MediaType#FILM} and {@link MediaType#HOME_VIDEO} are looked up against
  * TMDB's movie catalog; {@link MediaType#SERIES} and {@link MediaType#ANIME} against
  * its TV catalog instead — a feature-length runtime check makes no sense for an
- * episodic file, so those two types are verified by year alone, the same trust level
- * already used below for a movie whose runtime could not be probed.
+ * episodic file, so a TV search instead trusts TMDB's own top result outright, on the
+ * strength of {@link com.example.kido.media.metadata.FilenameParser#seriesTitle}
+ * already having narrowed the query down to just the show's name (see {@link
+ * #pickVerifiedMatch}) — a raw episode filename only rarely carries a year to verify
+ * against the way a movie release usually does.
  *
- * <p>A bare title search is not reliable enough to trust blindly: "Master" alone
+ * <p>A bare movie title search is not reliable enough to trust blindly: "Master" alone
  * matches dozens of unrelated films on TMDB, and title + release year still is not
  * always enough. For a movie, every candidate is verified against the file's own probed
  * runtime (already known from ffprobe, no extra local cost) before anything from it is
  * accepted — the one piece of ground truth this server has that TMDB's ranking cannot
- * see. A title with neither a known year nor a probed duration is judged too ambiguous
- * to guess at all, and is left alone rather than risk attaching the wrong film's data.
+ * see. A movie title with neither a known year nor a probed duration is judged too
+ * ambiguous to guess at all, and is left alone rather than risk attaching the wrong
+ * film's data.
  */
 @Slf4j
 @Service
@@ -216,15 +220,26 @@ public class TmdbMovieService {
 
     /**
      * Walks the top few search results, in TMDB's own relevance order, and returns the
-     * first whose official runtime is consistent with this file's probed duration. With
-     * no probed duration to check against — always the case for TV, where a show's
-     * runtime is per-episode and tells us nothing about the whole series — a
-     * year-narrowed search's top result is trusted as-is; with neither signal, nothing
-     * is trusted.
+     * first whose official runtime is consistent with this file's probed duration.
+     *
+     * <p>TV has no such check available at all — a show's runtime is per-episode and
+     * tells us nothing about the series as a whole — and unlike a movie title, a raw
+     * filename rarely carries a year to narrow against either: {@link
+     * com.example.kido.media.metadata.FilenameParser#seriesTitle} already did the only
+     * verification available before the search was even made, by cutting the query down
+     * to just the show's name. So a TV search's top result is trusted outright, the same
+     * trust already given a year-narrowed movie search below.
+     *
+     * <p>With neither a duration nor a year, a movie search's top result is not trusted
+     * at all — nothing here narrowed a bare title search the way {@code seriesTitle} did
+     * for TV.
      */
     private JsonNode pickVerifiedMatch(Catalog catalog, JsonNode results, Double durationSeconds, Integer year)
             throws IOException, InterruptedException {
-        if (catalog == Catalog.TV || durationSeconds == null || durationSeconds <= 0) {
+        if (catalog == Catalog.TV) {
+            return results.isEmpty() ? null : results.get(0);
+        }
+        if (durationSeconds == null || durationSeconds <= 0) {
             boolean yearNarrowed = year != null && year > 0;
             return yearNarrowed && !results.isEmpty() ? results.get(0) : null;
         }
