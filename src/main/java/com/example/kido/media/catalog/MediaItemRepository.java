@@ -271,29 +271,20 @@ public interface MediaItemRepository
     List<Object[]> musicCredits(@Param("types") List<MediaType> types);
 
     /**
-     * Rows whose credits mention a name anywhere.
+     * Rows whose billing order mentions a name anywhere.
      *
-     * <p>Deliberately loose. Matching {@code ,name,} exactly in SQL founders on the
+     * <p>Deliberately loose, and only for cast: singers have the normalised
+     * {@code artistNames} join above, while {@code castMembers} is one CLOB per row
+     * with nothing to join. Matching {@code ,name,} exactly in SQL founders on the
      * spacing real taggers use — "A.R.Rahman, Sunitha Sarathy" has a space after the
      * comma and "A.R. Rahman,Shreya Ghoshal" does not — so this narrows the rows and
-     * the caller checks each one against properly split, trimmed names. Without that
-     * second pass "Raja" would collect every Yuvan Shankar Raja track in the house.
+     * the caller checks each one against properly split names. Without that second
+     * pass "Raja" would collect every Yuvan Shankar Raja track in the house.
      *
      * <p>Case-sensitive, and safely so: the only caller searches for names it read out
-     * of these same columns, so the casing already matches. {@code lower()} is not an
-     * option regardless — {@code castMembers} is mapped to a CLOB, and Hibernate will
-     * not apply a string function to one.
+     * of this same column, so the casing already matches. {@code lower()} is not an
+     * option regardless — Hibernate will not apply a string function to a CLOB.
      */
-    @Query("""
-            select m from MediaItem m
-            where m.missing = false and m.hidden = false and m.type in :types
-              and m.artist like concat('%', :name, '%')
-            order by m.addedAt desc, m.sortTitle asc
-            """)
-    List<MediaItem> findByArtistMentioning(@Param("types") List<MediaType> types,
-                                           @Param("name") String name, Pageable pageable);
-
-    /** As {@link #findByArtistMentioning}, over the billing order instead. */
     @Query("""
             select m from MediaItem m
             where m.missing = false and m.hidden = false and m.type in :types

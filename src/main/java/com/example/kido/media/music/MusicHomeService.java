@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
-import java.util.function.Function;
 
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -146,22 +145,33 @@ public class MusicHomeService {
             directorRails++;
         }
 
-        // Singers and heroes, split out of credit lines no database can group.
+        // Singers and heroes get their own shelves rather than being folded in with
+        // the music directors above, because those are three different reasons to
+        // want a song: who wrote it, who sang it, and whose film it came from. A
+        // shelf of Tamil soundtracks gets browsed by all three, and collapsing them
+        // into one "artist" rail would be the app choosing which may be asked.
         //
-        // Their own shelves rather than folded in with the music directors above,
-        // because those are three different reasons to want a song: who wrote it,
-        // who sang it, and whose film it came from. A shelf of Tamil soundtracks
-        // gets browsed by all three, and collapsing them into one "artist" rail
-        // would be the app choosing which of those questions may be asked.
-        Credits credits = creditsOf();
+        // Singers come off the normalised artistNames join, so a collaboration counts
+        // toward everyone it names and the shelf is an indexed lookup rather than a
+        // LIKE over a credit line.
+        int singerRails = 0;
+        for (Object[] row : items.countByArtistName(MUSIC_TYPES)) {
+            if (singerRails >= MAX_PERSON_RAILS) {
+                break;
+            }
+            String singer = (String) row[0];
+            if (((Number) row[1]).longValue() < MIN_FACET_RAIL_SIZE) {
+                continue;
+            }
+            List<MediaItem> found = items.findByArtistName(MUSIC_TYPES, singer, railPage);
+            addRail(rails, "singer:" + singer, singer, catalog.summarise(profile, found));
+            singerRails++;
+        }
 
-        addPeopleRails(rails, profile, credits.singers(), "singer",
-                name -> items.findByArtistMentioning(MUSIC_TYPES, name, personPage),
-                MediaItem::getArtist, railSize);
-
-        addPeopleRails(rails, profile, credits.heroes(), "hero",
-                name -> items.findByCastMentioning(MUSIC_TYPES, name, personPage),
-                MediaItem::getCastMembers, railSize);
+        // Heroes cannot: castMembers is a single CLOB with no join table behind it, so
+        // the names are split out here and the rows narrowed by a LIKE that a second
+        // pass then checks properly.
+        addHeroRails(rails, profile, personPage, railSize);
 
         int eraRails = 0;
         for (String decade : decadesNewestFirst(items.countByYear(MUSIC_TYPES))) {
@@ -201,72 +211,31 @@ public class MusicHomeService {
         return out;
     }
 
-    /** The people named across the library's music, counted. */
-    private record Credits(Map<String, Integer> singers, Map<String, Integer> heroes) {}
-
     /**
-     * Splits every credit line into people and counts them.
+     * A shelf for each of the most-filmed heroes.
      *
-     * <p>Singers come from the whole {@code artist} field: a duet credits two people
-     * and both of them sang it.
+     * <p>Singers get the normalised {@code artistNames} join and a straightforward
+     * grouped count. Cast has no such table — it is one CLOB per row — so the leads
+     * are counted by splitting those credit lines here, and the tracks found again by
+     * a LIKE narrowed to rows mentioning the name, then checked properly against the
+     * split names. Without that second pass a shelf for "Raja" would collect every
+     * Yuvan Shankar Raja track in the house.
      *
-     * <p>Heroes are only ever the first name in the billing order. Counting the whole
-     * cast would hand a shelf to every character actor who has been near a film with
-     * a soundtrack, and "hero" is a claim about the lead — the person somebody means
+     * <p>Only the first name in the billing order counts. Taking the whole cast would
+     * hand a shelf to every character actor who has been near a film with a
+     * soundtrack, and "hero" is a claim about the lead — the person somebody means
      * when they say they want a Vijay song.
      */
-    private Credits creditsOf() {
-        Map<String, Integer> singers = new HashMap<>();
-        Map<String, Integer> heroes = new HashMap<>();
-
+    private void addHeroRails(List<HomeRailDto> rails, Profile profile,
+                              Pageable personPage, int railSize) {
+        Map<String, Integer> leads = new HashMap<>();
         for (Object[] row : items.musicCredits(MUSIC_TYPES)) {
-            for (String singer : namesIn((String) row[0])) {
-                singers.merge(singer, 1, Integer::sum);
-            }
-            List<String> cast = namesIn((String) row[1]);
-            if (!cast.isEmpty()) {
-                heroes.merge(cast.get(0), 1, Integer::sum);
-            }
+            ArtistNames.split((String) row[0]).stream()
+                    .findFirst()
+                    .ifPresent(lead -> leads.merge(lead, 1, Integer::sum));
         }
-        return new Credits(singers, heroes);
-    }
 
-    /**
-     * Turns one credit line into names.
-     *
-     * <p>Trimmed, because taggers disagree about the space after a comma, and empty
-     * fragments dropped because a trailing comma is common enough to plan for.
-     */
-    static List<String> namesIn(String credit) {
-        if (credit == null || credit.isBlank()) {
-            return List.of();
-        }
-        List<String> names = new ArrayList<>();
-        for (String part : credit.split(",")) {
-            String name = part.trim();
-            if (!name.isEmpty()) {
-                names.add(name);
-            }
-        }
-        return names;
-    }
-
-    /**
-     * A shelf for each of the most-credited people, busiest first.
-     *
-     * <p>The second pass over the credit line is what makes the loose SQL safe: the
-     * query finds rows mentioning the name anywhere, and this keeps only those where
-     * it is a name in its own right. Without it a shelf for "Raja" would collect
-     * every Yuvan Shankar Raja track in the house.
-     */
-    private void addPeopleRails(List<HomeRailDto> rails,
-                                Profile profile,
-                                Map<String, Integer> counted,
-                                String keyPrefix,
-                                Function<String, List<MediaItem>> candidates,
-                                Function<MediaItem, String> credit,
-                                int railSize) {
-        List<String> busiestFirst = counted.entrySet().stream()
+        List<String> busiestFirst = leads.entrySet().stream()
                 .filter(entry -> entry.getValue() >= MIN_FACET_RAIL_SIZE)
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
@@ -278,15 +247,16 @@ public class MusicHomeService {
             if (added >= MAX_PERSON_RAILS) {
                 break;
             }
-            List<MediaItem> found = candidates.apply(name).stream()
-                    .filter(item -> namesIn(credit.apply(item)).stream()
+            List<MediaItem> found = items.findByCastMentioning(MUSIC_TYPES, name, personPage)
+                    .stream()
+                    .filter(item -> ArtistNames.split(item.getCastMembers()).stream()
                             .anyMatch(credited -> credited.equalsIgnoreCase(name)))
                     .limit(railSize)
                     .toList();
             if (found.size() < MIN_FACET_RAIL_SIZE) {
                 continue;
             }
-            addRail(rails, keyPrefix + ":" + name, name, catalog.summarise(profile, found));
+            addRail(rails, "hero:" + name, name, catalog.summarise(profile, found));
             added++;
         }
     }
