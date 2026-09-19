@@ -121,7 +121,9 @@ public class LibraryIngestService {
             return Outcome.SKIPPED;
         }
         // Cover art living beside a film must not become a photo library entry.
-        if (type == MediaType.PHOTO && MediaFiles.isArtworkImage(fileName)) {
+        // The whole path, not just the name: the strongest signal that an image is
+        // artwork is a playable file of the same name sitting next to it.
+        if (type == MediaType.PHOTO && MediaFiles.isArtworkImage(file)) {
             return Outcome.SKIPPED;
         }
 

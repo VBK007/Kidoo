@@ -1,7 +1,9 @@
 package com.example.kido.media;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.stream.Stream;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -25,6 +27,13 @@ public final class MediaFiles {
 
     public static final Set<String> AUDIO_EXTENSIONS = Set.of(
             "mp3", "flac", "m4a", "aac", "ogg", "oga", "opus", "wav", "wma", "alac", "aiff");
+
+    /**
+     * Everything a player can open, for asking "is this image somebody's cover?".
+     */
+    private static final Set<String> PLAYABLE_EXTENSIONS =
+            Stream.concat(VIDEO_EXTENSIONS.stream(), AUDIO_EXTENSIONS.stream())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
     public static final Set<String> IMAGE_EXTENSIONS = Set.of(
             "jpg", "jpeg", "png", "webp", "avif", "heic", "heif", "gif", "bmp", "tif", "tiff", "dng");
@@ -152,8 +161,56 @@ public final class MediaFiles {
             return true;
         }
         // Also "Inception-poster.jpg" / "Inception.fanart.jpg".
-        return ARTWORK_BASENAMES.stream()
-                .anyMatch(name -> base.endsWith("-" + name) || base.endsWith("." + name));
+        if (ARTWORK_BASENAMES.stream()
+                .anyMatch(name -> base.endsWith("-" + name) || base.endsWith("." + name))) {
+            return true;
+        }
+        // "AlbumArt {F011C0FA-7E53-4299-AB73-81EBDEF0BD07} Small.jpg" — Windows Media
+        // Player's thumbnail cache, written into music folders without being asked. The
+        // GUID makes every one unique, so no fixed name could catch them, and each
+        // folder quietly contributed two more entries to the library.
+        return base.startsWith("albumart");
+    }
+
+    /**
+     * True for an image that belongs to another file rather than standing on its own.
+     *
+     * <p>The name-only check above handles the conventions that announce themselves:
+     * {@code poster.jpg}, {@code Inception-fanart.jpg}. It cannot handle the most
+     * common one of all, which is artwork named exactly after what it depicts —
+     * {@code Soorarai pottru.jpg} beside {@code Soorarai pottru.mp4}. That is what
+     * Plex and Emby write, and with nothing in the name to separate it from a
+     * photograph it became a second library entry carrying the film's own title,
+     * turning up in search looking exactly like a duplicate of the film.
+     *
+     * <p>The disk settles what the name cannot: if something playable in the same
+     * folder has the same name, this image is its cover. Asked file by file rather
+     * than by listing the directory, so a photo library of ten thousand images does
+     * not turn the scan quadratic.
+     */
+    public static boolean isArtworkImage(Path file) {
+        String fileName = file.getFileName().toString();
+        if (isArtworkImage(fileName)) {
+            return true;
+        }
+        if (!IMAGE_EXTENSIONS.contains(extension(fileName))) {
+            return false;
+        }
+        Path parent = file.getParent();
+        if (parent == null) {
+            return false;
+        }
+        String base = baseName(fileName);
+        for (String extension : PLAYABLE_EXTENSIONS) {
+            // Both cases because the check is a filesystem lookup: Windows does not
+            // care, ext4 very much does, and "HOLIDAY.MP4" is a real way for a camera
+            // to name a file.
+            if (Files.exists(parent.resolve(base + "." + extension))
+                    || Files.exists(parent.resolve(base + "." + extension.toUpperCase(Locale.ROOT)))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static String contentType(String fileName) {
