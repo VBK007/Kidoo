@@ -385,10 +385,14 @@ public class LibraryIngestService {
     }
 
     /**
-     * Fills in plot, rating and cast from TMDB for every video missing any of them, and
-     * pre-warms the cast photo cache for every credited name — all open, free lookups,
-     * run automatically at the end of every scan so new movies get them without anyone
-     * asking.
+     * Fills in plot, rating, cast and poster from TMDB for every video missing any of
+     * them, and pre-warms the cast photo cache for every credited name — all open, free
+     * lookups, run automatically at the end of every scan so new movies get them without
+     * anyone asking.
+     *
+     * <p>The poster check looks at the field, not the disk: it is what lets this recover
+     * on its own if the artwork cache ever gets wiped out from under an item that was
+     * already fully enriched otherwise (the file went missing, not the metadata).
      *
      * <p>A field that already has a value is never touched, and enrichment is only
      * attempted at all when {@link MediaItem#isMetadataScannerOwned()} — the same
@@ -410,7 +414,8 @@ public class LibraryIngestService {
             }
             boolean missingSomething = item.getPlot() == null || item.getPlot().isBlank()
                     || item.getRating() == null
-                    || item.getCastMembers() == null || item.getCastMembers().isBlank();
+                    || item.getCastMembers() == null || item.getCastMembers().isBlank()
+                    || !item.hasPoster();
             if (item.isMetadataScannerOwned() && missingSomething && tmdbMovies.enrich(item)) {
                 item.setUpdatedAt(Instant.now());
                 updated.add(item);
