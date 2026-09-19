@@ -252,6 +252,45 @@ public class MediaItem {
     @Column(name = "track_number")
     private Integer trackNumber;
 
+    /** The composer — "music director" in the credits sense film music is usually known by. */
+    @Column(name = "music_director", length = 512)
+    private String musicDirector;
+
+    /**
+     * A track's mood/activity rail placement, derived from its own audio (tempo, energy,
+     * brightness) rather than guessed from its title — most of what a download-site file
+     * is titled is just the song name, which says nothing about how it sounds. See
+     * {@link com.example.kido.media.music.AudioFeatureService}.
+     */
+    @Column(length = 32)
+    private String mood;
+
+    @Column(length = 32)
+    private String activity;
+
+    /**
+     * Raw features behind {@link #mood}/{@link #activity}, kept rather than discarded so
+     * a placement can be audited or the classification thresholds revisited later without
+     * re-decoding every track. {@code bpm} is tempo-doubling corrected (see
+     * {@code AudioFeatureService}); the other two are as aubio reported them.
+     */
+    @Column(name = "audio_bpm")
+    private Double bpm;
+
+    @Column(name = "audio_energy_rms")
+    private Double energyRms;
+
+    @Column(name = "audio_spectral_centroid")
+    private Double spectralCentroid;
+
+    /**
+     * When this track's audio was last analyzed for mood/activity, regardless of outcome
+     * — same gating as {@link #musicArtworkCheckedAt}: null is the only thing that means
+     * "try again", so a track aubio simply cannot decode is not re-decoded every scan.
+     */
+    @Column(name = "audio_analyzed_at")
+    private Instant audioAnalyzedAt;
+
     // --- home video and photos ---
 
     /**

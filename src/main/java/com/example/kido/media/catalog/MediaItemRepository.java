@@ -190,6 +190,77 @@ public interface MediaItemRepository
             """)
     List<Object[]> countByYear(@Param("types") List<MediaType> types);
 
+    // --- music home screen: browse-by-facet rails ---
+    //
+    // Same facet-tally-then-fetch-top-N shape as genre/person/language above, scoped to
+    // mood/activity/composer instead. Newest-first within a facet rather than any
+    // ranking signal — these are browse shelves ("Feeling Romantic"), not judgements
+    // about which track in that mood is best.
+
+    @Query("""
+            select m.mood, count(m) from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.mood is not null
+            group by m.mood
+            order by count(m) desc, m.mood asc
+            """)
+    List<Object[]> countByMood(@Param("types") List<MediaType> types);
+
+    @Query("""
+            select m.activity, count(m) from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.activity is not null
+            group by m.activity
+            order by count(m) desc, m.activity asc
+            """)
+    List<Object[]> countByActivity(@Param("types") List<MediaType> types);
+
+    @Query("""
+            select m.musicDirector, count(m) from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.musicDirector is not null
+            group by m.musicDirector
+            order by count(m) desc, m.musicDirector asc
+            """)
+    List<Object[]> countByMusicDirector(@Param("types") List<MediaType> types);
+
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.mood = :mood
+            order by m.addedAt desc, m.sortTitle asc
+            """)
+    List<MediaItem> findByMood(@Param("types") List<MediaType> types,
+                              @Param("mood") String mood, Pageable pageable);
+
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.activity = :activity
+            order by m.addedAt desc, m.sortTitle asc
+            """)
+    List<MediaItem> findByActivity(@Param("types") List<MediaType> types,
+                                   @Param("activity") String activity, Pageable pageable);
+
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.musicDirector = :musicDirector
+            order by m.addedAt desc, m.sortTitle asc
+            """)
+    List<MediaItem> findByMusicDirector(@Param("types") List<MediaType> types,
+                                        @Param("musicDirector") String musicDirector, Pageable pageable);
+
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.year between :startYear and :endYear
+            order by m.addedAt desc, m.sortTitle asc
+            """)
+    List<MediaItem> findByYearBetween(@Param("types") List<MediaType> types,
+                                      @Param("startYear") int startYear,
+                                      @Param("endYear") int endYear, Pageable pageable);
+
     @Query("""
             select coalesce(sum(m.fileSize), 0) from MediaItem m
             where m.missing = false and m.hidden = false

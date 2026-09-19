@@ -397,6 +397,21 @@ public class AdminService {
     }
 
     /**
+     * Re-derives mood/activity for tracks that have not been analyzed yet, on the
+     * owner's explicit request. Runs automatically at the end of every scan too — see
+     * {@link com.example.kido.media.library.LibraryIngestService#backfillAudioFeatures()}.
+     */
+    @Transactional
+    public SeedResultDto backfillAudioFeatures() {
+        int updated = ingest.backfillAudioFeatures();
+        log.info("Backfilled audio features for {} tracks (on-demand)", updated);
+        return new SeedResultDto(updated,
+                updated == 0
+                        ? "No track was waiting on audio analysis"
+                        : "Analyzed " + updated + " track(s) for mood and activity");
+    }
+
+    /**
      * Fills in the language facet from probes already on record.
      *
      * <p>Separate from a scan because it needs no disk: the audio tracks were stored

@@ -157,6 +157,18 @@ public class AdminController {
     }
 
     /**
+     * Analyzes every unanalyzed track's own audio for the mood/activity rails on the
+     * music home screen. Run this after enabling audio analysis, or after a classifier
+     * threshold change that should be re-applied without waiting for the next scan.
+     */
+    @PostMapping("/backfill-audio-features")
+    public SeedResultDto backfillAudioFeatures(@AuthenticationPrincipal AppUser user,
+                                               @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        requireOwner(user, key);
+        return admin.backfillAudioFeatures();
+    }
+
+    /**
      * Removes rows a scan could no longer find on disk — a file actually deleted, or
      * (the common case right after a matching fix ships) a row that should never have
      * been indexed as its own catalog entry, like an image the scanner used to walk

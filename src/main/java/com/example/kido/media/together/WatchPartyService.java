@@ -105,6 +105,9 @@ public class WatchPartyService {
      */
     private final int maxTranscodeSessions;
 
+    /** This server's own public address, or blank to leave sharing code-only. */
+    private final String publicBaseUrl;
+
     public WatchPartyService(WatchPartyRepository parties,
                              WatchPartyMemberRepository members,
                              CatalogService catalog,
@@ -114,7 +117,8 @@ public class WatchPartyService {
                              GuestJoinThrottle throttle,
                              JwtService jwt,
                              MediaProperties mediaProperties,
-                             @Value("${app.parties.max-members:4}") int defaultMaxMembers) {
+                             @Value("${app.parties.max-members:4}") int defaultMaxMembers,
+                             @Value("${app.public-base-url:}") String publicBaseUrl) {
         this.parties = parties;
         this.members = members;
         this.catalog = catalog;
@@ -125,6 +129,7 @@ public class WatchPartyService {
         this.jwt = jwt;
         this.defaultMaxMembers = defaultMaxMembers;
         this.maxTranscodeSessions = mediaProperties.getMaxTranscodeSessions();
+        this.publicBaseUrl = publicBaseUrl == null ? "" : publicBaseUrl.replaceAll("/+$", "");
     }
 
     /**
@@ -549,7 +554,13 @@ public class WatchPartyService {
                 seated,
                 pending,
                 registry.clock(party.getId()),
-                capacityWarning(party, item));
+                capacityWarning(party, item),
+                shareUrl(party));
+    }
+
+    /** Null when {@link #publicBaseUrl} is not configured -- sharing stays code-only. */
+    private String shareUrl(WatchParty party) {
+        return publicBaseUrl.isBlank() ? null : publicBaseUrl + "/join/" + party.getJoinCode();
     }
 
     /**

@@ -42,6 +42,12 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login",
                                 "/api/auth/firebase", "/api/auth/refresh").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
+                        // The web fallback for a shared watch-party invite, and the two
+                        // files that let a phone's OS verify this server may open the
+                        // app directly instead. All three are read by a stranger who
+                        // holds nothing but a link, or by the OS itself.
+                        .requestMatchers(HttpMethod.GET, "/join/*", "/.well-known/assetlinks.json",
+                                "/.well-known/apple-app-site-association").permitAll()
                         // The watch party socket authenticates during its handshake:
                         // a browser cannot put a bearer token on a WebSocket, so the
                         // token arrives as a query parameter and the interceptor

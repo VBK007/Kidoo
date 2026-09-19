@@ -9,7 +9,10 @@ RUN ./gradlew --no-daemon bootJar -x test
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# python3-aubio pulls in python3 + numpy automatically; used by AudioFeatureService for
+# per-track tempo/energy analysis the same way ffmpeg is used for transcoding — a small,
+# well-scoped native dependency rather than a DSP implementation in the JVM.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg python3-aubio \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd -r -u 1001 appuser
 COPY --from=build /app/build/libs/*.jar app.jar

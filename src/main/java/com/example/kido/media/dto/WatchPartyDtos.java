@@ -139,6 +139,11 @@ public final class WatchPartyDtos {
      *                        either way, because the host is the one who knows what
      *                        their machine can take.
      */
+    /**
+     * @param shareUrl a link that opens straight to {@code /join/{code}}, null when
+     *                 {@code app.public-base-url} is not configured -- sharing then
+     *                 stays code-only, same as before this field existed.
+     */
     public record PartyDto(
             String partyId,
             String code,
@@ -150,6 +155,7 @@ public final class WatchPartyDtos {
             List<MemberDto> members,
             List<PendingGuestDto> pending,
             ClockDto clock,
-            String capacityWarning) {
+            String capacityWarning,
+            String shareUrl) {
     }
 }

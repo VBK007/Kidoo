@@ -47,6 +47,9 @@ public final class CatalogDtos {
             String capturedAt,
             String artist,
             String album,
+            String musicDirector,
+            String mood,
+            String activity,
             long viewCount,
             long likeCount,
             boolean liked) {
@@ -74,6 +77,9 @@ public final class CatalogDtos {
                     item.getCapturedAt() == null ? null : item.getCapturedAt().toString(),
                     item.getArtist(),
                     item.getAlbum(),
+                    item.getMusicDirector(),
+                    item.getMood(),
+                    item.getActivity(),
                     item.playCount(),
                     item.getLikeCount(),
                     liked);

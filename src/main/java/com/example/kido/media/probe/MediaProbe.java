@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
 
@@ -49,9 +51,11 @@ public class MediaProbe {
                     + ":chapter=id,start_time,end_time"
                     + ":chapter_tags=title"
                     // ID3 (or equivalent container) tags for audio files — artist/album/
-                    // title/track are what LibraryIngestService prefers over its
-                    // folder-guessed music metadata when a file actually carries them.
-                    + ":format_tags=artist,album,title,track";
+                    // title/track/composer/date are what LibraryIngestService prefers over
+                    // its folder-guessed music metadata when a file actually carries them.
+                    // composer is the music director for film songs; date backs the "era"
+                    // rail on the music home screen, which a folder guess cannot supply.
+                    + ":format_tags=artist,album,title,track,composer,date";
 
     private final MediaProperties props;
 
@@ -247,7 +251,19 @@ public class MediaProbe {
                 blankToNull(sections.format.get("TAG:title")),
                 blankToNull(sections.format.get("TAG:artist")),
                 blankToNull(sections.format.get("TAG:album")),
-                track);
+                track,
+                blankToNull(sections.format.get("TAG:composer")),
+                yearOf(sections.format.get("TAG:date")));
+    }
+
+    /** {@code TAG:date} is anything from {@code "2004"} to a full ISO date; only the year matters. */
+    private static Integer yearOf(String raw) {
+        String value = blankToNull(raw);
+        if (value == null) {
+            return null;
+        }
+        Matcher m = Pattern.compile("(19|20)\\d{2}").matcher(value);
+        return m.find() ? Integer.valueOf(m.group()) : null;
     }
 
     private List<ChapterData> toChapters(Sections sections) {
@@ -346,5 +362,6 @@ public class MediaProbe {
      * Embedded tags read off an audio file's own container — not persisted here, just
      * handed to the caller to prefer over a folder/filename guess field by field.
      */
-    public record AudioTags(String title, String artist, String album, Integer track) {}
+    public record AudioTags(String title, String artist, String album, Integer track,
+                            String composer, Integer year) {}
 }

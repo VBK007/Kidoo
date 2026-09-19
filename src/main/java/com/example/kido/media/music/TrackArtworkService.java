@@ -13,7 +13,6 @@ import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Service;
 
@@ -43,15 +42,6 @@ import tools.jackson.databind.json.JsonMapper;
 @Slf4j
 @Service
 public class TrackArtworkService {
-
-    /**
-     * Strips the site watermark these files are typically tagged with (e.g. {@code "-
-     * MassTamilan.com"}, {@code "- Isaimini.Audio"}) before building a search query —
-     * left in, it is the single biggest thing that would sink an otherwise-good match.
-     */
-    private static final Pattern SITE_TAG =
-            Pattern.compile("\\s*[-|]\\s*[\\w]+\\.(com|in|fm|dev|io|fun|net|audio|so)\\s*$",
-                    Pattern.CASE_INSENSITIVE);
 
     private final MediaProperties props;
     private final MediaPaths paths;
@@ -121,10 +111,8 @@ public class TrackArtworkService {
     }
 
     private static String clean(String value) {
-        if (value == null) {
-            return "";
-        }
-        return SITE_TAG.matcher(value.trim()).replaceAll("").trim();
+        String cleaned = SiteWatermark.clean(value);
+        return cleaned == null ? "" : cleaned;
     }
 
     private String search(String query) throws IOException, InterruptedException {

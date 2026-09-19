@@ -138,6 +138,10 @@ public class MediaProperties {
     @Setter
     private MusicPreview musicPreview = new MusicPreview();
 
+    @Getter
+    @Setter
+    private AudioAnalysis audioAnalysis = new AudioAnalysis();
+
     /**
      * Offline copies prepared for a device to take away.
      *
@@ -300,6 +304,36 @@ public class MediaProperties {
         private String cacheDir = "data/music-previews";
 
         private int timeoutSeconds = 15;
+    }
+
+    /**
+     * Tempo/energy/brightness extraction for the mood and activity a track's home-screen
+     * rail is chosen from — {@code aubio} rather than a Java DSP implementation because
+     * it is purpose-built for exactly this (tempo tracking, RMS, spectral descriptors)
+     * and is already validated against this library's own real tracks, where a from-
+     * scratch implementation would not be. Shelled out to the same way {@code ffprobe}
+     * already is: one more well-scoped external process, not a new architectural pattern.
+     */
+    @Getter
+    @Setter
+    public static class AudioAnalysis {
+
+        private boolean enabled = true;
+
+        private String pythonPath = "python3";
+
+        /** Bundled under {@code resources/scripts} and extracted to a temp file at startup. */
+        private String scriptResource = "scripts/audio_features.py";
+
+        /**
+         * How much of a track to decode. Long enough for the tempo tracker to lock on
+         * and for RMS/centroid to settle past a quiet intro; short of the whole file
+         * because a home library's mood rails do not need more precision than that, and
+         * every extra second is extra decode time across the whole scan.
+         */
+        private int analyzeSeconds = 60;
+
+        private int timeoutSeconds = 20;
     }
 
     /** One configured library root. */

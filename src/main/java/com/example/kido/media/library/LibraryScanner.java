@@ -89,12 +89,16 @@ public class LibraryScanner {
             // Open, free-for-personal-use metadata (TMDB) -- a movie with a plot
             // already keeps it untouched; only fills what a scan left empty.
             int metadataBackfilled = ingest.backfillMetadata();
+            // Mood/activity for the music home screen — see backfillAudioFeatures's own
+            // docs for why this is a separate pass rather than part of per-file ingest.
+            int audioBackfilled = ingest.backfillAudioFeatures();
             status.finish(null);
             log.info("Library scan finished: {} seen, {} added, {} updated, {} unchanged, "
-                            + "{} missing, {} failed, {} backfilled artwork, {} backfilled metadata",
+                            + "{} missing, {} failed, {} backfilled artwork, {} backfilled metadata, "
+                            + "{} backfilled audio features",
                     status.getFilesSeen().get(), status.getAdded().get(), status.getUpdated().get(),
                     status.getUnchanged().get(), status.getMarkedMissing().get(),
-                    status.getFailed().get(), backfilled, metadataBackfilled);
+                    status.getFailed().get(), backfilled, metadataBackfilled, audioBackfilled);
         } catch (Exception ex) {
             log.error("Library scan failed", ex);
             status.finish(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());

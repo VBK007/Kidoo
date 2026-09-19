@@ -35,6 +35,9 @@ import com.example.kido.media.metadata.Languages;
 import com.example.kido.media.metadata.NfoParser;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.metadata.SidecarMetadata;
+import com.example.kido.media.music.AudioFeatureService;
+import com.example.kido.media.music.MoodClassifier;
+import com.example.kido.media.music.SiteWatermark;
 import com.example.kido.media.music.TrackArtworkService;
 import com.example.kido.media.probe.ImageProbe;
 import com.example.kido.media.probe.MediaChapter;
@@ -71,6 +74,7 @@ public class LibraryIngestService {
     private final TmdbMovieService tmdbMovies;
     private final CastPhotoService castPhotos;
     private final TrackArtworkService trackArtwork;
+    private final AudioFeatureService audioFeatures;
 
     public LibraryIngestService(MediaProperties props,
                                 MediaPaths paths,
@@ -83,7 +87,8 @@ public class LibraryIngestService {
                                 ImageProbe images,
                                 TmdbMovieService tmdbMovies,
                                 CastPhotoService castPhotos,
-                                TrackArtworkService trackArtwork) {
+                                TrackArtworkService trackArtwork,
+                                AudioFeatureService audioFeatures) {
         this.props = props;
         this.paths = paths;
         this.items = items;
@@ -96,6 +101,7 @@ public class LibraryIngestService {
         this.tmdbMovies = tmdbMovies;
         this.castPhotos = castPhotos;
         this.trackArtwork = trackArtwork;
+        this.audioFeatures = audioFeatures;
     }
 
     /** What {@link #ingest} did with a file, so the scanner can keep its counters. */
@@ -338,6 +344,41 @@ public class LibraryIngestService {
             item.setPosterPath(artwork);
         }
         return true;
+    }
+
+    /**
+     * Analyzes every audio track's own tempo/energy/brightness and stores the mood and
+     * activity rail it belongs on — the music home screen's whole reason for existing.
+     * Same shape as {@link #backfillArtwork()}: a separate pass over every present item
+     * rather than part of {@link #ingest}, because {@code ingest} skips metadata entirely
+     * for an unchanged file, and {@code audioAnalyzedAt} is what stops a track aubio
+     * simply cannot decode from being re-decoded on every future scan regardless.
+     *
+     * @return how many tracks were analyzed (successfully or not — stamping happens either way)
+     */
+    @Transactional
+    public int backfillAudioFeatures() {
+        List<MediaItem> updated = new ArrayList<>();
+        for (MediaItem item : items.findByMissingFalse()) {
+            if ((item.getType() != MediaType.MUSIC && item.getType() != MediaType.VIDEO_SONG)
+                    || item.getAudioAnalyzedAt() != null) {
+                continue;
+            }
+            audioFeatures.analyze(Path.of(item.getFilePath())).ifPresent(features -> {
+                item.setBpm(features.bpm());
+                item.setEnergyRms(features.energyRms());
+                item.setSpectralCentroid(features.spectralCentroid());
+                MoodClassifier.classify(features.bpm(), features.energyRms(), features.spectralCentroid())
+                        .ifPresent(result -> {
+                            item.setMood(result.mood());
+                            item.setActivity(result.activity());
+                        });
+            });
+            item.setAudioAnalyzedAt(Instant.now());
+            updated.add(item);
+        }
+        items.saveAll(updated);
+        return updated.size();
     }
 
     /**
@@ -627,16 +668,17 @@ public class LibraryIngestService {
                 // Leave the track number unset; the title is still improved.
             }
         }
-        item.setTitle(title.isBlank() ? base : title.trim());
+        String cleanedTitle = SiteWatermark.clean(title.isBlank() ? base : title.trim());
+        item.setTitle(cleanedTitle == null ? base : cleanedTitle);
         item.setSortTitle(FilenameParser.sortTitle(item.getTitle()));
         item.setTrackNumber(track);
 
         Path folder = file.getParent();
         if (folder != null && folder.getFileName() != null) {
-            item.setAlbum(folder.getFileName().toString());
+            item.setAlbum(SiteWatermark.clean(folder.getFileName().toString()));
             Path artistFolder = folder.getParent();
             if (artistFolder != null && artistFolder.getFileName() != null) {
-                item.setArtist(artistFolder.getFileName().toString());
+                item.setArtist(SiteWatermark.clean(artistFolder.getFileName().toString()));
             }
         }
         // Additive only: a sidecar image found now is worth taking, but finding none
@@ -655,18 +697,31 @@ public class LibraryIngestService {
         if (tags == null) {
             return;
         }
-        if (tags.title() != null) {
-            item.setTitle(tags.title());
-            item.setSortTitle(FilenameParser.sortTitle(tags.title()));
+        String title = SiteWatermark.clean(tags.title());
+        if (title != null) {
+            item.setTitle(title);
+            item.setSortTitle(FilenameParser.sortTitle(title));
         }
-        if (tags.artist() != null) {
-            item.setArtist(tags.artist());
+        String artist = SiteWatermark.clean(tags.artist());
+        if (artist != null) {
+            item.setArtist(artist);
         }
-        if (tags.album() != null) {
-            item.setAlbum(tags.album());
+        String album = SiteWatermark.clean(tags.album());
+        if (album != null) {
+            item.setAlbum(album);
         }
         if (tags.track() != null) {
             item.setTrackNumber(tags.track());
+        }
+        // Additive only, like posters: a composer tag stripped to nothing this scan (or
+        // simply absent on this file) must never clear a value a previous scan — or the
+        // one-time verified backfill this app shipped with — already resolved correctly.
+        String composer = SiteWatermark.clean(tags.composer());
+        if (composer != null) {
+            item.setMusicDirector(composer);
+        }
+        if (tags.year() != null && item.getYear() == null) {
+            item.setYear(tags.year());
         }
     }
 
