@@ -20,6 +20,7 @@ import com.example.kido.media.MediaProperties;
 import com.example.kido.media.catalog.MediaInfo;
 import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.catalog.MediaType;
+import com.example.kido.media.metadata.FilenameParser;
 
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.JsonNode;
@@ -114,7 +115,14 @@ public class TmdbMovieService {
         }
         try {
             Catalog catalog = catalogFor(item.getType());
-            JsonNode results = search(catalog, item.getTitle(), item.getYear());
+            // An episode's title is not the show's. "[Anime Time] Black Lagoon - 029 -
+            // Collateral Massacre" matches nothing on TMDB, while "Black Lagoon"
+            // matches the series every episode of it belongs to — which is where the
+            // poster, the story and the cast actually live.
+            String query = catalog == Catalog.TV
+                    ? FilenameParser.seriesTitle(item.getTitle())
+                    : item.getTitle();
+            JsonNode results = search(catalog, query, item.getYear());
             if (results == null) {
                 return false;
             }

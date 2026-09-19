@@ -179,6 +179,46 @@ public class FilenameParser {
         }
     }
 
+    /** `[Anime Time]`, `[SubsPlease]` — the fansub group, always at the front. */
+    private static final Pattern RELEASE_GROUP = Pattern.compile("^\\s*\\[[^\\]]*\\]\\s*");
+
+    /** A trailing `(720p)` / `(1080p60)`, which is about the file and not the show. */
+    private static final Pattern TRAILING_QUALITY =
+            Pattern.compile("\\s*\\(\\s*\\d{3,4}p\\d*\\s*\\)\\s*$", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The name of the show, from the name of one episode's file.
+     *
+     * <p>An episodic title on disk carries three things a catalogue lookup cannot use:
+     * who released it, which episode it is, and what it was encoded at —
+     * {@code "[Anime Time] Black Lagoon - 029 - Collateral Massacre"},
+     * {@code "X-Men (Marvel ANIME) - Episode 01 - The Return (720p)"}. Searching TMDB
+     * for any of that finds nothing, and the show behind it is just "Black Lagoon".
+     *
+     * <p>Three cuts, in order: the release group in brackets at the front, everything
+     * from the first " - " onward, and a trailing resolution. What is left is roughly
+     * what somebody would have typed.
+     *
+     * <p>Returns the title unchanged if the cuts leave nothing worth searching for.
+     * "Nothing" means no letters — "[Group] - 029 -" reduces to "- 029 -", which is
+     * not empty and is still not a name, and a lookup for it would be a worse failure
+     * than a lookup for the messy original.
+     */
+    public static String seriesTitle(String title) {
+        if (title == null || title.isBlank()) {
+            return title;
+        }
+        String cleaned = RELEASE_GROUP.matcher(title).replaceFirst("").trim();
+
+        int dash = cleaned.indexOf(" - ");
+        if (dash > 0) {
+            cleaned = cleaned.substring(0, dash).trim();
+        }
+        cleaned = TRAILING_QUALITY.matcher(cleaned).replaceFirst("").trim();
+
+        return cleaned.chars().anyMatch(Character::isLetter) ? cleaned : title;
+    }
+
     /**
      * Alphabetical sort key: lower-cased with a leading article moved off the front,
      * so "The Matrix" files under M.
