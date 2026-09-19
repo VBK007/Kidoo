@@ -1,10 +1,13 @@
 package com.example.kido.media.music;
 
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
+import java.util.Set;
 
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -39,6 +42,21 @@ public class MusicHomeService {
 
     /** A mood/activity/director shelf with fewer tracks than this is not worth a heading. */
     private static final int MIN_FACET_RAIL_SIZE = 4;
+
+    /**
+     * How deep "Recently added" looks before thinning to one track per album.
+     *
+     * Deep, because tracks arrive in album-sized clumps: copying one soundtrack
+     * across writes twenty rows inside the same second, so the twenty newest
+     * files are routinely twenty songs off one record. Reading further back is
+     * what lets the rail still offer twenty different things.
+     *
+     * Fifty is also as far as {@code CatalogService.recentlyAdded} will go. A
+     * library that has just taken delivery of more than fifty tracks from one
+     * album gets a shorter rail, which is the honest answer — there genuinely
+     * was only one album added.
+     */
+    private static final int ALBUM_SCAN_DEPTH = 50;
 
     /** How many of the library's top music directors get their own rail. */
     private static final int MAX_DIRECTOR_RAILS = 6;
@@ -75,7 +93,11 @@ public class MusicHomeService {
 
         List<HomeRailDto> rails = new ArrayList<>();
 
-        List<ItemSummaryDto> recent = catalog.recentlyAdded(profile, MUSIC_TYPES, railSize);
+        // One track per album. The interesting question is which *records*
+        // turned up, not which files did — and the answer to the second was
+        // twenty tiles of the same soundtrack, technically correct and useless.
+        List<ItemSummaryDto> recent = oneTrackPerAlbum(
+                catalog.recentlyAdded(profile, MUSIC_TYPES, ALBUM_SCAN_DEPTH), railSize);
         addRail(rails, "recently-added", "Recently added", recent);
 
         for (Object[] row : items.countByMood(MUSIC_TYPES)) {
@@ -170,6 +192,42 @@ public class MusicHomeService {
                 .sorted((a, b) -> b - a)
                 .map(String::valueOf)
                 .toList();
+    }
+
+    /**
+     * Keeps the newest track from each album and drops the rest.
+     *
+     * <p>Order is preserved, so the album that arrived most recently still comes
+     * first and the track standing for it is the newest one off that record.
+     *
+     * <p>Tracks with no album tag are each kept. They are not evidence of one
+     * record arriving twenty times; they are twenty loose files, and collapsing
+     * them under a shared "no album" would hide nineteen of them — which is the
+     * opposite of what thinning this rail is for. A disk full of untagged MP3s
+     * therefore sees no change, correctly.
+     *
+     * @param tracks newest first
+     * @param limit  how many the rail wants
+     */
+    static List<ItemSummaryDto> oneTrackPerAlbum(List<ItemSummaryDto> tracks, int limit) {
+        Set<String> seen = new HashSet<>();
+        List<ItemSummaryDto> picked = new ArrayList<>();
+
+        for (ItemSummaryDto track : tracks) {
+            if (picked.size() >= limit) {
+                break;
+            }
+            String album = track.album();
+            // Case and stray spacing differ between taggers, and "Vikram" twice
+            // under two spellings would defeat the whole exercise.
+            String key = album == null || album.isBlank()
+                    ? "item:" + track.id()
+                    : "album:" + album.trim().toLowerCase(Locale.ROOT);
+            if (seen.add(key)) {
+                picked.add(track);
+            }
+        }
+        return picked;
     }
 
     private static void addRail(List<HomeRailDto> rails, String key, String title, List<ItemSummaryDto> summaries) {
