@@ -92,7 +92,19 @@ public final class CatalogQuerySpecs {
         return cb.or(
                 cb.like(cb.lower(root.get("title")), pattern),
                 cb.like(cb.lower(root.get("sortTitle")), pattern),
-                cb.like(cb.lower(root.get("fileName")), pattern));
+                cb.like(cb.lower(root.get("fileName")), pattern),
+                // Music is not looked for by its title. Nobody hunts down a song
+                // by typing the song — they type who sang it, who scored it, or
+                // the film it came from. Searching "Ilaiyaraaja" in a library
+                // with a whole shelf of him returned nothing at all.
+                //
+                // castMembers is deliberately not here: it is mapped to a CLOB
+                // and Hibernate will not put lower() round one, so including it
+                // would mean a case-sensitive match that worked for some names
+                // and silently not for others. Worse than not offering it.
+                cb.like(cb.lower(root.get("artist")), pattern),
+                cb.like(cb.lower(root.get("album")), pattern),
+                cb.like(cb.lower(root.get("musicDirector")), pattern));
     }
 
     /**

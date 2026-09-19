@@ -211,6 +211,44 @@ class MediaSearchIntegrationTest {
         assertFalse(body.contains("\"title\":\"Kaithi\""), body);
     }
 
+    /**
+     * A song is not looked for by its title.
+     *
+     * <p>Searching a music director's name over a library holding a shelf of his work
+     * returned nothing at all, because the free-text match only ever read the title,
+     * the sort title and the file name — and his name is in none of the three.
+     */
+    @Test
+    void musicIsFoundByWhoMadeIt() throws Exception {
+        track("Ennullea", "Swarnalatha", "Kadhalan", "Ilaiyaraaja");
+        track("Unrelated Song", "Somebody Else", "Other Film", "Another Composer");
+
+        assertTrue(search("ilaiyaraaja").contains("Ennullea"));
+        assertTrue(search("swarnalatha").contains("Ennullea"));
+        assertTrue(search("kadhalan").contains("Ennullea"));
+    }
+
+    @Test
+    void searchingAMusicNameDoesNotDragInEverythingElse() throws Exception {
+        track("Ennullea", "Swarnalatha", "Kadhalan", "Ilaiyaraaja");
+        track("Unrelated Song", "Somebody Else", "Other Film", "Another Composer");
+
+        assertFalse(search("ilaiyaraaja").contains("Unrelated Song"));
+    }
+
+    private MediaItem track(String title, String artist, String album, String musicDirector) {
+        return items.save(MediaItem.builder()
+                .type(MediaType.MUSIC)
+                .filePath("D:/Music/" + title.replace(' ', '.') + ".mp3")
+                .fileName(title.replace(' ', '.') + ".mp3")
+                .title(title)
+                .sortTitle(title.toLowerCase())
+                .artist(artist)
+                .album(album)
+                .musicDirector(musicDirector)
+                .build());
+    }
+
     // --- filters that need the database to prove ---
 
     @Test

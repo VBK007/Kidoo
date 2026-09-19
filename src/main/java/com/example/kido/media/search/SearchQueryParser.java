@@ -120,10 +120,16 @@ public final class SearchQueryParser {
         String leftover = leftover(scratch);
         String unmatched = "";
         if (!leftover.isEmpty()) {
-            // Whatever survived every rule is most likely a title. It is a guess, but a
+            // Whatever survived every rule is a name of some sort. It is a guess, but a
             // visible one: it comes back as a term like any other and can be dismissed.
+            //
+            // "Named" rather than "Title", because what it matches is no longer only a
+            // title — it reaches the artist, the album and the music director too,
+            // since nobody looks for a song by typing the song. A chip reading
+            // "Title: Ilaiyaraaja" over a shelf of his work would have the app
+            // describing its own search wrongly.
             query.titleContains(leftover);
-            terms.add(new Term("title", leftover, "Title: " + leftover, leftover));
+            terms.add(new Term("title", leftover, "Named: " + leftover, leftover));
         }
 
         return new Parsed(query.build().validated(), List.copyOf(terms), unmatched);
