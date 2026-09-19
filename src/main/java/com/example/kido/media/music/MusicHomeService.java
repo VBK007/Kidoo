@@ -1,6 +1,7 @@
 package com.example.kido.media.music;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -8,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.Function;
 
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -58,6 +60,12 @@ public class MusicHomeService {
      */
     private static final int ALBUM_SCAN_DEPTH = 50;
 
+    /** How many singers, and how many heroes, get a shelf of their own. */
+    private static final int MAX_PERSON_RAILS = 5;
+
+    /** How many candidate rows a person query pulls before the name check thins them. */
+    private static final int PERSON_SCAN_DEPTH = 120;
+
     /** How many of the library's top music directors get their own rail. */
     private static final int MAX_DIRECTOR_RAILS = 6;
 
@@ -90,13 +98,14 @@ public class MusicHomeService {
     public MusicHomeDto home(Profile profile, int limit) {
         int railSize = Math.min(Math.max(1, limit), MAX_RAIL_SIZE);
         Pageable railPage = PageRequest.of(0, railSize);
+        Pageable personPage = PageRequest.of(0, PERSON_SCAN_DEPTH);
 
         List<HomeRailDto> rails = new ArrayList<>();
 
         // One track per album. The interesting question is which *records*
         // turned up, not which files did — and the answer to the second was
         // twenty tiles of the same soundtrack, technically correct and useless.
-        List<ItemSummaryDto> recent = oneTrackPerAlbum(
+        List<ItemSummaryDto> recent = CatalogService.oneItemPerRelease(
                 catalog.recentlyAdded(profile, MUSIC_TYPES, ALBUM_SCAN_DEPTH), railSize);
         addRail(rails, "recently-added", "Recently added", recent);
 
@@ -137,6 +146,23 @@ public class MusicHomeService {
             directorRails++;
         }
 
+        // Singers and heroes, split out of credit lines no database can group.
+        //
+        // Their own shelves rather than folded in with the music directors above,
+        // because those are three different reasons to want a song: who wrote it,
+        // who sang it, and whose film it came from. A shelf of Tamil soundtracks
+        // gets browsed by all three, and collapsing them into one "artist" rail
+        // would be the app choosing which of those questions may be asked.
+        Credits credits = creditsOf();
+
+        addPeopleRails(rails, profile, credits.singers(), "singer",
+                name -> items.findByArtistMentioning(MUSIC_TYPES, name, personPage),
+                MediaItem::getArtist, railSize);
+
+        addPeopleRails(rails, profile, credits.heroes(), "hero",
+                name -> items.findByCastMentioning(MUSIC_TYPES, name, personPage),
+                MediaItem::getCastMembers, railSize);
+
         int eraRails = 0;
         for (String decade : decadesNewestFirst(items.countByYear(MUSIC_TYPES))) {
             if (eraRails >= MAX_ERA_RAILS) {
@@ -175,6 +201,96 @@ public class MusicHomeService {
         return out;
     }
 
+    /** The people named across the library's music, counted. */
+    private record Credits(Map<String, Integer> singers, Map<String, Integer> heroes) {}
+
+    /**
+     * Splits every credit line into people and counts them.
+     *
+     * <p>Singers come from the whole {@code artist} field: a duet credits two people
+     * and both of them sang it.
+     *
+     * <p>Heroes are only ever the first name in the billing order. Counting the whole
+     * cast would hand a shelf to every character actor who has been near a film with
+     * a soundtrack, and "hero" is a claim about the lead — the person somebody means
+     * when they say they want a Vijay song.
+     */
+    private Credits creditsOf() {
+        Map<String, Integer> singers = new HashMap<>();
+        Map<String, Integer> heroes = new HashMap<>();
+
+        for (Object[] row : items.musicCredits(MUSIC_TYPES)) {
+            for (String singer : namesIn((String) row[0])) {
+                singers.merge(singer, 1, Integer::sum);
+            }
+            List<String> cast = namesIn((String) row[1]);
+            if (!cast.isEmpty()) {
+                heroes.merge(cast.get(0), 1, Integer::sum);
+            }
+        }
+        return new Credits(singers, heroes);
+    }
+
+    /**
+     * Turns one credit line into names.
+     *
+     * <p>Trimmed, because taggers disagree about the space after a comma, and empty
+     * fragments dropped because a trailing comma is common enough to plan for.
+     */
+    static List<String> namesIn(String credit) {
+        if (credit == null || credit.isBlank()) {
+            return List.of();
+        }
+        List<String> names = new ArrayList<>();
+        for (String part : credit.split(",")) {
+            String name = part.trim();
+            if (!name.isEmpty()) {
+                names.add(name);
+            }
+        }
+        return names;
+    }
+
+    /**
+     * A shelf for each of the most-credited people, busiest first.
+     *
+     * <p>The second pass over the credit line is what makes the loose SQL safe: the
+     * query finds rows mentioning the name anywhere, and this keeps only those where
+     * it is a name in its own right. Without it a shelf for "Raja" would collect
+     * every Yuvan Shankar Raja track in the house.
+     */
+    private void addPeopleRails(List<HomeRailDto> rails,
+                                Profile profile,
+                                Map<String, Integer> counted,
+                                String keyPrefix,
+                                Function<String, List<MediaItem>> candidates,
+                                Function<MediaItem, String> credit,
+                                int railSize) {
+        List<String> busiestFirst = counted.entrySet().stream()
+                .filter(entry -> entry.getValue() >= MIN_FACET_RAIL_SIZE)
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .map(Map.Entry::getKey)
+                .toList();
+
+        int added = 0;
+        for (String name : busiestFirst) {
+            if (added >= MAX_PERSON_RAILS) {
+                break;
+            }
+            List<MediaItem> found = candidates.apply(name).stream()
+                    .filter(item -> namesIn(credit.apply(item)).stream()
+                            .anyMatch(credited -> credited.equalsIgnoreCase(name)))
+                    .limit(railSize)
+                    .toList();
+            if (found.size() < MIN_FACET_RAIL_SIZE) {
+                continue;
+            }
+            addRail(rails, keyPrefix + ":" + name, name, catalog.summarise(profile, found));
+            added++;
+        }
+    }
+
     /**
      * Decades present in the library, newest first — bucketed in Java rather than SQL
      * for the same portability reason {@link MediaItemRepository#countByYear} is already
@@ -192,42 +308,6 @@ public class MusicHomeService {
                 .sorted((a, b) -> b - a)
                 .map(String::valueOf)
                 .toList();
-    }
-
-    /**
-     * Keeps the newest track from each album and drops the rest.
-     *
-     * <p>Order is preserved, so the album that arrived most recently still comes
-     * first and the track standing for it is the newest one off that record.
-     *
-     * <p>Tracks with no album tag are each kept. They are not evidence of one
-     * record arriving twenty times; they are twenty loose files, and collapsing
-     * them under a shared "no album" would hide nineteen of them — which is the
-     * opposite of what thinning this rail is for. A disk full of untagged MP3s
-     * therefore sees no change, correctly.
-     *
-     * @param tracks newest first
-     * @param limit  how many the rail wants
-     */
-    static List<ItemSummaryDto> oneTrackPerAlbum(List<ItemSummaryDto> tracks, int limit) {
-        Set<String> seen = new HashSet<>();
-        List<ItemSummaryDto> picked = new ArrayList<>();
-
-        for (ItemSummaryDto track : tracks) {
-            if (picked.size() >= limit) {
-                break;
-            }
-            String album = track.album();
-            // Case and stray spacing differ between taggers, and "Vikram" twice
-            // under two spellings would defeat the whole exercise.
-            String key = album == null || album.isBlank()
-                    ? "item:" + track.id()
-                    : "album:" + album.trim().toLowerCase(Locale.ROOT);
-            if (seen.add(key)) {
-                picked.add(track);
-            }
-        }
-        return picked;
     }
 
     private static void addRail(List<HomeRailDto> rails, String key, String title, List<ItemSummaryDto> summaries) {

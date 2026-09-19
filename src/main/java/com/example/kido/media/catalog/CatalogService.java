@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.TextStyle;
+import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -57,6 +58,14 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Service
 public class CatalogService {
+
+    /**
+     * Shortest title prefix that may stand for a release.
+     *
+     * Four characters, so "MI - Ghost Protocol" still groups but a stray "A - " or
+     * "12 - " cannot drag unrelated things together.
+     */
+    private static final int MIN_RELEASE_PREFIX = 4;
 
     /** Caps the page a client can ask for, so one request cannot pull the whole library. */
     private static final int MAX_PAGE_SIZE = 100;
@@ -170,6 +179,67 @@ public class CatalogService {
                 .findByTypeInAndMissingFalseAndHiddenFalseOrderByAddedAtDesc(
                         requested, PageRequest.of(0, Math.min(Math.max(1, limit), 50)));
         return summarise(profile, found);
+    }
+
+    /**
+     * One tile per release, for a "recently added" shelf.
+     *
+     * <p>Media arrives in clumps. Copying a soundtrack across writes twenty rows in
+     * the same second; so does a season of anime. Either way the twenty newest files
+     * are twenty pieces of one thing — the true answer to a question nobody asked,
+     * when what somebody wants to know is what *turned up*.
+     *
+     * <p>Two ways of recognising one thing, in order:
+     * <ol>
+     *   <li>the album tag, where a tagger left one;</li>
+     *   <li>the title up to its first " - ", which is how episodes and film songs end
+     *       up named on disk: "[Anime Time] Black Lagoon - 029 - Collateral Massacre",
+     *       "Udhayam NH4 - Yaaro Ivan Video".</li>
+     * </ol>
+     *
+     * <p>Anything with neither stands alone, and that is where the rule gets its
+     * safety: a title with no " - " is never grouped with anything, so a folder of
+     * ordinary films — "Sita Ramam", "KGF: Chapter 2" — comes through untouched. What
+     * it will do is treat "Bahubali - The Beginning" and "Bahubali - The Conclusion"
+     * as one thing, which is the honest cost of having no series column to read.
+     *
+     * @param items newest first
+     * @param limit how many the shelf wants
+     */
+    public static List<ItemSummaryDto> oneItemPerRelease(List<ItemSummaryDto> items, int limit) {
+        Set<String> seen = new HashSet<>();
+        List<ItemSummaryDto> picked = new ArrayList<>();
+
+        for (ItemSummaryDto item : items) {
+            if (picked.size() >= limit) {
+                break;
+            }
+            if (seen.add(releaseKeyOf(item))) {
+                picked.add(item);
+            }
+        }
+        return picked;
+    }
+
+    private static String releaseKeyOf(ItemSummaryDto item) {
+        String album = item.album();
+        if (album != null && !album.isBlank()) {
+            // Case and stray spacing differ between taggers, and one record filed
+            // under two spellings would defeat the whole exercise.
+            return "album:" + album.trim().toLowerCase(Locale.ROOT);
+        }
+        String title = item.title();
+        if (title != null) {
+            int dash = title.indexOf(" - ");
+            // Long enough to be a name. A title starting "A - " would group on "A"
+            // and put unrelated things together for no benefit.
+            if (dash >= MIN_RELEASE_PREFIX) {
+                return "title:" + title.substring(0, dash).trim().toLowerCase(Locale.ROOT);
+            }
+        }
+        // Nothing to group on: its own release, which is the common case for a film
+        // and the right answer for a loose untagged track.
+        return "item:" + item.id();
     }
 
     /**

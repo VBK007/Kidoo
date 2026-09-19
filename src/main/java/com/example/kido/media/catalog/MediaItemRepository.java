@@ -251,6 +251,58 @@ public interface MediaItemRepository
     List<MediaItem> findByMusicDirector(@Param("types") List<MediaType> types,
                                         @Param("musicDirector") String musicDirector, Pageable pageable);
 
+    /**
+     * Every credit line on the music in the library, unparsed.
+     *
+     * <p>Two raw columns rather than a {@code group by}, because neither holds one
+     * name: {@code artist} is "A.R. Rahman,Shreya Ghoshal,Sarthak Kalyani" and
+     * {@code castMembers} is a whole billing order. Grouping in SQL would count each
+     * *combination* of people as though it were a person, so the splitting and
+     * counting happen in Java where a comma means what it looks like.
+     *
+     * <p>Two columns and no entities: this reads every music row, and dragging whole
+     * objects across for two strings is the difference between a query that is fine
+     * and one that hurts on a large library.
+     */
+    @Query("""
+            select m.artist, m.castMembers from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+            """)
+    List<Object[]> musicCredits(@Param("types") List<MediaType> types);
+
+    /**
+     * Rows whose credits mention a name anywhere.
+     *
+     * <p>Deliberately loose. Matching {@code ,name,} exactly in SQL founders on the
+     * spacing real taggers use — "A.R.Rahman, Sunitha Sarathy" has a space after the
+     * comma and "A.R. Rahman,Shreya Ghoshal" does not — so this narrows the rows and
+     * the caller checks each one against properly split, trimmed names. Without that
+     * second pass "Raja" would collect every Yuvan Shankar Raja track in the house.
+     *
+     * <p>Case-sensitive, and safely so: the only caller searches for names it read out
+     * of these same columns, so the casing already matches. {@code lower()} is not an
+     * option regardless — {@code castMembers} is mapped to a CLOB, and Hibernate will
+     * not apply a string function to one.
+     */
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.artist like concat('%', :name, '%')
+            order by m.addedAt desc, m.sortTitle asc
+            """)
+    List<MediaItem> findByArtistMentioning(@Param("types") List<MediaType> types,
+                                           @Param("name") String name, Pageable pageable);
+
+    /** As {@link #findByArtistMentioning}, over the billing order instead. */
+    @Query("""
+            select m from MediaItem m
+            where m.missing = false and m.hidden = false and m.type in :types
+              and m.castMembers like concat('%', :name, '%')
+            order by m.addedAt desc, m.sortTitle asc
+            """)
+    List<MediaItem> findByCastMentioning(@Param("types") List<MediaType> types,
+                                         @Param("name") String name, Pageable pageable);
+
     @Query("""
             select m from MediaItem m
             where m.missing = false and m.hidden = false and m.type in :types

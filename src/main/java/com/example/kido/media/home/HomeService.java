@@ -52,6 +52,9 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class HomeService {
 
+    /** How deep the recently-added rail reads before thinning to one per release. */
+    private static final int RELEASE_SCAN_DEPTH = 50;
+
     /** Rails are a swipe, not a page. */
     private static final int MAX_RAIL_SIZE = 50;
 
@@ -144,7 +147,13 @@ public class HomeService {
         // Recently added comes straight from the catalog: it is the one rail that is not
         // a judgement about a title, and it is what keeps a fresh library from looking
         // empty before anything has been rated, played or liked.
-        List<ItemSummaryDto> recent = catalog.recentlyAdded(profile, requested, railSize);
+        //
+        // Read deeper than the rail needs, then thinned to one tile per release. A
+        // season of anime lands inside one second, and without this the shelf was
+        // four consecutive episodes of it — correct, and no use to somebody
+        // wondering what had arrived.
+        List<ItemSummaryDto> recent = CatalogService.oneItemPerRelease(
+                catalog.recentlyAdded(profile, requested, RELEASE_SCAN_DEPTH), railSize);
         if (!recent.isEmpty()) {
             rails.add(new HomeRailDto("recently-added", "Recently added", "added",
                     recent.stream()
