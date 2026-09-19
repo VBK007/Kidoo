@@ -194,6 +194,39 @@ class MediaCollectionIntegrationTest {
         assertTrue(underTwo.contains("\"itemCount\":1"), underTwo);
     }
 
+    /** Favourites is the one builtin that is personal rather than a fact about the disk. */
+    @Test
+    void favouritesHoldsExactlyWhatThisProfileLiked() throws Exception {
+        MediaItem loved = film("Loved", 6.0, 100, 1080, null, null);
+        film("NotLoved", 9.0, 100, 1080, null, null);
+        send("PUT", "/api/media/items/" + loved.getId() + "/like", null);
+
+        String body = send("GET", "/api/media/collections/builtin:favourites/items", null).body();
+        assertTrue(body.contains("Loved"), body);
+        assertFalse(body.contains("NotLoved"), body);
+    }
+
+    /** One household member's taste must not fill in another's favourites. */
+    @Test
+    void favouritesArePerProfileNotPerHousehold() throws Exception {
+        MediaItem film = film("SharedFilm", 6.0, 100, 1080, null, null);
+        send("PUT", "/api/media/items/" + film.getId() + "/like", null);
+
+        String unique = UUID.randomUUID().toString().substring(0, 8);
+        HttpResponse<String> registered = send("POST", "/api/auth/register", """
+                {"username":"fav_%s","email":"fav_%s@example.com",
+                 "password":"pw123456","displayName":"Other Person"}
+                """.formatted(unique, unique), null, null);
+        String otherToken = extract(registered.body(), "token");
+        HttpResponse<String> otherProfile = send("POST", "/api/profiles",
+                "{\"name\":\"Other\",\"ageMode\":\"OLDER\"}", otherToken, null);
+        String otherProfileId = extract(otherProfile.body(), "id");
+
+        String body = send("GET", "/api/media/collections/builtin:favourites/items",
+                null, otherToken, otherProfileId).body();
+        assertFalse(body.contains("SharedFilm"), body);
+    }
+
     @Test
     void openingABuiltinListsItsTitles() throws Exception {
         film("Short4K", 9.0, 100, 2160, null, null);

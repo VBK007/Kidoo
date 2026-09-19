@@ -35,6 +35,7 @@ import com.example.kido.media.metadata.Languages;
 import com.example.kido.media.metadata.NfoParser;
 import com.example.kido.media.metadata.SidecarLocator;
 import com.example.kido.media.metadata.SidecarMetadata;
+import com.example.kido.media.music.ArtistNames;
 import com.example.kido.media.music.AudioFeatureService;
 import com.example.kido.media.music.MoodClassifier;
 import com.example.kido.media.music.SiteWatermark;
@@ -468,6 +469,33 @@ public class LibraryIngestService {
         return updated.size();
     }
 
+    /**
+     * Splits {@link MediaItem#getArtist()} into {@link MediaItem#getArtistNames()} for
+     * every row that has the former but not the latter — the same gap {@link
+     * #backfillLanguages()} exists for: {@link #ingest} only re-derives fields for a
+     * file it treats as new or changed, so adding {@code artistNames} after most of a
+     * library was already indexed leaves every unchanged row without it until this runs.
+     *
+     * @return how many items' artist names were filled in
+     */
+    @Transactional
+    public int backfillArtistNames() {
+        List<MediaItem> updated = new ArrayList<>();
+        for (MediaItem item : items.findByMissingFalse()) {
+            if (item.getArtist() == null || !item.getArtistNames().isEmpty()) {
+                continue;
+            }
+            Set<String> derived = ArtistNames.split(item.getArtist());
+            if (derived.isEmpty()) {
+                continue;
+            }
+            replaceStrings(item.getArtistNames(), derived, item::setArtistNames);
+            item.setUpdatedAt(Instant.now());
+            updated.add(item);
+        }
+        items.saveAll(updated);
+        return updated.size();
+    }
 
     private String findAnyPoster(Path file, String title) {
         String poster = sidecars.findPoster(file).map(Path::toString).orElse(null);
@@ -681,6 +709,8 @@ public class LibraryIngestService {
             Path artistFolder = folder.getParent();
             if (artistFolder != null && artistFolder.getFileName() != null) {
                 item.setArtist(SiteWatermark.clean(artistFolder.getFileName().toString()));
+                replaceStrings(item.getArtistNames(), ArtistNames.split(item.getArtist()),
+                        item::setArtistNames);
             }
         }
         // Additive only: a sidecar image found now is worth taking, but finding none
@@ -707,6 +737,7 @@ public class LibraryIngestService {
         String artist = SiteWatermark.clean(tags.artist());
         if (artist != null) {
             item.setArtist(artist);
+            replaceStrings(item.getArtistNames(), ArtistNames.split(artist), item::setArtistNames);
         }
         String album = SiteWatermark.clean(tags.album());
         if (album != null) {

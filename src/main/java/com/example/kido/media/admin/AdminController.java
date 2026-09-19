@@ -145,6 +145,18 @@ public class AdminController {
     }
 
     /**
+     * Splits each track's artist credit into individual singers. Run this once after
+     * upgrading to a build that has the artists grid, since a normal scan only derives
+     * it for a file it treats as new or changed.
+     */
+    @PostMapping("/backfill-artist-names")
+    public SeedResultDto backfillArtistNames(@AuthenticationPrincipal AppUser user,
+                                             @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        requireOwner(user, key);
+        return admin.backfillArtistNames();
+    }
+
+    /**
      * Fetches a plot from TMDB for every video that still has none, and pre-warms the
      * cast photo cache. Run this after adding a TMDB key, or after adding movies
      * outside a normal scan cycle.

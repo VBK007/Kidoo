@@ -313,6 +313,42 @@ public interface MediaItemRepository
                                       @Param("startYear") int startYear,
                                       @Param("endYear") int endYear, Pageable pageable);
 
+    // --- artists grid ---
+    //
+    // Joins MediaItem#artistNames rather than the raw artist column: a collaboration's
+    // one credit line has to count toward every singer named in it. See ArtistNames.
+
+    /**
+     * Unbounded, like {@link #countByGenre} — a home library has at most a few hundred
+     * distinct singers, and paginating a {@code group by} through Spring Data's
+     * automatic count-query derivation is unreliable, so the caller pages this list in
+     * Java the same way it already does for every other facet tally.
+     */
+    @Query("""
+            select a, count(m) from MediaItem m join m.artistNames a
+            where m.missing = false and m.hidden = false and m.type in :types
+            group by a
+            order by count(m) desc, a asc
+            """)
+    List<Object[]> countByArtistName(@Param("types") List<MediaType> types);
+
+    @Query("""
+            select m from MediaItem m join m.artistNames a
+            where m.missing = false and m.hidden = false and m.type in :types
+              and a = :artistName
+            order by m.addedAt desc, m.sortTitle asc
+            """)
+    List<MediaItem> findByArtistName(@Param("types") List<MediaType> types,
+                                     @Param("artistName") String artistName, Pageable pageable);
+
+    @Query("""
+            select count(m) from MediaItem m join m.artistNames a
+            where m.missing = false and m.hidden = false and m.type in :types
+              and a = :artistName
+            """)
+    long countByArtistNameExact(@Param("types") List<MediaType> types,
+                                @Param("artistName") String artistName);
+
     @Query("""
             select coalesce(sum(m.fileSize), 0) from MediaItem m
             where m.missing = false and m.hidden = false

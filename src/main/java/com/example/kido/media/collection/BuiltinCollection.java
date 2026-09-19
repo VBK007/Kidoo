@@ -89,6 +89,20 @@ public enum BuiltinCollection {
             () -> CatalogQuery.builder()
                     .types(Set.of(MediaType.HOME_VIDEO))
                     .sort("captured")
+                    .build()),
+
+    /**
+     * Everything this profile has hearted. Unlike every other builtin here, this one
+     * is personal rather than a fact about the library — {@link CatalogQuery#liked}
+     * is evaluated against the requesting profile specifically (see the field's own
+     * doc), the same way the like button itself is per-profile while its count on a
+     * tile is the household's.
+     */
+    FAVOURITES("favourites", "Favourites", "❤️",
+            () -> CatalogQuery.builder()
+                    .types(Defaults.VIDEO)
+                    .liked(true)
+                    .sort("added")
                     .build());
 
     /**

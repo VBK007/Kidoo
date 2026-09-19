@@ -430,6 +430,23 @@ public class AdminService {
     }
 
     /**
+     * Splits the artist credit into individual singers for every track that has the
+     * former but not the latter — see {@link
+     * com.example.kido.media.library.LibraryIngestService#backfillArtistNames()}. Same
+     * reasoning as {@link #backfillLanguages()}: a schema addition after most of a
+     * library was already indexed leaves every unchanged row without it otherwise.
+     */
+    @Transactional
+    public SeedResultDto backfillArtistNames() {
+        int updated = ingest.backfillArtistNames();
+        log.info("Backfilled artist names for {} tracks (on-demand)", updated);
+        return new SeedResultDto(updated,
+                updated == 0
+                        ? "Every track's artist names were already split out"
+                        : "Split artist names on " + updated + " track(s)");
+    }
+
+    /**
      * Fetches a plot from TMDB for every video missing one, and pre-warms the cast
      * photo cache for every credited name. Runs automatically at the end of every
      * scan too; this endpoint exists for someone who does not want to wait for the

@@ -243,8 +243,24 @@ public class MediaItem {
 
     // --- music ---
 
+    /** Display-only, exactly as tagged — e.g. {@code "Anirudh Ravichander, Badshah"}. */
     @Column(length = 512)
     private String artist;
+
+    /**
+     * {@link #artist} split into individual names, for the artists grid and an artist's
+     * own catalog — a collaboration credits every singer on it, so a track's ID3 tag
+     * naming three of them must contribute to all three artists' tiles, not create a
+     * fourth "artist" that is really just this one credit line. See {@link
+     * com.example.kido.media.music.ArtistNames}.
+     */
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "media_item_artist_names",
+            joinColumns = @JoinColumn(name = "media_item_id"),
+            indexes = @Index(name = "idx_media_item_artist_name", columnList = "artist_name"))
+    @Column(name = "artist_name", length = 256)
+    @Builder.Default
+    private Set<String> artistNames = new LinkedHashSet<>();
 
     @Column(length = 512)
     private String album;
