@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -301,6 +302,65 @@ public class LibraryIngestService {
         }
         items.saveAll(updated);
         return updated.size();
+    }
+
+    /** Recognised in an album, artist, title or file path — checked in this order. */
+    private static final Map<String, String> MUSIC_LANGUAGE_KEYWORDS = Map.of(
+            "telugu", "te",
+            "kannada", "kn",
+            "malayalam", "ml",
+            "hindi", "hi",
+            "tamil", "ta");
+
+    /**
+     * Best-effort language guess for every music/video-song row with none yet, so the
+     * music home screen can keep a household's preferred language from swamping every
+     * shelf with whatever else happens to share a mood or decade.
+     *
+     * <p>There is no reliable signal here the way a movie's dubbed-language confirmation
+     * gave the film library one: ffprobe's audio-track language is unreliable on a plain
+     * audio file the same way it is on video, and most of this library's ~400 albums are
+     * named after the film they're from with no language spelled out at all. So this
+     * looks for an explicit language word in the album, artist, title or file path
+     * first, and falls back to Tamil for anything that names none — this household's
+     * confirmed default for everything the film library couldn't otherwise place either,
+     * see the movie category tagging convention. Wrong guesses are expected and meant to
+     * be correctable later (by hand, or by a future real lookup), not blocking here.
+     *
+     * @return how many rows got a language they did not have before
+     */
+    @Transactional
+    public int backfillMusicLanguage() {
+        List<MediaItem> updated = new ArrayList<>();
+        for (MediaItem item : items.findByMissingFalse()) {
+            if (item.getType() != MediaType.MUSIC && item.getType() != MediaType.VIDEO_SONG) {
+                continue;
+            }
+            if (item.getPrimaryLanguage() != null) {
+                continue;
+            }
+            item.setPrimaryLanguage(guessMusicLanguage(item));
+            updated.add(item);
+        }
+        items.saveAll(updated);
+        return updated.size();
+    }
+
+    private static String guessMusicLanguage(MediaItem item) {
+        String haystack = String.join(" ",
+                        nullToEmpty(item.getAlbum()), nullToEmpty(item.getArtist()),
+                        nullToEmpty(item.getTitle()), nullToEmpty(item.getFilePath()))
+                .toLowerCase(Locale.ROOT);
+        for (Map.Entry<String, String> keyword : MUSIC_LANGUAGE_KEYWORDS.entrySet()) {
+            if (haystack.contains(keyword.getKey())) {
+                return keyword.getValue();
+            }
+        }
+        return "ta";
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private boolean backfillVideoArtwork(MediaItem item) {

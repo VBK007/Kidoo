@@ -25,6 +25,8 @@ import com.example.kido.media.dto.HomeDtos.HomeItemDto;
 import com.example.kido.media.dto.HomeDtos.HomeRailDto;
 import com.example.kido.media.dto.MusicHomeDtos.MusicHomeDto;
 import com.example.kido.media.dto.PlaybackDtos.ContinueWatchingDto;
+import com.example.kido.media.downloads.ProfileMediaSettings;
+import com.example.kido.media.downloads.ProfileMediaSettingsRepository;
 import com.example.kido.media.engagement.MediaItemCommentRepository;
 import com.example.kido.media.engagement.MediaItemLikeRepository;
 import com.example.kido.media.home.TrendingWindow;
@@ -83,6 +85,7 @@ public class MusicHomeService {
     private final MediaItemLikeRepository likes;
     private final MediaItemCommentRepository comments;
     private final ArtistService artists;
+    private final ProfileMediaSettingsRepository profileSettings;
 
     public MusicHomeService(MediaItemRepository items,
                             CatalogService catalog,
@@ -90,7 +93,8 @@ public class MusicHomeService {
                             WatchEventRepository watchEvents,
                             MediaItemLikeRepository likes,
                             MediaItemCommentRepository comments,
-                            ArtistService artists) {
+                            ArtistService artists,
+                            ProfileMediaSettingsRepository profileSettings) {
         this.items = items;
         this.catalog = catalog;
         this.playback = playback;
@@ -98,6 +102,7 @@ public class MusicHomeService {
         this.likes = likes;
         this.comments = comments;
         this.artists = artists;
+        this.profileSettings = profileSettings;
     }
 
     @Transactional(readOnly = true)
@@ -105,20 +110,40 @@ public class MusicHomeService {
         int railSize = Math.min(Math.max(1, limit), MAX_RAIL_SIZE);
         Pageable railPage = PageRequest.of(0, railSize);
 
+        // A household's saved language preference (the same field a profile already
+        // sets for which audio/subtitle track a video should auto-play) doubles here as
+        // which language's music leads the browse screen — a Telugu track sitting in
+        // the same mood or decade as a hundred Tamil ones is correct data, not a shelf
+        // anyone asked to see. Search is a different question and is not filtered by
+        // this: it stays reachable regardless of what a shelf shows by default.
+        String preferredLanguage = profileSettings.findByProfileId(profile.getId())
+                .map(ProfileMediaSettings::getPreferredLanguage)
+                .filter(lang -> lang != null && !lang.isBlank())
+                .orElse(null);
+        // Facet queries fetch this many when a language filter will thin the results
+        // afterward, rather than the railSize a query with nothing to filter needs —
+        // filtering post-query (see MusicHomeDtos for why primaryLanguage is a best-effort
+        // guess, not a real lookup) means a fixed railSize fetch can come up short.
+        Pageable facetPage = preferredLanguage == null ? railPage : PageRequest.of(0, railSize * 3);
+
         List<HomeRailDto> rails = new ArrayList<>();
 
         // One track per album, which the catalog now does for every caller: the
         // interesting question is which *records* turned up, not which files did,
         // and the answer to the second was twenty tiles of one soundtrack.
-        addRail(rails, "recently-added", "Recently added",
-                catalog.recentlyAdded(profile, MUSIC_TYPES, railSize));
+        List<ItemSummaryDto> recentlyAdded = filterByLanguage(
+                catalog.recentlyAdded(profile, MUSIC_TYPES, preferredLanguage == null ? railSize : railSize * 3),
+                preferredLanguage);
+        addRail(rails, "recently-added", "Recently added", capped(recentlyAdded, railSize));
 
         // The one ranked exception on this screen — see MusicHomeDtos for why a
         // recent-activity blend is a different, answerable question from the
         // all-time "best track" ranking this home screen otherwise avoids.
         Instant weekAgo = Instant.now().minus(TRENDING_WINDOW);
         List<WeeklyPopularityRanker.Scored> topMusicWeek =
-                TrendingWindow.rank(items, watchEvents, likes, comments, MUSIC_TYPES, weekAgo, railSize);
+                TrendingWindow.rank(items, watchEvents, likes, comments, MUSIC_TYPES, weekAgo, railSize).stream()
+                        .filter(scored -> matchesLanguage(scored.item().getPrimaryLanguage(), preferredLanguage))
+                        .toList();
         if (!topMusicWeek.isEmpty()) {
             List<MediaItem> weekItems =
                     topMusicWeek.stream().map(WeeklyPopularityRanker.Scored::item).toList();
@@ -142,9 +167,13 @@ public class MusicHomeService {
             if (count < MIN_FACET_RAIL_SIZE) {
                 continue;
             }
-            List<MediaItem> found = items.findByMood(MUSIC_TYPES, mood, railPage);
-            addRail(rails, "mood:" + mood, MOOD_TITLES.getOrDefault(mood, mood),
-                    catalog.summarise(profile, found));
+            List<MediaItem> found = items.findByMood(MUSIC_TYPES, mood, facetPage);
+            List<ItemSummaryDto> summaries = capped(
+                    filterByLanguage(catalog.summarise(profile, found), preferredLanguage), railSize);
+            if (summaries.size() < MIN_FACET_RAIL_SIZE) {
+                continue;
+            }
+            addRail(rails, "mood:" + mood, MOOD_TITLES.getOrDefault(mood, mood), summaries);
         }
 
         for (Object[] row : items.countByActivity(MUSIC_TYPES)) {
@@ -153,9 +182,13 @@ public class MusicHomeService {
             if (count < MIN_FACET_RAIL_SIZE) {
                 continue;
             }
-            List<MediaItem> found = items.findByActivity(MUSIC_TYPES, activity, railPage);
-            addRail(rails, "activity:" + activity, ACTIVITY_TITLES.getOrDefault(activity, activity),
-                    catalog.summarise(profile, found));
+            List<MediaItem> found = items.findByActivity(MUSIC_TYPES, activity, facetPage);
+            List<ItemSummaryDto> summaries = capped(
+                    filterByLanguage(catalog.summarise(profile, found), preferredLanguage), railSize);
+            if (summaries.size() < MIN_FACET_RAIL_SIZE) {
+                continue;
+            }
+            addRail(rails, "activity:" + activity, ACTIVITY_TITLES.getOrDefault(activity, activity), summaries);
         }
 
         int directorRails = 0;
@@ -168,8 +201,13 @@ public class MusicHomeService {
             if (count < MIN_FACET_RAIL_SIZE) {
                 continue;
             }
-            List<MediaItem> found = items.findByMusicDirector(MUSIC_TYPES, director, railPage);
-            addRail(rails, "director:" + director, director, catalog.summarise(profile, found));
+            List<MediaItem> found = items.findByMusicDirector(MUSIC_TYPES, director, facetPage);
+            List<ItemSummaryDto> summaries = capped(
+                    filterByLanguage(catalog.summarise(profile, found), preferredLanguage), railSize);
+            if (summaries.size() < MIN_FACET_RAIL_SIZE) {
+                continue;
+            }
+            addRail(rails, "director:" + director, director, summaries);
             directorRails++;
         }
 
@@ -191,8 +229,13 @@ public class MusicHomeService {
             if (((Number) row[1]).longValue() < MIN_FACET_RAIL_SIZE) {
                 continue;
             }
-            List<MediaItem> found = items.findByArtistName(MUSIC_TYPES, singer, railPage);
-            addRail(rails, "singer:" + singer, singer, catalog.summarise(profile, found));
+            List<MediaItem> found = items.findByArtistName(MUSIC_TYPES, singer, facetPage);
+            List<ItemSummaryDto> summaries = capped(
+                    filterByLanguage(catalog.summarise(profile, found), preferredLanguage), railSize);
+            if (summaries.size() < MIN_FACET_RAIL_SIZE) {
+                continue;
+            }
+            addRail(rails, "singer:" + singer, singer, summaries);
             singerRails++;
         }
 
@@ -213,12 +256,13 @@ public class MusicHomeService {
                 break;
             }
             int start = Integer.parseInt(decade);
-            List<MediaItem> found = items.findByYearBetween(MUSIC_TYPES, start, start + 9, railPage);
-            if (found.size() < MIN_FACET_RAIL_SIZE) {
+            List<MediaItem> found = items.findByYearBetween(MUSIC_TYPES, start, start + 9, facetPage);
+            List<ItemSummaryDto> summaries = capped(
+                    filterByLanguage(catalog.summarise(profile, found), preferredLanguage), railSize);
+            if (summaries.size() < MIN_FACET_RAIL_SIZE) {
                 continue;
             }
-            addRail(rails, "era:" + decade, "Best of the " + decade + "s",
-                    catalog.summarise(profile, found));
+            addRail(rails, "era:" + decade, "Best of the " + decade + "s", summaries);
             eraRails++;
         }
 
@@ -248,6 +292,32 @@ public class MusicHomeService {
         return out;
     }
 
+
+    /**
+     * Keeps a tile whose language matches the preference, or whose language is unknown
+     * — an untagged track (or a {@code VIDEO_SONG} row {@link
+     * com.example.kido.media.library.LibraryIngestService#backfillMusicLanguage} does
+     * not cover) should not simply vanish from every shelf just for lacking data either
+     * way. {@code null} means no preference is saved at all, in which case nothing here
+     * is filtered.
+     */
+    private static List<ItemSummaryDto> filterByLanguage(List<ItemSummaryDto> summaries, String preferredLanguage) {
+        if (preferredLanguage == null) {
+            return summaries;
+        }
+        return summaries.stream()
+                .filter(summary -> matchesLanguage(summary.language(), preferredLanguage))
+                .toList();
+    }
+
+    private static boolean matchesLanguage(String itemLanguage, String preferredLanguage) {
+        return preferredLanguage == null || itemLanguage == null
+                || itemLanguage.equalsIgnoreCase(preferredLanguage);
+    }
+
+    private static List<ItemSummaryDto> capped(List<ItemSummaryDto> summaries, int limit) {
+        return summaries.size() <= limit ? summaries : summaries.subList(0, limit);
+    }
 
     /**
      * Decades present in the library, newest first — bucketed in Java rather than SQL

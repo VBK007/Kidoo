@@ -92,13 +92,17 @@ public class LibraryScanner {
             // Mood/activity for the music home screen — see backfillAudioFeatures's own
             // docs for why this is a separate pass rather than part of per-file ingest.
             int audioBackfilled = ingest.backfillAudioFeatures();
+            // See backfillMusicLanguage's own docs for why this is a guess rather than
+            // a real lookup, and why it runs here rather than during per-file ingest.
+            int languageBackfilled = ingest.backfillMusicLanguage();
             status.finish(null);
             log.info("Library scan finished: {} seen, {} added, {} updated, {} unchanged, "
                             + "{} missing, {} failed, {} backfilled artwork, {} backfilled metadata, "
-                            + "{} backfilled audio features",
+                            + "{} backfilled audio features, {} backfilled music language",
                     status.getFilesSeen().get(), status.getAdded().get(), status.getUpdated().get(),
                     status.getUnchanged().get(), status.getMarkedMissing().get(),
-                    status.getFailed().get(), backfilled, metadataBackfilled, audioBackfilled);
+                    status.getFailed().get(), backfilled, metadataBackfilled, audioBackfilled,
+                    languageBackfilled);
         } catch (Exception ex) {
             log.error("Library scan failed", ex);
             status.finish(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
