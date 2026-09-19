@@ -50,6 +50,15 @@ public final class CatalogDtos {
             String musicDirector,
             String mood,
             String activity,
+            /**
+             * What language this was tagged with, or null when nothing recorded one.
+             *
+             * <p>On the summary and not only on the detail because a queue is built
+             * out of summaries, and a queue is exactly where a mixed library is felt:
+             * a Tamil song followed by an English one is a jarring thing to happen by
+             * itself, three tracks into an evening.
+             */
+            String language,
             long viewCount,
             long likeCount,
             boolean liked) {
@@ -80,6 +89,7 @@ public final class CatalogDtos {
                     item.getMusicDirector(),
                     item.getMood(),
                     item.getActivity(),
+                    item.getPrimaryLanguage(),
                     item.playCount(),
                     item.getLikeCount(),
                     liked);

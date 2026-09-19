@@ -157,6 +157,6 @@ class OneItemPerReleaseTest {
         return new ItemSummaryDto(
                 id, type, title, null, null, null, null, Set.of(),
                 false, false, false, null, false, null, null,
-                null, album, null, null, null, 0L, 0L, false);
+                null, album, null, null, null, null, 0L, 0L, false);
     }
 }
