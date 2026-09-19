@@ -13,6 +13,9 @@ import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.springframework.stereotype.Service;
 
@@ -122,7 +125,7 @@ public class TrackArtworkService {
                 .timeout(Duration.ofSeconds(Math.max(1, props.getMusicArtwork().getTimeoutSeconds())))
                 .GET().build();
         throttle();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithHardTimeout(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new IOException("iTunes search returned " + response.statusCode());
         }
@@ -143,7 +146,7 @@ public class TrackArtworkService {
         HttpRequest request = HttpRequest.newBuilder(URI.create(artworkUrl))
                 .timeout(Duration.ofSeconds(Math.max(1, props.getMusicArtwork().getTimeoutSeconds())))
                 .GET().build();
-        HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<byte[]> response = sendWithHardTimeout(request, HttpResponse.BodyHandlers.ofByteArray());
         if (response.statusCode() != 200 || response.body().length == 0) {
             throw new IOException("iTunes artwork download returned " + response.statusCode());
         }
@@ -152,6 +155,30 @@ public class TrackArtworkService {
         Path target = directory.resolve("poster.jpg");
         Files.write(target, response.body());
         return target.toString();
+    }
+
+    /**
+     * {@link HttpRequest.Builder#timeout} is supposed to bound this on its own, but a
+     * 2026-09-19 incident showed it doesn't always: one call to this API sat blocked for
+     * over 13 minutes with no error, freezing the whole scan thread behind it (this is
+     * the only network call on that thread) — the request itself was fine, confirmed by
+     * a plain curl seconds later. Sending async and bounding the *wait* with {@code
+     * get(timeout, unit)} enforces the deadline from outside the request, so this
+     * thread can never again be held hostage by whatever the request-level timeout
+     * missed.
+     */
+    private <T> HttpResponse<T> sendWithHardTimeout(HttpRequest request, HttpResponse.BodyHandler<T> handler)
+            throws IOException, InterruptedException {
+        long timeoutSeconds = Math.max(1, props.getMusicArtwork().getTimeoutSeconds());
+        var future = http.sendAsync(request, handler);
+        try {
+            return future.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (TimeoutException ex) {
+            future.cancel(true);
+            throw new IOException("iTunes request timed out after " + timeoutSeconds + "s", ex);
+        } catch (ExecutionException ex) {
+            throw new IOException("iTunes request failed", ex.getCause());
+        }
     }
 
     /** Only the search call is throttled — the artwork download hits Apple's CDN, not the API. */
