@@ -1,7 +1,6 @@
 package com.example.kido.media.music;
 
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -44,11 +43,8 @@ public class MusicHomeService {
     /** A mood/activity/director shelf with fewer tracks than this is not worth a heading. */
     private static final int MIN_FACET_RAIL_SIZE = 4;
 
-    /** How many singers, and how many heroes, get a shelf of their own. */
+    /** How many singers get a shelf of their own. */
     private static final int MAX_PERSON_RAILS = 5;
-
-    /** How many candidate rows a person query pulls before the name check thins them. */
-    private static final int PERSON_SCAN_DEPTH = 120;
 
     /** How many of the library's top music directors get their own rail. */
     private static final int MAX_DIRECTOR_RAILS = 6;
@@ -82,7 +78,6 @@ public class MusicHomeService {
     public MusicHomeDto home(Profile profile, int limit) {
         int railSize = Math.min(Math.max(1, limit), MAX_RAIL_SIZE);
         Pageable railPage = PageRequest.of(0, railSize);
-        Pageable personPage = PageRequest.of(0, PERSON_SCAN_DEPTH);
 
         List<HomeRailDto> rails = new ArrayList<>();
 
@@ -129,10 +124,10 @@ public class MusicHomeService {
             directorRails++;
         }
 
-        // Singers and heroes get their own shelves rather than being folded in with
+        // Singers get their own shelves rather than being folded in with
         // the music directors above, because those are three different reasons to
-        // want a song: who wrote it, who sang it, and whose film it came from. A
-        // shelf of Tamil soundtracks gets browsed by all three, and collapsing them
+        // want a song: who wrote it and who sang it. A
+        // shelf of Tamil soundtracks gets browsed by both, and collapsing them
         // into one "artist" rail would be the app choosing which may be asked.
         //
         // Singers come off the normalised artistNames join, so a collaboration counts
@@ -152,10 +147,16 @@ public class MusicHomeService {
             singerRails++;
         }
 
-        // Heroes cannot: castMembers is a single CLOB with no join table behind it, so
-        // the names are split out here and the rows narrowed by a LIKE that a second
-        // pass then checks properly.
-        addHeroRails(rails, profile, personPage, railSize);
+        // There are no hero shelves. There was an attempt, and it was a bad one: it
+        // read castMembers, which is a @Lob and therefore an `oid` on PostgreSQL,
+        // where `like` does not exist for that type. Every request to this endpoint
+        // returned 500 and the whole music screen fell back to a poster grid. It
+        // never produced a single shelf even before that, because the scanner does
+        // not put cast on music rows at all — the other candidate column, `people`,
+        // is never populated either.
+        //
+        // Heroes need cast data on music, in something queryable, before they can
+        // exist. Until then their absence is the honest state.
 
         int eraRails = 0;
         for (String decade : decadesNewestFirst(items.countByYear(MUSIC_TYPES))) {
@@ -195,55 +196,6 @@ public class MusicHomeService {
         return out;
     }
 
-    /**
-     * A shelf for each of the most-filmed heroes.
-     *
-     * <p>Singers get the normalised {@code artistNames} join and a straightforward
-     * grouped count. Cast has no such table — it is one CLOB per row — so the leads
-     * are counted by splitting those credit lines here, and the tracks found again by
-     * a LIKE narrowed to rows mentioning the name, then checked properly against the
-     * split names. Without that second pass a shelf for "Raja" would collect every
-     * Yuvan Shankar Raja track in the house.
-     *
-     * <p>Only the first name in the billing order counts. Taking the whole cast would
-     * hand a shelf to every character actor who has been near a film with a
-     * soundtrack, and "hero" is a claim about the lead — the person somebody means
-     * when they say they want a Vijay song.
-     */
-    private void addHeroRails(List<HomeRailDto> rails, Profile profile,
-                              Pageable personPage, int railSize) {
-        Map<String, Integer> leads = new HashMap<>();
-        for (Object[] row : items.musicCredits(MUSIC_TYPES)) {
-            ArtistNames.split((String) row[0]).stream()
-                    .findFirst()
-                    .ifPresent(lead -> leads.merge(lead, 1, Integer::sum));
-        }
-
-        List<String> busiestFirst = leads.entrySet().stream()
-                .filter(entry -> entry.getValue() >= MIN_FACET_RAIL_SIZE)
-                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
-                        .thenComparing(Map.Entry.comparingByKey()))
-                .map(Map.Entry::getKey)
-                .toList();
-
-        int added = 0;
-        for (String name : busiestFirst) {
-            if (added >= MAX_PERSON_RAILS) {
-                break;
-            }
-            List<MediaItem> found = items.findByCastMentioning(MUSIC_TYPES, name, personPage)
-                    .stream()
-                    .filter(item -> ArtistNames.split(item.getCastMembers()).stream()
-                            .anyMatch(credited -> credited.equalsIgnoreCase(name)))
-                    .limit(railSize)
-                    .toList();
-            if (found.size() < MIN_FACET_RAIL_SIZE) {
-                continue;
-            }
-            addRail(rails, "hero:" + name, name, catalog.summarise(profile, found));
-            added++;
-        }
-    }
 
     /**
      * Decades present in the library, newest first — bucketed in Java rather than SQL

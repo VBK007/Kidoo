@@ -251,48 +251,12 @@ public interface MediaItemRepository
     List<MediaItem> findByMusicDirector(@Param("types") List<MediaType> types,
                                         @Param("musicDirector") String musicDirector, Pageable pageable);
 
-    /**
-     * Every credit line on the music in the library, unparsed.
-     *
-     * <p>Two raw columns rather than a {@code group by}, because neither holds one
-     * name: {@code artist} is "A.R. Rahman,Shreya Ghoshal,Sarthak Kalyani" and
-     * {@code castMembers} is a whole billing order. Grouping in SQL would count each
-     * *combination* of people as though it were a person, so the splitting and
-     * counting happen in Java where a comma means what it looks like.
-     *
-     * <p>Two columns and no entities: this reads every music row, and dragging whole
-     * objects across for two strings is the difference between a query that is fine
-     * and one that hurts on a large library.
-     */
-    @Query("""
-            select m.artist, m.castMembers from MediaItem m
-            where m.missing = false and m.hidden = false and m.type in :types
-            """)
-    List<Object[]> musicCredits(@Param("types") List<MediaType> types);
-
-    /**
-     * Rows whose billing order mentions a name anywhere.
-     *
-     * <p>Deliberately loose, and only for cast: singers have the normalised
-     * {@code artistNames} join above, while {@code castMembers} is one CLOB per row
-     * with nothing to join. Matching {@code ,name,} exactly in SQL founders on the
-     * spacing real taggers use — "A.R.Rahman, Sunitha Sarathy" has a space after the
-     * comma and "A.R. Rahman,Shreya Ghoshal" does not — so this narrows the rows and
-     * the caller checks each one against properly split names. Without that second
-     * pass "Raja" would collect every Yuvan Shankar Raja track in the house.
-     *
-     * <p>Case-sensitive, and safely so: the only caller searches for names it read out
-     * of this same column, so the casing already matches. {@code lower()} is not an
-     * option regardless — Hibernate will not apply a string function to a CLOB.
-     */
-    @Query("""
-            select m from MediaItem m
-            where m.missing = false and m.hidden = false and m.type in :types
-              and m.castMembers like concat('%', :name, '%')
-            order by m.addedAt desc, m.sortTitle asc
-            """)
-    List<MediaItem> findByCastMentioning(@Param("types") List<MediaType> types,
-                                         @Param("name") String name, Pageable pageable);
+    // There is deliberately no query here that matches against castMembers.
+    //
+    // It is a @Lob, which PostgreSQL stores as an `oid`, and `like` does not exist
+    // for that type — a query doing it parsed fine, passed every test on H2, and
+    // returned 500 for every request on the real server. Anything that needs to
+    // search people needs a normalised column to search, the way artistNames is.
 
     @Query("""
             select m from MediaItem m
