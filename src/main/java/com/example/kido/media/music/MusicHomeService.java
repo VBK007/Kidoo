@@ -44,21 +44,6 @@ public class MusicHomeService {
     /** A mood/activity/director shelf with fewer tracks than this is not worth a heading. */
     private static final int MIN_FACET_RAIL_SIZE = 4;
 
-    /**
-     * How deep "Recently added" looks before thinning to one track per album.
-     *
-     * Deep, because tracks arrive in album-sized clumps: copying one soundtrack
-     * across writes twenty rows inside the same second, so the twenty newest
-     * files are routinely twenty songs off one record. Reading further back is
-     * what lets the rail still offer twenty different things.
-     *
-     * Fifty is also as far as {@code CatalogService.recentlyAdded} will go. A
-     * library that has just taken delivery of more than fifty tracks from one
-     * album gets a shorter rail, which is the honest answer — there genuinely
-     * was only one album added.
-     */
-    private static final int ALBUM_SCAN_DEPTH = 50;
-
     /** How many singers, and how many heroes, get a shelf of their own. */
     private static final int MAX_PERSON_RAILS = 5;
 
@@ -101,12 +86,11 @@ public class MusicHomeService {
 
         List<HomeRailDto> rails = new ArrayList<>();
 
-        // One track per album. The interesting question is which *records*
-        // turned up, not which files did — and the answer to the second was
-        // twenty tiles of the same soundtrack, technically correct and useless.
-        List<ItemSummaryDto> recent = CatalogService.oneItemPerRelease(
-                catalog.recentlyAdded(profile, MUSIC_TYPES, ALBUM_SCAN_DEPTH), railSize);
-        addRail(rails, "recently-added", "Recently added", recent);
+        // One track per album, which the catalog now does for every caller: the
+        // interesting question is which *records* turned up, not which files did,
+        // and the answer to the second was twenty tiles of one soundtrack.
+        addRail(rails, "recently-added", "Recently added",
+                catalog.recentlyAdded(profile, MUSIC_TYPES, railSize));
 
         for (Object[] row : items.countByMood(MUSIC_TYPES)) {
             String mood = (String) row[0];

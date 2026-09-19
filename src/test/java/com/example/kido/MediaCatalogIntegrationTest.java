@@ -382,6 +382,30 @@ class MediaCatalogIntegrationTest {
         assertTrue(explain.body().contains("hevc"), explain.body());
     }
 
+    /**
+     * The endpoint the clients actually call, not the helper behind it.
+     *
+     * <p>Written after the thinning went into one recently-added path and not the
+     * other: the unit test over the rule passed the whole time while the home screen
+     * carried on showing four consecutive episodes, because the app asks
+     * {@code /recently-added} and the change had gone into {@code /home}.
+     */
+    @Test
+    void recentlyAddedReturnsOneTilePerRelease() throws Exception {
+        for (int episode = 1; episode <= 6; episode++) {
+            insert("Black Lagoon - %03d - Episode".formatted(episode),
+                    MediaType.ANIME, 2006, "H264", "MKV", 1080, "AAC");
+        }
+        insert("Sita Ramam", MediaType.FILM, 2022, "H264", "MKV", 1080, "AAC");
+
+        String body = send("GET", "/api/media/recently-added?types=FILM,ANIME&limit=20",
+                null, token).body();
+
+        long episodes = Pattern.compile("Black Lagoon").matcher(body).results().count();
+        assertEquals(1, episodes, body);
+        assertTrue(body.contains("Sita Ramam"), body);
+    }
+
     @Test
     void unprobedFileIsNeverDirectPlayed() throws Exception {
         MediaItem item = items.save(MediaItem.builder()

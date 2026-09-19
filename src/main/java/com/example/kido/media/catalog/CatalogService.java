@@ -67,6 +67,16 @@ public class CatalogService {
      */
     private static final int MIN_RELEASE_PREFIX = 4;
 
+    /**
+     * How many rows a recently-added shelf reads before thinning to one per release.
+     *
+     * <p>Deep, because media arrives in clumps: a season of anime and a copied
+     * soundtrack both write twenty rows inside the same second. Fifty is the ceiling
+     * the query already had, so a library that has genuinely just taken delivery of
+     * more than fifty tracks from one album gets a short shelf — which is true.
+     */
+    private static final int RELEASE_SCAN_DEPTH = 50;
+
     /** Caps the page a client can ask for, so one request cannot pull the whole library. */
     private static final int MAX_PAGE_SIZE = 100;
 
@@ -175,10 +185,13 @@ public class CatalogService {
         List<MediaType> requested = types == null || types.isEmpty()
                 ? List.of(MediaType.FILM, MediaType.ANIME)
                 : types;
+        // Always read the full depth, however few tiles were asked for, because the
+        // rows are about to be thinned to one per release and a clump of twenty
+        // episodes would otherwise answer a request for twenty with one.
         List<MediaItem> found = items
                 .findByTypeInAndMissingFalseAndHiddenFalseOrderByAddedAtDesc(
-                        requested, PageRequest.of(0, Math.min(Math.max(1, limit), 50)));
-        return summarise(profile, found);
+                        requested, PageRequest.of(0, RELEASE_SCAN_DEPTH));
+        return oneItemPerRelease(summarise(profile, found), Math.max(1, limit));
     }
 
     /**
