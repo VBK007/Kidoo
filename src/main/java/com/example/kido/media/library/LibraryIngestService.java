@@ -371,7 +371,7 @@ public class LibraryIngestService {
         }
         if (item.getAlbum() != null && !item.getAlbum().isBlank()) {
             String tmdbLanguage = tmdbMovies.originalLanguageFor(item.getAlbum(), item.getYear());
-            if (RECOGNISED_MUSIC_LANGUAGES.contains(tmdbLanguage)) {
+            if (tmdbLanguage != null && RECOGNISED_MUSIC_LANGUAGES.contains(tmdbLanguage)) {
                 return tmdbLanguage;
             }
         }
