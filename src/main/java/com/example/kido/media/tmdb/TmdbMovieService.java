@@ -12,6 +12,9 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.springframework.stereotype.Service;
 
@@ -195,7 +198,7 @@ public class TmdbMovieService {
                 .timeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
                 .GET().build();
         rateLimiter.throttle();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithHardTimeout(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             return null;
         }
@@ -265,7 +268,7 @@ public class TmdbMovieService {
                 .timeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
                 .GET().build();
         rateLimiter.throttle();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithHardTimeout(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             return null;
         }
@@ -287,7 +290,7 @@ public class TmdbMovieService {
                 .timeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
                 .GET().build();
         rateLimiter.throttle();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithHardTimeout(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new IOException("TMDB search returned " + response.statusCode());
         }
@@ -297,6 +300,31 @@ public class TmdbMovieService {
 
     private static String endpoint(Catalog catalog) {
         return catalog == Catalog.MOVIE ? "movie" : "tv";
+    }
+
+    /**
+     * {@link HttpRequest.Builder#timeout} is supposed to bound a call on its own, but a
+     * 2026-09-19/20 incident showed it doesn't always: a {@link #search} call sat
+     * blocked for 12+ minutes with no error, freezing the whole scan thread behind it —
+     * the same failure {@code TrackArtworkService} hit hours earlier on a different
+     * host (iTunes, not TMDB), so this is evidently not specific to one upstream API.
+     * Sending async and bounding the *wait* with {@code get(timeout, unit)} enforces the
+     * deadline from outside the request, so this thread can never be held hostage by
+     * whatever the request-level timeout misses, regardless of which of these four call
+     * sites or which upstream host it happens on next.
+     */
+    private <T> HttpResponse<T> sendWithHardTimeout(HttpRequest request, HttpResponse.BodyHandler<T> handler)
+            throws IOException, InterruptedException {
+        long timeoutSeconds = Math.max(1, props.getCastPhotos().getTimeoutSeconds());
+        var future = http.sendAsync(request, handler);
+        try {
+            return future.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (TimeoutException ex) {
+            future.cancel(true);
+            throw new IOException("TMDB request timed out after " + timeoutSeconds + "s", ex);
+        } catch (ExecutionException ex) {
+            throw new IOException("TMDB request failed", ex.getCause());
+        }
     }
 
     /**
@@ -314,7 +342,7 @@ public class TmdbMovieService {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                     .timeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
                     .GET().build();
-            HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            HttpResponse<byte[]> response = sendWithHardTimeout(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() != 200 || response.body().length == 0) {
                 return null;
             }

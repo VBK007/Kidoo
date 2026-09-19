@@ -14,6 +14,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -140,7 +143,7 @@ public class CastPhotoService {
         // Only the API call is throttled, not the image download below: that hits
         // TMDB's separate, high-capacity image CDN, not the rate-limited API.
         rateLimiter.throttle();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendWithHardTimeout(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new IOException("TMDB search returned " + response.statusCode());
         }
@@ -153,7 +156,7 @@ public class CastPhotoService {
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
                 .GET().build();
-        HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<byte[]> response = sendWithHardTimeout(request, HttpResponse.BodyHandlers.ofByteArray());
         if (response.statusCode() != 200 || response.body().length == 0) {
             throw new IOException("TMDB image download returned " + response.statusCode());
         }
@@ -161,6 +164,28 @@ public class CastPhotoService {
         Path file = cacheRoot.resolve(slug + ".jpg");
         Files.write(file, response.body());
         return file;
+    }
+
+    /**
+     * {@link HttpRequest.Builder#timeout} is supposed to bound a call on its own, but a
+     * 2026-09-19/20 incident showed it doesn't always, on this exact API: a {@code
+     * TmdbMovieService} call sat blocked for 12+ minutes with no error, freezing the
+     * whole scan thread behind it. Sending async and bounding the *wait* with {@code
+     * get(timeout, unit)} enforces the deadline from outside the request, so this
+     * thread can never be held hostage by whatever the request-level timeout misses.
+     */
+    private <T> HttpResponse<T> sendWithHardTimeout(HttpRequest request, HttpResponse.BodyHandler<T> handler)
+            throws IOException, InterruptedException {
+        long timeoutSeconds = Math.max(1, props.getCastPhotos().getTimeoutSeconds());
+        var future = http.sendAsync(request, handler);
+        try {
+            return future.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (TimeoutException ex) {
+            future.cancel(true);
+            throw new IOException("TMDB request timed out after " + timeoutSeconds + "s", ex);
+        } catch (ExecutionException ex) {
+            throw new IOException("TMDB request failed", ex.getCause());
+        }
     }
 
     /** Resolves the cached photo file for serving, confirmed inside the cache directory. */
