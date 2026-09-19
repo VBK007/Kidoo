@@ -14,6 +14,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -25,6 +26,7 @@ import com.example.kido.media.dto.PartySocketDtos.ChatHistoryFrame;
 import com.example.kido.media.dto.PartySocketDtos.ChatMessageDto;
 import com.example.kido.media.dto.PartySocketDtos.ClockFrame;
 import com.example.kido.media.dto.PartySocketDtos.EndedFrame;
+import com.example.kido.media.dto.PartySocketDtos.ItemFrame;
 import com.example.kido.media.dto.PartySocketDtos.ErrorFrame;
 import com.example.kido.media.dto.PartySocketDtos.MembersFrame;
 import com.example.kido.media.dto.PartySocketDtos.PendingFrame;
@@ -298,6 +300,49 @@ public class WatchPartyRegistry {
             send(connection, new EndedFrame(PartySocketDtos.ENDED, reason));
             closeQuietly(connection.session, CloseStatus.NORMAL.withReason("party ended"));
         }
+    }
+
+    /**
+     * Moves the whole party onto a different item.
+     *
+     * <p>Host only, like the transport controls, and for the same reason: one
+     * playhead cannot be driven by four people. What makes this different from a
+     * seek is that everybody has to fetch a new stream, so the clock is reset to
+     * zero — a position inside the previous track is meaningless in this one.
+     *
+     * <p>Written to the row as well as broadcast. A member who reconnects, or a
+     * client polling the REST fallback, asks what the party is playing and has to
+     * get the same answer as the frame that went out — otherwise a dropped socket
+     * puts somebody back on the track the party left ten minutes ago.
+     */
+    @Transactional
+    public void changeItem(String partyId, String mediaItemId, String by) {
+        WatchParty party = parties.findById(partyId).orElse(null);
+        if (party == null || mediaItemId == null || mediaItemId.isBlank()) {
+            return;
+        }
+        if (mediaItemId.equals(party.getMediaItemId())) {
+            return;
+        }
+        party.setMediaItemId(mediaItemId);
+        parties.save(party);
+
+        LiveParty live = this.live.get(partyId);
+        if (live == null) {
+            return;
+        }
+        live.positionSeconds = 0;
+        live.anchoredAtMillis = System.currentTimeMillis();
+        live.state = PartyClockState.PLAYING;
+
+        ItemFrame frame = new ItemFrame(PartySocketDtos.ITEM, mediaItemId, by);
+        for (Connection connection : live.connections.values()) {
+            send(connection, frame);
+            // The clock immediately after, so a client that acts on the item has
+            // somewhere to start rather than waiting up to two seconds for a tick.
+            send(connection, new ClockFrame(PartySocketDtos.TICK, snapshot(live), by));
+        }
+        log.info("Watch party {} moved to item {}", live.joinCode, mediaItemId);
     }
 
     /**

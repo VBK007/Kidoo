@@ -70,6 +70,17 @@ public class WatchPartySocketHandler extends TextWebSocketHandler {
             return;
         }
 
+        // Host only, like the transport: this replaces what everybody is playing.
+        if (PartySocketDtos.ITEM.equals(frame.type())) {
+            if (identity.member().getRole() != PartyRole.HOST) {
+                registry.refuse(partyId, session.getId(), "only the host changes the track");
+                return;
+            }
+            registry.changeItem(partyId, frame.mediaItemId(),
+                    identity.member().getDisplayName());
+            return;
+        }
+
         if (frame.isControl()) {
             if (identity.member().getRole() != PartyRole.HOST) {
                 // Refused, not disconnected: a member sending controls is a client bug,

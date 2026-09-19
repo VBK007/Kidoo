@@ -29,6 +29,7 @@ public final class PartySocketDtos {
     public static final String ERROR = "error";
     public static final String CHAT = "chat";
     public static final String CHAT_HISTORY = "chat-history";
+    public static final String ITEM = "item";
 
     /**
      * Where the film is.
@@ -57,6 +58,24 @@ public final class PartySocketDtos {
 
     /** Final frame before the server closes the socket. */
     public record EndedFrame(String type, String reason) {}
+
+    /**
+     * The party has moved to a different thing entirely.
+     *
+     * <p>A party used to be one film for its whole life, which is true of an evening
+     * spent on a film and false of one spent on music: the host reaches the end of a
+     * song and the next one starts, and a party that cannot follow leaves everybody
+     * else listening to something the host stopped playing minutes ago.
+     *
+     * <p>Distinct from a seek. A seek moves the playhead inside one thing; this
+     * replaces the thing, so a client has to fetch a new stream rather than jump.
+     * The clock is reset to the start with it, because a position inside the previous
+     * track means nothing in this one.
+     *
+     * @param by display name of whoever changed it, so the change can be attributed
+     *           the same way a pause is
+     */
+    public record ItemFrame(String type, String mediaItemId, String by) {}
 
     /**
      * One thing somebody said, to the party and to nobody else.
@@ -116,7 +135,7 @@ public final class PartySocketDtos {
      *                        a member that is only updating {@code buffering}
      */
     public record InboundFrame(String type, Double positionSeconds, Boolean buffering,
-                               String text) {
+                               String text, String mediaItemId) {
 
         public static final String REPORT = "report";
 

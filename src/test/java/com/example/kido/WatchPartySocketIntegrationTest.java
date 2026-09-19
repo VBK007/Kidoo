@@ -249,6 +249,74 @@ class WatchPartySocketIntegrationTest {
         assertTrue(ended.contains("host ended it"), ended);
     }
 
+    // --- changing what the party is playing ---
+
+    /**
+     * A party used to be one film for its whole life.
+     *
+     * <p>True of an evening spent on a film and false of one spent on music: the host
+     * reaches the end of a song and the next starts, and a party that cannot follow
+     * leaves everybody else on something the host stopped playing minutes ago.
+     */
+    @Test
+    void theHostCanMoveThePartyToAnotherTrack() throws Exception {
+        Socket member = connect(friendToken);
+        member.await("tick");
+        Socket host = connect(hostToken);
+        host.await("tick");
+
+        MediaItem next = insertFilm("Second Song");
+        host.send("{\"type\":\"item\",\"mediaItemId\":\"%s\"}".formatted(next.getId()));
+
+        String frame = member.await("item");
+        assertTrue(frame.contains(next.getId()), frame);
+        // Attributed like a pause, so the change does not happen silently.
+        assertTrue(frame.contains("Amma"), frame);
+    }
+
+    @Test
+    void movingToAnotherTrackRestartsTheClock() throws Exception {
+        Socket host = connect(hostToken);
+        host.await("tick");
+        host.send("{\"type\":\"seek\",\"positionSeconds\":600}");
+        host.await("seek");
+
+        MediaItem next = insertFilm("Third Song");
+        host.send("{\"type\":\"item\",\"mediaItemId\":\"%s\"}".formatted(next.getId()));
+        host.await("item");
+
+        // A position inside the previous track means nothing in this one.
+        String clock = host.await("tick");
+        assertTrue(clock.contains("\"positionSeconds\":0"), clock);
+    }
+
+    @Test
+    void theNewTrackSurvivesAReconnect() throws Exception {
+        Socket host = connect(hostToken);
+        host.await("tick");
+
+        MediaItem next = insertFilm("Fourth Song");
+        host.send("{\"type\":\"item\",\"mediaItemId\":\"%s\"}".formatted(next.getId()));
+        host.await("item");
+
+        // The REST fallback has to agree with the frame that went out, or a member
+        // whose socket dropped comes back to the track the party already left.
+        String state = send("GET", "/api/parties/" + code + "/state",
+                null, friendToken, friendProfileId).body();
+        assertTrue(state.contains(next.getId()), state);
+    }
+
+    @Test
+    void aMemberCannotMoveTheParty() throws Exception {
+        Socket member = connect(friendToken);
+        member.await("tick");
+
+        MediaItem next = insertFilm("Fifth Song");
+        member.send("{\"type\":\"item\",\"mediaItemId\":\"%s\"}".formatted(next.getId()));
+
+        assertTrue(member.await("error").contains("only the host"));
+    }
+
     // --- chat ---
 
     @Test
