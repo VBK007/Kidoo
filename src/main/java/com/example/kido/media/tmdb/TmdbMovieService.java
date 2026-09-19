@@ -7,15 +7,19 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.stereotype.Service;
 
+import com.example.kido.media.MediaPaths;
 import com.example.kido.media.MediaProperties;
 import com.example.kido.media.catalog.MediaInfo;
 import com.example.kido.media.catalog.MediaItem;
+import com.example.kido.media.catalog.MediaType;
 
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.JsonNode;
@@ -23,17 +27,24 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Fills in a movie's plot, rating and cast from TMDB when a scan found none — the
- * three fields an {@code .nfo} sidecar would otherwise have supplied.
+ * Fills in a video's poster, plot, rating and cast from TMDB when a scan found none —
+ * the fields an {@code .nfo} sidecar or a local poster file would otherwise have
+ * supplied.
  *
  * <p>Never overwrites a field that already has a value — callers are expected to check
  * that themselves (see {@code LibraryIngestService#backfillMetadata}), same convention
  * as {@code LibraryIngestService.backfillArtwork}'s {@code hasPoster()} guard.
  *
+ * <p>{@link MediaType#FILM} and {@link MediaType#HOME_VIDEO} are looked up against
+ * TMDB's movie catalog; {@link MediaType#SERIES} and {@link MediaType#ANIME} against
+ * its TV catalog instead — a feature-length runtime check makes no sense for an
+ * episodic file, so those two types are verified by year alone, the same trust level
+ * already used below for a movie whose runtime could not be probed.
+ *
  * <p>A bare title search is not reliable enough to trust blindly: "Master" alone
  * matches dozens of unrelated films on TMDB, and title + release year still is not
- * always enough. Every candidate is verified against the file's own probed runtime
- * (already known from ffprobe, no extra local cost) before anything from it is
+ * always enough. For a movie, every candidate is verified against the file's own probed
+ * runtime (already known from ffprobe, no extra local cost) before anything from it is
  * accepted — the one piece of ground truth this server has that TMDB's ranking cannot
  * see. A title with neither a known year nor a probed duration is judged too ambiguous
  * to guess at all, and is left alone rather than risk attaching the wrong film's data.
@@ -58,24 +69,42 @@ public class TmdbMovieService {
      */
     private static final int RUNTIME_TOLERANCE_MINUTES = 12;
 
+    /**
+     * 500px wide — clears {@code LibraryIngestService}'s own poster-floor check
+     * (500x750) so a poster fetched from here is never immediately flagged as an
+     * undersized thumbnail and replaced.
+     */
+    private static final String POSTER_IMAGE_SIZE = "w500";
+
     private final MediaProperties props;
+    private final MediaPaths paths;
     private final TmdbRateLimiter rateLimiter;
     private final HttpClient http;
     private final ObjectMapper mapper = JsonMapper.builder().build();
 
-    public TmdbMovieService(MediaProperties props, TmdbRateLimiter rateLimiter) {
+    public TmdbMovieService(MediaProperties props, MediaPaths paths, TmdbRateLimiter rateLimiter) {
         this.props = props;
+        this.paths = paths;
         this.rateLimiter = rateLimiter;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
                 .build();
     }
 
+    /** Which TMDB catalog a type is looked up against. */
+    private enum Catalog {
+        MOVIE, TV
+    }
+
+    private static Catalog catalogFor(MediaType type) {
+        return type == MediaType.SERIES || type == MediaType.ANIME ? Catalog.TV : Catalog.MOVIE;
+    }
+
     /**
-     * Looks up {@code item}'s title on TMDB and fills in whichever of plot, rating,
-     * cast and {@code tmdbId} it does not already have, from the best verified match.
-     * Every field is additive: one already set is left exactly as it is, so this is
-     * safe to call on an item that has some of these but not others.
+     * Looks up {@code item}'s title on TMDB and fills in whichever of poster, plot,
+     * rating, cast and {@code tmdbId} it does not already have, from the best verified
+     * match. Every field is additive: one already set is left exactly as it is, so this
+     * is safe to call on an item that has some of these but not others.
      *
      * @return whether the item was changed
      */
@@ -84,13 +113,14 @@ public class TmdbMovieService {
             return false;
         }
         try {
-            JsonNode results = search(item.getTitle(), item.getYear());
+            Catalog catalog = catalogFor(item.getType());
+            JsonNode results = search(catalog, item.getTitle(), item.getYear());
             if (results == null) {
                 return false;
             }
             MediaInfo info = item.getMediaInfo();
             Double durationSeconds = info == null ? null : info.getDurationSeconds();
-            JsonNode match = pickVerifiedMatch(results, durationSeconds, item.getYear());
+            JsonNode match = pickVerifiedMatch(catalog, results, durationSeconds, item.getYear());
             if (match == null) {
                 return false;
             }
@@ -118,10 +148,21 @@ public class TmdbMovieService {
             }
 
             if ((item.getCastMembers() == null || item.getCastMembers().isBlank()) && tmdbId > 0) {
-                String cast = fetchCast(tmdbId);
+                String cast = fetchCast(catalog, tmdbId);
                 if (cast != null) {
                     item.setCastMembers(cast);
                     changed = true;
+                }
+            }
+
+            if (!item.hasPoster()) {
+                String posterPath = match.path("poster_path").asString(null);
+                if (posterPath != null && !posterPath.isBlank()) {
+                    String stored = downloadPoster(item.getId(), posterPath);
+                    if (stored != null) {
+                        item.setPosterPath(stored);
+                        changed = true;
+                    }
                 }
             }
 
@@ -135,8 +176,8 @@ public class TmdbMovieService {
     }
 
     /** Top-billed cast names, comma-joined the same way an {@code .nfo}'s would be. */
-    private String fetchCast(int tmdbId) throws IOException, InterruptedException {
-        String url = "https://api.themoviedb.org/3/movie/" + tmdbId
+    private String fetchCast(Catalog catalog, int tmdbId) throws IOException, InterruptedException {
+        String url = "https://api.themoviedb.org/3/" + endpoint(catalog) + "/" + tmdbId
                 + "/credits?api_key=" + props.getCastPhotos().getApiKey();
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
@@ -168,12 +209,14 @@ public class TmdbMovieService {
     /**
      * Walks the top few search results, in TMDB's own relevance order, and returns the
      * first whose official runtime is consistent with this file's probed duration. With
-     * no probed duration to check against, a year-narrowed search's top result is
-     * trusted as-is; with neither signal, nothing is trusted.
+     * no probed duration to check against — always the case for TV, where a show's
+     * runtime is per-episode and tells us nothing about the whole series — a
+     * year-narrowed search's top result is trusted as-is; with neither signal, nothing
+     * is trusted.
      */
-    private JsonNode pickVerifiedMatch(JsonNode results, Double durationSeconds, Integer year)
+    private JsonNode pickVerifiedMatch(Catalog catalog, JsonNode results, Double durationSeconds, Integer year)
             throws IOException, InterruptedException {
-        if (durationSeconds == null || durationSeconds <= 0) {
+        if (catalog == Catalog.TV || durationSeconds == null || durationSeconds <= 0) {
             boolean yearNarrowed = year != null && year > 0;
             return yearNarrowed && !results.isEmpty() ? results.get(0) : null;
         }
@@ -207,12 +250,15 @@ public class TmdbMovieService {
         return runtime > 0 ? runtime : null;
     }
 
-    private JsonNode search(String title, Integer year) throws IOException, InterruptedException {
-        StringBuilder url = new StringBuilder("https://api.themoviedb.org/3/search/movie?query=")
+    private JsonNode search(Catalog catalog, String title, Integer year) throws IOException, InterruptedException {
+        StringBuilder url = new StringBuilder("https://api.themoviedb.org/3/search/" + endpoint(catalog) + "?query=")
                 .append(URLEncoder.encode(title, StandardCharsets.UTF_8))
                 .append("&api_key=").append(props.getCastPhotos().getApiKey());
         if (year != null && year > 0) {
-            url.append("&year=").append(year);
+            // TMDB names this filter differently per catalog: a movie's is its release
+            // year, a show's is the year it first aired.
+            String yearParam = catalog == Catalog.MOVIE ? "year" : "first_air_date_year";
+            url.append("&").append(yearParam).append("=").append(year);
         }
         HttpRequest request = HttpRequest.newBuilder(URI.create(url.toString()))
                 .timeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
@@ -224,5 +270,39 @@ public class TmdbMovieService {
         }
         JsonNode results = mapper.readTree(response.body()).path("results");
         return results.isArray() ? results : null;
+    }
+
+    private static String endpoint(Catalog catalog) {
+        return catalog == Catalog.MOVIE ? "movie" : "tv";
+    }
+
+    /**
+     * Downloads a poster from TMDB's image CDN into the same artwork cache directory
+     * {@code TrackArtworkService} uses for music, keyed by item id so it survives a
+     * rescan. Local sidecar/folder artwork ({@code LibraryIngestService
+     * #backfillVideoArtwork}) always runs first and wins if it found anything — this is
+     * only reached for an item that still has no poster at all, which is normal for a
+     * library with no {@code poster.jpg} sitting next to every file (anime rips in
+     * particular rarely carry one).
+     */
+    private String downloadPoster(String itemId, String posterPath) {
+        try {
+            String url = "https://image.tmdb.org/t/p/" + POSTER_IMAGE_SIZE + posterPath;
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(Math.max(1, props.getCastPhotos().getTimeoutSeconds())))
+                    .GET().build();
+            HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() != 200 || response.body().length == 0) {
+                return null;
+            }
+            Path directory = paths.artworkDir().resolve(itemId);
+            Files.createDirectories(directory);
+            Path target = directory.resolve("poster.jpg");
+            Files.write(target, response.body());
+            return target.toString();
+        } catch (Exception ex) {
+            log.warn("TMDB poster download failed for item {}: {}", itemId, ex.getMessage());
+            return null;
+        }
     }
 }
