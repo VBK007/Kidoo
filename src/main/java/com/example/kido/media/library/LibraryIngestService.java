@@ -336,12 +336,23 @@ public class LibraryIngestService {
      * At most one iTunes lookup per track, ever: {@code musicArtworkCheckedAt} is
      * stamped whether or not a match was found, which is what stops a track this API
      * simply has nothing for from being re-queried on every future scan.
+     *
+     * <p>Tries the file's own embedded cover first — the same extraction {@link
+     * #applyProbe} runs on first ingest, repeated here because a backfill runs against
+     * files this scan treats as unchanged, which never reach {@code applyProbe} again.
+     * It costs one local ffmpeg call (fast, no network, nothing to rate-limit) against
+     * an iTunes lookup that is a network round trip at best and, per the 2026-09-19
+     * incident, a stuck scan thread at worst — worth trying first even though most
+     * files here already came up empty on it once, back when they were first ingested.
      */
     private boolean backfillTrackArtwork(MediaItem item) {
         if (item.hasPoster() || item.getMusicArtworkCheckedAt() != null) {
             return false;
         }
-        String artwork = trackArtwork.fetchAndStore(item);
+        String artwork = extractEmbeddedCoverArt(item, Path.of(item.getFilePath()));
+        if (artwork == null) {
+            artwork = trackArtwork.fetchAndStore(item);
+        }
         item.setMusicArtworkCheckedAt(Instant.now());
         if (artwork != null) {
             item.setPosterPath(artwork);
