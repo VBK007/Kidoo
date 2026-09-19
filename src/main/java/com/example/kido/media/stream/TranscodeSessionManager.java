@@ -149,12 +149,26 @@ public class TranscodeSessionManager {
     }
 
     private List<String> buildCommand(Path file, Path directory, double startSeconds, int height) {
+        boolean hwaccel = props.isTranscodeHwaccelEnabled();
         List<String> command = new ArrayList<>();
         command.add(props.getFfmpegPath());
         command.add("-hide_banner");
         command.add("-loglevel");
         command.add("error");
         command.add("-nostdin");
+
+        // Decode on the GPU too, not just encode: with only the encoder hardware-backed,
+        // ffmpeg would decode every frame in software and upload it to VAAPI just to
+        // encode it, which spends the CPU time this exists to avoid and adds a copy on
+        // top. Must come before -i like every other input-side option.
+        if (hwaccel) {
+            command.add("-hwaccel");
+            command.add("vaapi");
+            command.add("-hwaccel_device");
+            command.add(props.getVaapiDevice());
+            command.add("-hwaccel_output_format");
+            command.add("vaapi");
+        }
 
         // Before -i, so ffmpeg seeks by keyframe index instead of decoding and discarding
         // everything up to the offset. Output timestamps then restart at zero.
@@ -173,23 +187,41 @@ public class TranscodeSessionManager {
         command.add("-sn");
         command.add("-dn");
 
-        command.add("-c:v");
-        command.add("libx264");
-        command.add("-preset");
-        command.add(props.getTranscodePreset());
-        command.add("-crf");
-        command.add(String.valueOf(props.getTranscodeCrf()));
-        // Constrain to what mobile hardware decoders accept.
-        command.add("-profile:v");
-        command.add("high");
-        command.add("-level");
-        command.add("4.1");
-        command.add("-pix_fmt");
-        command.add("yuv420p");
-        // -2 keeps the aspect ratio and rounds width to an even number, which H.264 requires.
-        // The height is already clamped to the source, so this never upscales.
-        command.add("-vf");
-        command.add("scale=-2:" + height);
+        if (hwaccel) {
+            command.add("-c:v");
+            command.add("h264_vaapi");
+            // profile/level as VAAPI's own numeric enum, not libx264's string form —
+            // "4.1" means nothing to this encoder, it wants the bare level_idc "41".
+            command.add("-profile:v");
+            command.add("high");
+            command.add("-level");
+            command.add("41");
+            // The decoded frame is already a VAAPI surface (-hwaccel_output_format
+            // above), so this scales on the GPU too — a software scale filter here
+            // would need the frame downloaded to system memory first, undoing exactly
+            // the copy this whole path exists to skip.
+            command.add("-vf");
+            command.add("scale_vaapi=-2:" + height);
+        } else {
+            command.add("-c:v");
+            command.add("libx264");
+            command.add("-preset");
+            command.add(props.getTranscodePreset());
+            command.add("-crf");
+            command.add(String.valueOf(props.getTranscodeCrf()));
+            // Constrain to what mobile hardware decoders accept.
+            command.add("-profile:v");
+            command.add("high");
+            command.add("-level");
+            command.add("4.1");
+            command.add("-pix_fmt");
+            command.add("yuv420p");
+            // -2 keeps the aspect ratio and rounds width to an even number, which H.264
+            // requires. The height is already clamped to the source, so this never
+            // upscales.
+            command.add("-vf");
+            command.add("scale=-2:" + height);
+        }
         // Segment boundaries must land on keyframes for seeking to work.
         command.add("-force_key_frames");
         command.add("expr:gte(t,n_forced*" + props.getHlsSegmentSeconds() + ")");

@@ -88,8 +88,27 @@ public class MediaProperties {
     /** Constant Rate Factor for transcodes — lower is better quality and bigger. */
     private int transcodeCrf = 21;
 
-    /** x264 preset; {@code veryfast} is the usual real-time compromise. */
+    /** x264 preset; {@code veryfast} is the usual real-time compromise. Ignored under VAAPI. */
     private String transcodePreset = "veryfast";
+
+    /**
+     * Off by default because it names a specific piece of hardware ({@link
+     * #vaapiDevice}) rather than something every deployment host has — turned on
+     * explicitly in this household's own {@code docker-compose.yml} once VAAPI was
+     * confirmed working end-to-end on its GPU. A software x264 encode is the
+     * unconditionally-correct fallback for a host with no such device, or a different
+     * GPU vendor's render node at a different path, so this stays opt-in rather than
+     * auto-detected.
+     */
+    private boolean transcodeHwaccelEnabled = false;
+
+    /**
+     * The VAAPI render node ffmpeg decodes and encodes through — a container path, so
+     * this only resolves once {@code /dev/dri} is bind-mounted into it. {@code
+     * renderD128} is standard for a single-GPU host; a second GPU would enumerate as
+     * {@code renderD129} and need this overridden.
+     */
+    private String vaapiDevice = "/dev/dri/renderD128";
 
     /** Target HLS segment length in seconds. */
     private int hlsSegmentSeconds = 6;

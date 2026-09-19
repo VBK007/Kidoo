@@ -12,7 +12,15 @@ WORKDIR /app
 # python3-aubio pulls in python3 + numpy automatically; used by AudioFeatureService for
 # per-track tempo/energy analysis the same way ffmpeg is used for transcoding — a small,
 # well-scoped native dependency rather than a DSP implementation in the JVM.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg python3-aubio \
+#
+# i965-va-driver and intel-media-va-driver are VAAPI backends for two different Intel
+# GPU generations (pre-Broadwell and Broadwell+ respectively, per ffmpeg's own driver
+# probe order) — both installed since this image is not built once per host GPU, and
+# ffmpeg only opens the one that actually matches what it finds. Inert with no effect
+# on a host that never bind-mounts /dev/dri in, or one with no Intel GPU at all — see
+# MediaProperties#transcodeHwaccelEnabled for the flag that actually turns this on.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg python3-aubio i965-va-driver intel-media-va-driver \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd -r -u 1001 appuser
 COPY --from=build /app/build/libs/*.jar app.jar
