@@ -3,8 +3,11 @@ package com.example.kido.media.together;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -17,6 +20,9 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 
 import com.example.kido.media.dto.PartySocketDtos;
+import com.example.kido.media.dto.PartySocketDtos.ChatFrame;
+import com.example.kido.media.dto.PartySocketDtos.ChatHistoryFrame;
+import com.example.kido.media.dto.PartySocketDtos.ChatMessageDto;
 import com.example.kido.media.dto.PartySocketDtos.ClockFrame;
 import com.example.kido.media.dto.PartySocketDtos.EndedFrame;
 import com.example.kido.media.dto.PartySocketDtos.ErrorFrame;
@@ -79,6 +85,21 @@ public class WatchPartyRegistry {
      * clicks the link early should not be refused for being punctual.
      */
     private static final Duration PENDING_EXPIRES_AFTER = Duration.ofMinutes(5);
+
+    /** One message's ceiling. Long enough for a thought, short enough not to be a post. */
+    private static final int MAX_CHAT_CHARS = 500;
+
+    /**
+     * How much of the conversation a latecomer is shown.
+     *
+     * <p>A backlog, not a transcript: enough to see what is being talked about and
+     * bounded so a six-hour party cannot grow a list nobody scrolls and every new
+     * joiner has to be sent.
+     */
+    private static final int MAX_CHAT_BACKLOG = 50;
+
+    /** Floor between two messages from one socket. Stops a held key flooding the room. */
+    private static final long MIN_CHAT_INTERVAL_MILLIS = 300;
 
     /** Send limits for the concurrent decorator: a slow client must not stall the tick. */
     private static final int SEND_TIME_LIMIT_MILLIS = 5_000;
@@ -155,6 +176,16 @@ public class WatchPartyRegistry {
         // The newcomer needs the clock before the next tick, or they sit on a black
         // screen for up to two seconds wondering whether the party is running.
         send(connection, new ClockFrame(PartySocketDtos.TICK, snapshot(target), null));
+
+        // Joining an hour in to an empty panel would say nobody had spoken all evening.
+        List<ChatMessageDto> backlog;
+        synchronized (target.chat) {
+            backlog = List.copyOf(target.chat);
+        }
+        if (!backlog.isEmpty()) {
+            send(connection, new ChatHistoryFrame(PartySocketDtos.CHAT_HISTORY, backlog));
+        }
+
         broadcastMembers(target);
 
         log.info("Watch party {} attached member={} role={} ({} online)",
@@ -266,6 +297,62 @@ public class WatchPartyRegistry {
         for (Connection connection : party.connections.values()) {
             send(connection, new EndedFrame(PartySocketDtos.ENDED, reason));
             closeQuietly(connection.session, CloseStatus.NORMAL.withReason("party ended"));
+        }
+    }
+
+    /**
+     * Says something to the party, and only to the party.
+     *
+     * <p>Fanned out to the sockets currently attached to this party and kept in its
+     * in-memory backlog for whoever joins next. There is no path from here to a
+     * database and no endpoint that reads it back, so the audience is exactly the
+     * people in the room and the lifetime is exactly the party's.
+     *
+     * <p>Unlike playback control this is open to every member. The host owning the
+     * playhead is about not having four people fight over one film; talking over it is
+     * the entire point of watching together.
+     */
+    public void chat(String partyId, String sessionId, String from, String text) {
+        LiveParty party = live.get(partyId);
+        if (party == null) {
+            return;
+        }
+
+        String trimmed = text == null ? "" : text.trim();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+        if (trimmed.length() > MAX_CHAT_CHARS) {
+            trimmed = trimmed.substring(0, MAX_CHAT_CHARS);
+        }
+
+        Connection sender = party.connections.get(sessionId);
+        if (sender == null) {
+            return;
+        }
+        // A held key or a client stuck in a retry loop should not be able to push the
+        // backlog out from under everyone else. Dropped silently rather than refused:
+        // the sender is one of us, and an error frame for typing quickly reads as a
+        // fault where a swallowed duplicate reads as nothing at all.
+        long now = System.currentTimeMillis();
+        if (now - sender.lastChatAtMillis < MIN_CHAT_INTERVAL_MILLIS) {
+            return;
+        }
+        sender.lastChatAtMillis = now;
+
+        ChatMessageDto message = new ChatMessageDto(
+                UUID.randomUUID().toString(), from, trimmed, now);
+
+        synchronized (party.chat) {
+            party.chat.addLast(message);
+            while (party.chat.size() > MAX_CHAT_BACKLOG) {
+                party.chat.removeFirst();
+            }
+        }
+
+        ChatFrame frame = new ChatFrame(PartySocketDtos.CHAT, message);
+        for (Connection connection : party.connections.values()) {
+            send(connection, frame);
         }
     }
 
@@ -490,6 +577,19 @@ public class WatchPartyRegistry {
         private final String joinCode;
         private final Map<String, Connection> connections = new ConcurrentHashMap<>();
 
+        /**
+         * What has been said, and the only copy of it anywhere.
+         *
+         * <p>Held here and nowhere else on purpose. This object is dropped when the
+         * party ends, so the chat going with it is a consequence of where it lives
+         * rather than a deletion somebody has to remember to perform. No table, no
+         * retention policy, and no cleanup job that could quietly stop running.
+         *
+         * <p>Guarded by its own monitor: IO threads append while a joining thread
+         * copies the whole thing, and ArrayDeque tolerates neither concurrently.
+         */
+        private final Deque<ChatMessageDto> chat = new ArrayDeque<>();
+
         private volatile PartyClockState state = PartyClockState.PAUSED;
         private volatile double positionSeconds;
         private volatile long anchoredAtMillis = System.currentTimeMillis();
@@ -517,6 +617,7 @@ public class WatchPartyRegistry {
 
         private volatile boolean buffering;
         private volatile Double driftSeconds;
+        private volatile long lastChatAtMillis;
 
         private Connection(WebSocketSession session, String memberId, PartyRole role) {
             this.session = session;

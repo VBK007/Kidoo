@@ -6,6 +6,7 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
+import com.example.kido.media.dto.PartySocketDtos;
 import com.example.kido.media.dto.PartySocketDtos.InboundFrame;
 import com.example.kido.media.together.WatchPartyService.SocketIdentity;
 import tools.jackson.databind.ObjectMapper;
@@ -83,6 +84,15 @@ public class WatchPartySocketHandler extends TextWebSocketHandler {
 
         if (InboundFrame.REPORT.equals(frame.type())) {
             registry.report(partyId, session.getId(), frame.positionSeconds(), frame.buffering());
+            return;
+        }
+
+        // Open to every member, unlike the controls above. The host owning the playhead
+        // is about four people not fighting over one film; talking over it is the point
+        // of being in the room together.
+        if (PartySocketDtos.CHAT.equals(frame.type())) {
+            registry.chat(partyId, session.getId(),
+                    identity.member().getDisplayName(), frame.text());
             return;
         }
 

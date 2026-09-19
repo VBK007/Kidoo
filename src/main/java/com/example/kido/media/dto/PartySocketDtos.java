@@ -27,6 +27,8 @@ public final class PartySocketDtos {
     public static final String PENDING = "pending";
     public static final String ENDED = "ended";
     public static final String ERROR = "error";
+    public static final String CHAT = "chat";
+    public static final String CHAT_HISTORY = "chat-history";
 
     /**
      * Where the film is.
@@ -57,6 +59,36 @@ public final class PartySocketDtos {
     public record EndedFrame(String type, String reason) {}
 
     /**
+     * One thing somebody said, to the party and to nobody else.
+     *
+     * <p>Deliberately not a persisted entity, and that is the feature rather than a
+     * shortcut. A party's chat lives in the registry's in-memory record of the party
+     * and is released when the party ends, so "the messages are gone afterwards" is a
+     * property of where they are kept rather than a promise some later cleanup job has
+     * to honour. Nothing writes them to the database, so nothing has to remember to
+     * delete them, and a server restart takes them with it.
+     *
+     * <p>Ids are per-message so a client can de-duplicate its own optimistic echo
+     * against the copy that comes back from the server.
+     *
+     * @param from display name at the time of sending, not a profile id: the name is
+     *             all a reader needs, and the id would outlive the message
+     */
+    public record ChatMessageDto(String id, String from, String text, long atEpochMs) {}
+
+    /** A single message, fanned out to everyone currently connected. */
+    public record ChatFrame(String type, ChatMessageDto message) {}
+
+    /**
+     * What has been said so far, sent to one newcomer as they connect.
+     *
+     * <p>Joining twenty minutes in and seeing an empty panel would suggest nobody had
+     * spoken. Bounded, because this is the backlog of a conversation rather than a
+     * transcript of one.
+     */
+    public record ChatHistoryFrame(String type, List<ChatMessageDto> messages) {}
+
+    /**
      * Something the client sent was refused.
      *
      * <p>Sent rather than closing the socket, even for a member who tried to drive the
@@ -76,7 +108,8 @@ public final class PartySocketDtos {
      * @param positionSeconds required for every type except a bare {@code report} from
      *                        a member that is only updating {@code buffering}
      */
-    public record InboundFrame(String type, Double positionSeconds, Boolean buffering) {
+    public record InboundFrame(String type, Double positionSeconds, Boolean buffering,
+                               String text) {
 
         public static final String REPORT = "report";
 

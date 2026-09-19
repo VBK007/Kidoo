@@ -249,6 +249,97 @@ class WatchPartySocketIntegrationTest {
         assertTrue(ended.contains("host ended it"), ended);
     }
 
+    // --- chat ---
+
+    @Test
+    void aMessageReachesEveryoneInThePartyIncludingTheSender() throws Exception {
+        Socket host = connect(hostToken);
+        Socket member = connect(friendToken);
+        host.await("tick");
+        member.await("tick");
+
+        member.send("{\"type\":\"chat\",\"text\":\"this bit is the best\"}");
+
+        String toHost = host.await("chat");
+        assertTrue(toHost.contains("this bit is the best"), toHost);
+        // The name, not an id: it is what a reader needs and all they are shown.
+        assertTrue(toHost.contains("Ravi"), toHost);
+
+        // Echoed to the sender too, so a client can render one list straight off the
+        // wire instead of stitching its own sent messages into the received ones.
+        assertTrue(member.await("chat").contains("this bit is the best"));
+    }
+
+    @Test
+    void aMemberMaySpeakEvenThoughOnlyTheHostMayDrivePlayback() throws Exception {
+        Socket member = connect(friendToken);
+        member.await("tick");
+
+        member.send("{\"type\":\"chat\",\"text\":\"pause it, I need tea\"}");
+
+        assertTrue(member.await("chat").contains("pause it, I need tea"));
+    }
+
+    @Test
+    void someoneJoiningLateIsSentWhatHasAlreadyBeenSaid() throws Exception {
+        Socket host = connect(hostToken);
+        host.await("tick");
+        host.send("{\"type\":\"chat\",\"text\":\"starting now\"}");
+        host.await("chat");
+
+        Socket latecomer = connect(friendToken);
+
+        String history = latecomer.await("chat-history");
+        assertTrue(history.contains("starting now"), history);
+    }
+
+    @Test
+    void blankMessagesAreNotBroadcast() throws Exception {
+        Socket host = connect(hostToken);
+        Socket member = connect(friendToken);
+        host.await("tick");
+        member.await("tick");
+
+        member.send("{\"type\":\"chat\",\"text\":\"   \"}");
+        // Far enough apart not to trip the flood floor, so the only reason the blank
+        // could fail to arrive is that it was dropped for being blank.
+        Thread.sleep(400);
+        member.send("{\"type\":\"chat\",\"text\":\"actually here\"}");
+
+        assertTrue(host.await("chat").contains("actually here"));
+    }
+
+    /**
+     * The whole reason chat is held in memory rather than in a table.
+     *
+     * <p>A new party starts silent. Nothing deletes the old messages, because nothing
+     * ever stored them — they went when the party they belonged to did.
+     */
+    @Test
+    void chatDoesNotSurviveTheParty() throws Exception {
+        Socket host = connect(hostToken);
+        host.await("tick");
+        host.send("{\"type\":\"chat\",\"text\":\"secret\"}");
+        host.await("chat");
+
+        assertEquals(204, send("DELETE", "/api/parties/" + code,
+                null, hostToken, hostProfileId).statusCode());
+        host.await("ended");
+
+        MediaItem film = insertFilm("Socket Film Again");
+        HttpResponse<String> created = send("POST", "/api/parties",
+                "{\"mediaItemId\":\"%s\"}".formatted(film.getId()), hostToken, hostProfileId);
+        assertEquals(201, created.statusCode(), created.body());
+        code = extract(created.body(), "code");
+
+        Socket second = connect(hostToken);
+        second.await("tick");
+
+        // No history frame at all. Waiting out the timeout is the assertion: a backlog
+        // is pushed on connect, immediately, ahead of everything else.
+        assertThrows(AssertionError.class, () -> second.await("chat-history"));
+    }
+
     // --- plumbing ---
 
     /** One open client socket and the frames it has been sent. */
