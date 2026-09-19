@@ -708,9 +708,15 @@ public class LibraryIngestService {
             item.setAlbum(SiteWatermark.clean(folder.getFileName().toString()));
             Path artistFolder = folder.getParent();
             if (artistFolder != null && artistFolder.getFileName() != null) {
-                item.setArtist(SiteWatermark.clean(artistFolder.getFileName().toString()));
-                replaceStrings(item.getArtistNames(), ArtistNames.split(item.getArtist()),
-                        item::setArtistNames);
+                // The folder above a track is usually the artist and sometimes just
+                // where the disk was plugged in. "usb" is not a singer, and taking it
+                // as one gave two hundred tracks a shelf headed by a drive.
+                String fromFolder = SiteWatermark.clean(artistFolder.getFileName().toString());
+                if (!ArtistNames.isPlaceholder(fromFolder)) {
+                    item.setArtist(fromFolder);
+                    replaceStrings(item.getArtistNames(), ArtistNames.split(fromFolder),
+                            item::setArtistNames);
+                }
             }
         }
         // Additive only: a sidecar image found now is worth taking, but finding none
@@ -735,7 +741,9 @@ public class LibraryIngestService {
             item.setSortTitle(FilenameParser.sortTitle(title));
         }
         String artist = SiteWatermark.clean(tags.artist());
-        if (artist != null) {
+        // A tag reading "Unknown Artist" is the tagger saying it does not know, and
+        // believing it would be worse than the folder guess it is overriding.
+        if (artist != null && !ArtistNames.isPlaceholder(artist)) {
             item.setArtist(artist);
             replaceStrings(item.getArtistNames(), ArtistNames.split(artist), item::setArtistNames);
         }
