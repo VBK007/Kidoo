@@ -6,6 +6,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -312,41 +313,53 @@ public class LibraryIngestService {
             "hindi", "hi",
             "tamil", "ta");
 
+    /** Accepted back from {@link TmdbMovieService#originalLanguageFor} — see its guess. */
+    private static final Set<String> RECOGNISED_MUSIC_LANGUAGES = Set.of("ta", "te", "hi", "kn", "ml");
+
     /**
      * Best-effort language guess for every music/video-song row with none yet, so the
      * music home screen can keep a household's preferred language from swamping every
      * shelf with whatever else happens to share a mood or decade.
      *
-     * <p>There is no reliable signal here the way a movie's dubbed-language confirmation
-     * gave the film library one: ffprobe's audio-track language is unreliable on a plain
+     * <p>There is no signal here as reliable as a movie's dubbed-language confirmation
+     * gave the film library: ffprobe's audio-track language is unreliable on a plain
      * audio file the same way it is on video, and most of this library's ~400 albums are
-     * named after the film they're from with no language spelled out at all. So this
-     * looks for an explicit language word in the album, artist, title or file path
-     * first, and falls back to Tamil for anything that names none — this household's
-     * confirmed default for everything the film library couldn't otherwise place either,
-     * see the movie category tagging convention. Wrong guesses are expected and meant to
-     * be correctable later (by hand, or by a future real lookup), not blocking here.
+     * named after the film they're from with no language spelled out in the folder name
+     * itself. So this tries, in order: an explicit language word in the album, artist,
+     * title or file path; failing that, TMDB's {@code original_language} for a movie
+     * search on the album name, since most albums here are exactly one film's
+     * soundtrack and TMDB knows what language that film was made in even when the
+     * folder name doesn't say; and only then falls back to Tamil, this household's
+     * confirmed default for everything the film library couldn't otherwise place either
+     * (see the movie category tagging convention). Wrong guesses are still expected and
+     * meant to be correctable later, not blocking here.
+     *
+     * <p>Resolved once per album, not once per track — a soundtrack's 8 tracks share one
+     * TMDB lookup instead of repeating it eight times, which matters both for how long a
+     * scan takes and for how much of the shared {@link com.example.kido.media.tmdb.TmdbRateLimiter}'s
+     * budget this spends against every other TMDB caller.
      *
      * @return how many rows got a language they did not have before
      */
     @Transactional
     public int backfillMusicLanguage() {
+        List<MediaItem> candidates = items.findByMissingFalse().stream()
+                .filter(item -> (item.getType() == MediaType.MUSIC || item.getType() == MediaType.VIDEO_SONG)
+                        && item.getPrimaryLanguage() == null)
+                .toList();
+        Map<String, String> languageByAlbum = new HashMap<>();
         List<MediaItem> updated = new ArrayList<>();
-        for (MediaItem item : items.findByMissingFalse()) {
-            if (item.getType() != MediaType.MUSIC && item.getType() != MediaType.VIDEO_SONG) {
-                continue;
-            }
-            if (item.getPrimaryLanguage() != null) {
-                continue;
-            }
-            item.setPrimaryLanguage(guessMusicLanguage(item));
+        for (MediaItem item : candidates) {
+            String albumKey = nullToEmpty(item.getAlbum()).toLowerCase(Locale.ROOT);
+            String language = languageByAlbum.computeIfAbsent(albumKey, key -> guessMusicLanguage(item));
+            item.setPrimaryLanguage(language);
             updated.add(item);
         }
         items.saveAll(updated);
         return updated.size();
     }
 
-    private static String guessMusicLanguage(MediaItem item) {
+    private String guessMusicLanguage(MediaItem item) {
         String haystack = String.join(" ",
                         nullToEmpty(item.getAlbum()), nullToEmpty(item.getArtist()),
                         nullToEmpty(item.getTitle()), nullToEmpty(item.getFilePath()))
@@ -354,6 +367,12 @@ public class LibraryIngestService {
         for (Map.Entry<String, String> keyword : MUSIC_LANGUAGE_KEYWORDS.entrySet()) {
             if (haystack.contains(keyword.getKey())) {
                 return keyword.getValue();
+            }
+        }
+        if (item.getAlbum() != null && !item.getAlbum().isBlank()) {
+            String tmdbLanguage = tmdbMovies.originalLanguageFor(item.getAlbum(), item.getYear());
+            if (RECOGNISED_MUSIC_LANGUAGES.contains(tmdbLanguage)) {
+                return tmdbLanguage;
             }
         }
         return "ta";

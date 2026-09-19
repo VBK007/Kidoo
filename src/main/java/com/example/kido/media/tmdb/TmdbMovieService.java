@@ -109,6 +109,39 @@ public class TmdbMovieService {
     }
 
     /**
+     * TMDB's {@code original_language} for a movie search's top result, or null if
+     * search finds nothing (or the lookup is disabled/unconfigured) — used by {@code
+     * LibraryIngestService#guessMusicLanguage} to key a soundtrack album's language off
+     * the film it belongs to, since a folder name only rarely spells the language out
+     * directly the way an explicit "telugu"/"tamil" keyword would.
+     *
+     * <p>Deliberately not verified the way {@link #enrich} verifies a movie match: a
+     * soundtrack album has no probed runtime to check a candidate against, so this
+     * trusts TMDB's own relevance ranking on a bare title (optionally narrowed by year)
+     * the same way a year-narrowed movie search in {@link #pickVerifiedMatch} already
+     * does. The caller is expected to only accept a small, known set of language codes
+     * back — an unrelated same-titled film in some third language is more likely to be
+     * wrong than useful, and the caller's own fallback is the safer default in that case.
+     */
+    public String originalLanguageFor(String title, Integer year) {
+        if (!props.getCastPhotos().isEnabled() || props.getCastPhotos().getApiKey().isBlank()
+                || title == null || title.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode results = search(Catalog.MOVIE, title, year);
+            if (results == null || results.isEmpty()) {
+                return null;
+            }
+            String language = results.get(0).path("original_language").asString(null);
+            return language == null || language.isBlank() ? null : language;
+        } catch (Exception ex) {
+            log.debug("Language lookup failed for '{}': {}", title, ex.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Looks up {@code item}'s title on TMDB and fills in whichever of poster, plot,
      * rating, cast and {@code tmdbId} it does not already have, from the best verified
      * match. Every field is additive: one already set is left exactly as it is, so this
