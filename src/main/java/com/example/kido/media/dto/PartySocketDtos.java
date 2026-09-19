@@ -76,8 +76,15 @@ public final class PartySocketDtos {
      */
     public record ChatMessageDto(String id, String from, String text, long atEpochMs) {}
 
-    /** A single message, fanned out to everyone currently connected. */
-    public record ChatFrame(String type, ChatMessageDto message) {}
+    /**
+     * A single message, fanned out to everyone currently connected.
+     *
+     * <p>The field is {@code chatMessage} rather than the obvious {@code message}
+     * because {@link ErrorFrame} already puts a plain string under that name. A client
+     * that reads every frame into one shape — which is the point of every frame
+     * carrying a type — would need that field to be a string and an object at once.
+     */
+    public record ChatFrame(String type, ChatMessageDto chatMessage) {}
 
     /**
      * What has been said so far, sent to one newcomer as they connect.
