@@ -101,6 +101,25 @@ public interface WatchEventRepository extends JpaRepository<WatchEvent, String> 
             """)
     List<Object[]> secondsByItemForProfile(@Param("profileId") String profileId);
 
+    /**
+     * How many watch-event increments an item picked up in a window, for a "this week"
+     * view count. Not the same claim as {@code MediaItem.directPlayCount}, which counts
+     * playback starts and never resets — this counts progress pings recorded in the
+     * window, so a title someone watched for an hour this week outranks one glanced at
+     * once, the same difference {@link #topItemsByWatchTime} draws over all time.
+     *
+     * @return {@code [mediaItemId, pingCount]} rows, unordered — the caller ranks
+     */
+    @Query("""
+            select e.mediaItemId, count(e) from WatchEvent e
+            where e.mediaItemId in (
+                select m.id from MediaItem m
+                where m.missing = false and m.hidden = false and m.type in :types)
+              and e.occurredAt >= :since
+            group by e.mediaItemId
+            """)
+    List<Object[]> viewCountsByItemSince(@Param("types") List<MediaType> types, @Param("since") Instant since);
+
     /** Housekeeping: events older than the retention window are not worth keeping. */
     void deleteByOccurredAtLessThan(Instant cutoff);
 

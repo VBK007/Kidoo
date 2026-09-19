@@ -1,5 +1,6 @@
 package com.example.kido.media.home;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -26,6 +27,8 @@ import com.example.kido.media.dto.HomeDtos.HomeItemDto;
 import com.example.kido.media.dto.HomeDtos.HomeRailDto;
 import com.example.kido.media.dto.HomeDtos.RankingWeightsDto;
 import com.example.kido.media.dto.RecommendationDtos.RecommendationsDto;
+import com.example.kido.media.engagement.MediaItemCommentRepository;
+import com.example.kido.media.engagement.MediaItemLikeRepository;
 import com.example.kido.media.home.PopularityRanker.Scored;
 import com.example.kido.media.playback.PlaybackService;
 import com.example.kido.media.recommend.RecommendationService;
@@ -70,10 +73,15 @@ public class HomeService {
     private static final List<MediaType> DEFAULT_TYPES =
             List.of(MediaType.FILM, MediaType.ANIME);
 
+    /** "This week" for the trending rails — see {@link WeeklyPopularityRanker}. */
+    private static final Duration TRENDING_WINDOW = Duration.ofDays(7);
+
     private final MediaItemRepository items;
     private final CatalogService catalog;
     private final PlaybackService playback;
     private final WatchEventRepository watchEvents;
+    private final MediaItemLikeRepository likes;
+    private final MediaItemCommentRepository comments;
     private final CollectionService collections;
     private final RecommendationService recommendations;
 
@@ -81,12 +89,16 @@ public class HomeService {
                        CatalogService catalog,
                        PlaybackService playback,
                        WatchEventRepository watchEvents,
+                       MediaItemLikeRepository likes,
+                       MediaItemCommentRepository comments,
                        CollectionService collections,
                        RecommendationService recommendations) {
         this.items = items;
         this.catalog = catalog;
         this.playback = playback;
         this.watchEvents = watchEvents;
+        this.likes = likes;
+        this.comments = comments;
         this.collections = collections;
         this.recommendations = recommendations;
     }
@@ -109,12 +121,21 @@ public class HomeService {
         List<Scored> ranked = rank(requested, railSize);
         List<MediaItem> popular = ranked.stream().map(Scored::item).toList();
 
+        // A separate blend, over a separate window: see WeeklyPopularityRanker for why
+        // this cannot reuse the lifetime scores above. Films only, not the FILM+ANIME
+        // DEFAULT_TYPES the rest of this screen ranks over — "top this week" reads as a
+        // claim about movies specifically, not the mixed video pool.
+        List<WeeklyPopularityRanker.Scored> topMoviesWeek =
+                trendingThisWeek(List.of(MediaType.FILM), railSize);
+        List<MediaItem> topMoviesWeekItems =
+                topMoviesWeek.stream().map(WeeklyPopularityRanker.Scored::item).toList();
+
         // Every rail is drawn from the same set of entities, so watch progress and this
         // profile's likes are resolved once for the whole screen instead of once per
         // rail — five rails of twenty would otherwise be ten queries just to decide
         // which hearts are filled.
         Map<String, ItemSummaryDto> summaries =
-                summarise(profile, popular, topRated, mostPlayed, mostLiked, topViewing);
+                summarise(profile, popular, topRated, mostPlayed, mostLiked, topViewing, topMoviesWeekItems);
         Map<String, Scored> scores = scoresById(ranked);
 
         List<HomeRailDto> rails = new ArrayList<>();
@@ -140,6 +161,36 @@ public class HomeService {
                         watchSeconds.getOrDefault(item.getId(), 0.0)));
         addRail(rails, "most-liked", "Most liked", "likes",
                 mostLiked, summaries, id -> null, PopularityRanker::likeLabel);
+
+        // Not built on addRail: its tiles carry a WeeklyPopularityRanker.Scored reason,
+        // not a PopularityRanker one, so it is assembled directly instead of forcing a
+        // second signature onto that helper for one rail.
+        List<HomeItemDto> topMoviesWeekTiles = new ArrayList<>();
+        for (WeeklyPopularityRanker.Scored scored : topMoviesWeek) {
+            ItemSummaryDto summary = summaries.get(scored.item().getId());
+            if (summary != null) {
+                topMoviesWeekTiles.add(new HomeItemDto(summary, scored.score(), scored.reason()));
+            }
+        }
+        if (!topMoviesWeekTiles.isEmpty()) {
+            rails.add(new HomeRailDto("top-movies-week", "Top movies this week", "trending",
+                    topMoviesWeekTiles));
+        }
+
+        // Anime gets its own row, always ANIME regardless of what types the rest of the
+        // screen was asked to rank over — a home screen with two video types blended
+        // still owes anime its own door in, the way the music tab does for its own
+        // library. Read straight off the catalog's already-indexed newest-first query
+        // rather than through the blended-ranking path above: that path scores a
+        // hundred-candidate pool in memory per signal, which is unnecessary cost for a
+        // row that is not claiming to rank anything.
+        List<ItemSummaryDto> animeRecent = catalog.recentlyAdded(profile, List.of(MediaType.ANIME), railSize);
+        if (!animeRecent.isEmpty()) {
+            rails.add(new HomeRailDto("anime", "Anime", "added",
+                    animeRecent.stream()
+                            .map(summary -> new HomeItemDto(summary, null, "Added recently"))
+                            .toList()));
+        }
 
         // Recently added comes straight from the catalog: it is the one rail that is not
         // a judgement about a title, and it is what keeps a fresh library from looking
@@ -268,6 +319,12 @@ public class HomeService {
 
         return PopularityRanker.rank(
                 candidates.values(), items.averageRating(requested), limit);
+    }
+
+    /** The {@link WeeklyPopularityRanker} blend over the last {@link #TRENDING_WINDOW}. */
+    private List<WeeklyPopularityRanker.Scored> trendingThisWeek(List<MediaType> types, int limit) {
+        Instant since = Instant.now().minus(TRENDING_WINDOW);
+        return TrendingWindow.rank(items, watchEvents, likes, comments, types, since, limit);
     }
 
     /**

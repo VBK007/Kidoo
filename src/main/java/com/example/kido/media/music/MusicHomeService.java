@@ -1,5 +1,6 @@
 package com.example.kido.media.music;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.ArrayList;
@@ -18,19 +19,24 @@ import com.example.kido.media.catalog.CatalogService;
 import com.example.kido.media.catalog.MediaItem;
 import com.example.kido.media.catalog.MediaItemRepository;
 import com.example.kido.media.catalog.MediaType;
+import com.example.kido.media.dto.ArtistDtos.ArtistSummaryDto;
 import com.example.kido.media.dto.CatalogDtos.ItemSummaryDto;
 import com.example.kido.media.dto.HomeDtos.HomeItemDto;
 import com.example.kido.media.dto.HomeDtos.HomeRailDto;
 import com.example.kido.media.dto.MusicHomeDtos.MusicHomeDto;
 import com.example.kido.media.dto.PlaybackDtos.ContinueWatchingDto;
+import com.example.kido.media.engagement.MediaItemCommentRepository;
+import com.example.kido.media.engagement.MediaItemLikeRepository;
+import com.example.kido.media.home.TrendingWindow;
+import com.example.kido.media.home.WeeklyPopularityRanker;
 import com.example.kido.media.playback.PlaybackService;
+import com.example.kido.media.session.WatchEventRepository;
 import com.example.kido.profile.Profile;
 
 /**
- * Builds the music tab's home screen: browse shelves rather than a ranking.
- *
- * <p>See {@link com.example.kido.media.dto.MusicHomeDtos} for why this does not reuse
- * {@link com.example.kido.media.home.HomeService}'s popularity blend.
+ * Builds the music tab's home screen: mostly browse shelves rather than a ranking —
+ * see {@link com.example.kido.media.dto.MusicHomeDtos} for the one ranked exception
+ * this now carries.
  */
 @Service
 public class MusicHomeService {
@@ -39,6 +45,12 @@ public class MusicHomeService {
 
     /** Rails are a swipe, not a page. */
     private static final int MAX_RAIL_SIZE = 50;
+
+    /** "This week" for the trending rail — see {@link WeeklyPopularityRanker}. */
+    private static final Duration TRENDING_WINDOW = Duration.ofDays(7);
+
+    /** How many artists lead the "Top artist" row. */
+    private static final int MAX_TOP_ARTISTS = 10;
 
     /** A mood/activity/director shelf with fewer tracks than this is not worth a heading. */
     private static final int MIN_FACET_RAIL_SIZE = 4;
@@ -67,11 +79,25 @@ public class MusicHomeService {
     private final MediaItemRepository items;
     private final CatalogService catalog;
     private final PlaybackService playback;
+    private final WatchEventRepository watchEvents;
+    private final MediaItemLikeRepository likes;
+    private final MediaItemCommentRepository comments;
+    private final ArtistService artists;
 
-    public MusicHomeService(MediaItemRepository items, CatalogService catalog, PlaybackService playback) {
+    public MusicHomeService(MediaItemRepository items,
+                            CatalogService catalog,
+                            PlaybackService playback,
+                            WatchEventRepository watchEvents,
+                            MediaItemLikeRepository likes,
+                            MediaItemCommentRepository comments,
+                            ArtistService artists) {
         this.items = items;
         this.catalog = catalog;
         this.playback = playback;
+        this.watchEvents = watchEvents;
+        this.likes = likes;
+        this.comments = comments;
+        this.artists = artists;
     }
 
     @Transactional(readOnly = true)
@@ -86,6 +112,29 @@ public class MusicHomeService {
         // and the answer to the second was twenty tiles of one soundtrack.
         addRail(rails, "recently-added", "Recently added",
                 catalog.recentlyAdded(profile, MUSIC_TYPES, railSize));
+
+        // The one ranked exception on this screen — see MusicHomeDtos for why a
+        // recent-activity blend is a different, answerable question from the
+        // all-time "best track" ranking this home screen otherwise avoids.
+        Instant weekAgo = Instant.now().minus(TRENDING_WINDOW);
+        List<WeeklyPopularityRanker.Scored> topMusicWeek =
+                TrendingWindow.rank(items, watchEvents, likes, comments, MUSIC_TYPES, weekAgo, railSize);
+        if (!topMusicWeek.isEmpty()) {
+            List<MediaItem> weekItems =
+                    topMusicWeek.stream().map(WeeklyPopularityRanker.Scored::item).toList();
+            Map<String, ItemSummaryDto> weekSummaries = catalog.summarise(profile, weekItems).stream()
+                    .collect(java.util.stream.Collectors.toMap(ItemSummaryDto::id, s -> s));
+            List<HomeItemDto> weekTiles = new ArrayList<>();
+            for (WeeklyPopularityRanker.Scored scored : topMusicWeek) {
+                ItemSummaryDto summary = weekSummaries.get(scored.item().getId());
+                if (summary != null) {
+                    weekTiles.add(new HomeItemDto(summary, scored.score(), scored.reason()));
+                }
+            }
+            if (!weekTiles.isEmpty()) {
+                rails.add(new HomeRailDto("top-music-week", "Top music this week", "trending", weekTiles));
+            }
+        }
 
         for (Object[] row : items.countByMood(MUSIC_TYPES)) {
             String mood = (String) row[0];
@@ -173,7 +222,10 @@ public class MusicHomeService {
             eraRails++;
         }
 
-        return new MusicHomeDto(continueListening(profile, railSize), rails, Instant.now().toString());
+        List<ArtistSummaryDto> topArtists = artists.list(0, MAX_TOP_ARTISTS).artists();
+
+        return new MusicHomeDto(
+                continueListening(profile, railSize), rails, topArtists, Instant.now().toString());
     }
 
     /**

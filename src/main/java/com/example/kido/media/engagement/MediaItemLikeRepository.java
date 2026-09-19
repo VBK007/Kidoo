@@ -1,11 +1,14 @@
 package com.example.kido.media.engagement;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+
+import com.example.kido.media.catalog.MediaType;
 
 public interface MediaItemLikeRepository extends JpaRepository<MediaItemLike, String> {
 
@@ -41,4 +44,23 @@ public interface MediaItemLikeRepository extends JpaRepository<MediaItemLike, St
             """)
     List<String> findLikedItemIds(@Param("profileId") String profileId,
                                   @Param("itemIds") Collection<String> itemIds);
+
+    /**
+     * Fresh likes per item, for a "this week" ranking — {@link #countByMediaItemId} is
+     * the lifetime total {@code MediaItem.likeCount} mirrors, which says nothing about
+     * whether that count was earned last year or this afternoon.
+     *
+     * <p>The type/visibility filter is a subquery for the same reason {@code
+     * WatchEventRepository#topItemsByWatchTime} uses one: a like row holds a bare item
+     * id and no association to filter through.
+     */
+    @Query("""
+            select l.mediaItemId, count(l) from MediaItemLike l
+            where l.mediaItemId in (
+                select m.id from MediaItem m
+                where m.missing = false and m.hidden = false and m.type in :types)
+              and l.createdAt >= :since
+            group by l.mediaItemId
+            """)
+    List<Object[]> countsByItemSince(@Param("types") List<MediaType> types, @Param("since") Instant since);
 }
