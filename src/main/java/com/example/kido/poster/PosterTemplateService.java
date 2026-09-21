@@ -4,13 +4,19 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.example.kido.common.ApiException;
 import com.example.kido.poster.dto.PosterDtos.TemplateDto;
+import com.example.kido.poster.dto.PosterDtos.TemplatePageDto;
 import com.example.kido.poster.dto.PosterDtos.TemplateRequest;
+import com.example.kido.poster.dto.PosterDtos.TemplateSummaryDto;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -20,10 +26,18 @@ import lombok.extern.slf4j.Slf4j;
  * <p>Reads default to published rows only. {@code includeDrafts} exists for the person
  * authoring a set — it is the admin's own view, and the controller only offers it on
  * the endpoints that already require the admin key.
+ *
+ * <p>Listings are paged, because the seeded catalog alone is four figures. The page
+ * size is capped rather than trusted: a thousand full layouts in one response is tens
+ * of megabytes, which is not a request this server should honour however politely it
+ * is asked.
  */
 @Slf4j
 @Service
 public class PosterTemplateService {
+
+    /** Matches the catalog's cap, which the client already knows about. */
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final PosterTemplateRepository templates;
     private final PosterComponentService components;
@@ -34,11 +48,12 @@ public class PosterTemplateService {
     }
 
     @Transactional(readOnly = true)
-    public List<TemplateDto> list(boolean includeDrafts) {
-        List<PosterTemplate> rows = includeDrafts
-                ? templates.findAllByOrderByCategoryAscSortOrderAscNameAsc()
-                : templates.findByPublishedTrueOrderByCategoryAscSortOrderAscNameAsc();
-        return rows.stream().map(TemplateDto::from).toList();
+    public TemplatePageDto<?> list(boolean includeDrafts, int page, int size, boolean summary) {
+        Pageable pageable = pageable(page, size);
+        Page<PosterTemplate> rows = includeDrafts
+                ? templates.findAll(pageable)
+                : templates.findByPublishedTrue(pageable);
+        return envelope(rows, summary);
     }
 
     /**
@@ -46,12 +61,14 @@ public class PosterTemplateService {
      *                    {@code baby-shower}, {@code BABY_SHOWER}
      */
     @Transactional(readOnly = true)
-    public List<TemplateDto> byCategory(String rawCategory, boolean includeDrafts) {
+    public TemplatePageDto<?> byCategory(String rawCategory, boolean includeDrafts,
+                                         int page, int size, boolean summary) {
         PosterCategory category = PosterCategory.parse(rawCategory);
-        List<PosterTemplate> rows = includeDrafts
-                ? templates.findByCategoryOrderBySortOrderAscNameAsc(category)
-                : templates.findByCategoryAndPublishedTrueOrderBySortOrderAscNameAsc(category);
-        return rows.stream().map(TemplateDto::from).toList();
+        Pageable pageable = pageable(page, size);
+        Page<PosterTemplate> rows = includeDrafts
+                ? templates.findByCategory(category, pageable)
+                : templates.findByCategoryAndPublishedTrue(category, pageable);
+        return envelope(rows, summary);
     }
 
     @Transactional(readOnly = true)
@@ -128,6 +145,28 @@ public class PosterTemplateService {
                 .findFirst()
                 .orElse("#000000");
         return new ArrayList<>(List.of(new ColorTheme("Default", primary, layout.backgroundColor())));
+    }
+
+    /**
+     * Same ordering for every listing: the ceremony, then the order a designer gave
+     * within it, then the name, so a shelf never reshuffles between two requests for
+     * two pages of it.
+     */
+    private Pageable pageable(int page, int size) {
+        return PageRequest.of(
+                Math.max(0, page),
+                Math.min(Math.max(1, size), MAX_PAGE_SIZE),
+                Sort.by("category").ascending()
+                        .and(Sort.by("sortOrder").ascending())
+                        .and(Sort.by("name").ascending()));
+    }
+
+    private TemplatePageDto<?> envelope(Page<PosterTemplate> rows, boolean summary) {
+        List<?> items = summary
+                ? rows.getContent().stream().map(TemplateSummaryDto::from).toList()
+                : rows.getContent().stream().map(TemplateDto::from).toList();
+        return new TemplatePageDto<>(items, rows.getNumber(), rows.getSize(),
+                rows.getTotalElements(), rows.getTotalPages());
     }
 
     private ApiException notFound(String id) {

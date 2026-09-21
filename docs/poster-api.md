@@ -19,14 +19,29 @@ wire exactly.
 
 Errors use the app-wide envelope: `{timestamp, status, error, message}`.
 
+## Page envelope
+
+The two listing endpoints are paged, in the same envelope the media catalog uses.
+`size` defaults to **40** and is **capped at 100** — a seeded catalog is a
+thousand templates, and a thousand full layouts is tens of megabytes:
+
+```json
+{ "items": [], "page": 0, "size": 40, "totalItems": 1000, "totalPages": 25 }
+```
+
+`?view=summary` drops `layout` from each item, which is the bulk of it. Measured
+on the seeded catalog, a page of 40 is **73 KB** full and **21 KB** as
+summaries. Use summaries for the picker grid and fetch the whole template by id
+when somebody opens one.
+
 ---
 
 ## Endpoints
 
 | Method | Path | Who | What |
 | --- | --- | --- | --- |
-| `GET` | `/api/poster/templates` | any profile | Every published template, ordered by category, then `sortOrder`, then name. `?includeDrafts=true` (owner only) also returns unpublished rows. |
-| `GET` | `/api/poster/templates/{category}` | any profile | One ceremony's templates. |
+| `GET` | `/api/poster/templates` | any profile | A page of published templates, ordered by category, then `sortOrder`, then name. `?page=`, `?size=`, `?view=summary`. `?includeDrafts=true` (owner only) also returns unpublished rows. |
+| `GET` | `/api/poster/templates/{category}` | any profile | One ceremony's templates, same parameters. |
 | `GET` | `/api/poster/templates/by-id/{id}` | any profile | A single template. |
 | `POST` | `/api/poster/templates` | owner | Creates one. **201**. |
 | `PUT` | `/api/poster/templates/{id}` | owner | **Replaces** it whole — see below. |
@@ -113,62 +128,85 @@ placements behind would save a design nobody drew.
 
 ## Example
 
-`GET /api/poster/templates/marriage`, abridged — one seeded template:
+`GET /api/poster/templates/marriage?page=6&size=1`, abridged — one template out
+of the 143 the seeded catalog holds for this ceremony:
 
 ```json
-[
-  {
-    "id": "8c887524-9397-46a8-868b-0b001cf98c6b",
-    "category": "MARRIAGE",
-    "categorySlug": "marriage",
-    "name": "Maroon & Gold Mandala",
-    "thumbnail": "https://assets.kiduu.app/poster/thumbnails/marriage-maroon-gold.jpg",
-    "layout": {
-      "backgroundColor": "#FDF6EC",
-      "backgroundImageUrl": null,
-      "canvasWidth": 1080,
-      "canvasHeight": 1350,
-      "fontComponentId": "fc06a033-9856-40ef-b071-9984f90c63a3",
-      "textBoxes": [
-        {
-          "key": "couple",
-          "label": "Couple's names",
-          "text": "Aarav  &  Diya",
-          "x": 0.08, "y": 0.17, "width": 0.84, "height": 0.12,
-          "fontSize": 0.075,
-          "fontComponentId": null,
-          "color": "#7B1E3A",
-          "align": "center"
-        }
+{
+  "items": [
+    {
+      "id": "d51ad995-e149-4e36-8ee9-2064f664110e",
+      "category": "MARRIAGE",
+      "categorySlug": "marriage",
+      "name": "Pastel Pink Classic Scroll Corners",
+      "thumbnail": "https://assets.kiduu.app/poster/thumbnails/marriage-classic-scroll-corners-pastel-pink.jpg",
+      "layout": {
+        "backgroundColor": "#FCE4EC",
+        "backgroundImageUrl": null,
+        "canvasWidth": 1080,
+        "canvasHeight": 1350,
+        "fontComponentId": "15986159-d951-4a8d-ae8c-8abf3679c928",
+        "textBoxes": [
+          {
+            "key": "heading",
+            "label": "Heading",
+            "text": "Wedding Invitation",
+            "x": 0.1, "y": 0.07, "width": 0.8, "height": 0.07,
+            "fontSize": 0.035,
+            "fontComponentId": null,
+            "color": "#AD1457",
+            "align": "center"
+          },
+          {
+            "key": "names",
+            "label": "Names",
+            "text": "Aarav  &  Diya",
+            "x": 0.08, "y": 0.16, "width": 0.84, "height": 0.12,
+            "fontSize": 0.072,
+            "fontComponentId": null,
+            "color": "#AD1457",
+            "align": "center"
+          }
+        ],
+        "imageSlots": [
+          {
+            "key": "photo",
+            "label": "Photograph",
+            "x": 0.28, "y": 0.31, "width": 0.44, "height": 0.27,
+            "shape": "circle",
+            "frameComponentId": "2d5e1ae3-6616-4583-902b-233a4dd9ce53"
+          }
+        ],
+        "stickers": [
+          {
+            "key": "corner-top-left",
+            "componentId": "35732130-0e94-4b4a-9b75-770bce09e2b8",
+            "x": 0.02, "y": 0.02, "width": 0.22, "height": 0.18,
+            "rotation": 0
+          },
+          {
+            "key": "corner-bottom-right",
+            "componentId": "35732130-0e94-4b4a-9b75-770bce09e2b8",
+            "x": 0.76, "y": 0.8, "width": 0.22, "height": 0.18,
+            "rotation": 180
+          }
+        ]
+      },
+      "colorThemes": [
+        { "name": "Pastel Pink",   "primary": "#AD1457", "secondary": "#F8BBD0" },
+        { "name": "Royal Gold",    "primary": "#8D6E00", "secondary": "#FFECB3" },
+        { "name": "Maroon & Gold", "primary": "#7B1E3A", "secondary": "#D4AF37" }
       ],
-      "imageSlots": [
-        {
-          "key": "couple-photo",
-          "label": "Couple's photograph",
-          "x": 0.28, "y": 0.31, "width": 0.44, "height": 0.27,
-          "shape": "circle",
-          "frameComponentId": "36bf64c1-9c7d-40f7-92d5-20b4ef5111d1"
-        }
-      ],
-      "stickers": [
-        {
-          "key": "corner-top-left",
-          "componentId": "7092448b-f718-4d54-9ddd-478ea041e8b7",
-          "x": 0.02, "y": 0.02, "width": 0.22, "height": 0.18,
-          "rotation": 0
-        }
-      ]
-    },
-    "colorThemes": [
-      { "name": "Maroon & Gold", "primary": "#7B1E3A", "secondary": "#D4AF37" },
-      { "name": "Ivory & Rose",  "primary": "#B5838D", "secondary": "#F4E3C1" },
-      { "name": "Emerald & Gold", "primary": "#1E5945", "secondary": "#D4AF37" }
-    ],
-    "published": true,
-    "sortOrder": 0,
-    "updatedAt": "2026-09-21T08:25:26.165394Z"
-  }
-]
+      "published": true,
+      "sortOrder": 7,
+      "updatedAt": "2026-09-21T14:22:24.735742Z"
+    }
+  ],
+  "page": 6,
+  "size": 1,
+  "totalItems": 143,
+  "totalPages": 143
+}
 ```
 
 The layout carries component **ids**, not the components themselves: the same
@@ -179,15 +217,18 @@ would send the same bytes a dozen times in one response. Fetch
 ```json
 [
   {
-    "id": "36bf64c1-9c7d-40f7-92d5-20b4ef5111d1",
+    "id": "61d26a88-129f-4bb9-9a47-0e3518199ec6",
     "type": "FRAME",
-    "name": "Gold Beaded Ring",
+    "name": "Circle Maroon",
     "url": null,
-    "properties": { "borderColor": "#D4AF37", "borderWidth": 6, "style": "beaded" },
-    "updatedAt": "2026-09-21T08:25:26.156395Z"
+    "properties": { "shape": "circle", "borderColor": "#880E4F", "borderWidth": 4 },
+    "updatedAt": "2026-09-21T14:22:24.716118Z"
   }
 ]
 ```
+
+There are 20 of them behind a thousand templates — five fonts, ten stickers and
+five frames — which is the whole point of them being rows.
 
 ### Creating one
 
@@ -230,13 +271,35 @@ X-Admin-Key: <key>
 H2 twin. Rows per text box would buy joins and nothing else, and every new kind
 of element a designer wanted would be a migration.
 
-One sample template per ceremony (Marriage, Birthday, Baby Shower) plus the
-components they use are written on the first start of an **empty** catalog, so
-the module answers with something before anyone has authored anything. It never
-re-seeds: delete a sample and it stays deleted.
+A catalog of **1000 templates** plus the 20 components they use is written on
+the first start of an **empty** database, so the module answers with something
+before anyone has authored anything. It never re-seeds: delete a template and it
+stays deleted. Seeding 1000 rows takes about 1.5 seconds and runs after the
+server is already accepting requests.
+
+They are generated rather than hand-written — **7 ceremonies × 18 designs × 10
+palettes**, 1260 distinct combinations, taken in a fixed order:
+
+| Axis | Values |
+| --- | --- |
+| Ceremony | the seven categories; each brings its own wording, typeface, motif and frame |
+| Skeleton | Classic Scroll, Photo First, Centre Medallion, Side by Side, Minimal Card, Festive Border |
+| Arrangement | Clean (no stickers), Corners (a motif in two corners), Band (a garland along the foot) |
+| Palette | Pastel Pink, Royal Gold, Maroon & Gold, Bright Yellow, Party Blue, Fresh Mint, Lavender, Terracotta, Emerald, Midnight |
+
+A name is the palette and the design — `Pastel Pink Classic Scroll Corners` —
+and `sortOrder` is the template's position within its ceremony. Nothing is
+random: the same `seed-count` always produces the same catalog in the same
+order, and raising it on an existing install would add designs rather than
+rename the ones already there. The ceremony cycles fastest, so the first seven
+templates are one per ceremony and any prefix of the catalog is evenly spread.
+
+Past 1260 the combinations wrap and designs repeat under new names; the seeder
+logs a warning when `seed-count` is set that high.
 
 ```properties
 app.poster.seed-samples=true
+app.poster.seed-count=1000
 # This server does not host the artwork. Point this at your own bucket.
 app.poster.asset-base-url=https://assets.kiduu.app/poster
 ```

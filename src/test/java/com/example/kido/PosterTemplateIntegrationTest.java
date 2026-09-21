@@ -63,6 +63,21 @@ class PosterTemplateIntegrationTest {
         return m.find() ? m.group(1) : null;
     }
 
+    private int num(String body, String field) {
+        Matcher m = Pattern.compile("\"" + field + "\"\\s*:\\s*(-?\\d+)").matcher(body);
+        return m.find() ? Integer.parseInt(m.group(1)) : Integer.MIN_VALUE;
+    }
+
+    /** How many objects in the page's items array, counted by their ids. */
+    private int itemCount(String body) {
+        Matcher m = Pattern.compile("\"id\"\\s*:\\s*\"[^\"]+\"").matcher(body);
+        int count = 0;
+        while (m.find()) {
+            count++;
+        }
+        return count;
+    }
+
     private String register(String prefix, String role) throws Exception {
         String unique = UUID.randomUUID().toString().substring(0, 8);
         HttpResponse<String> registered = send("POST", "/api/auth/register", """
@@ -102,12 +117,15 @@ class PosterTemplateIntegrationTest {
         assertTrue(all.body().contains("MARRIAGE"), all.body());
         assertTrue(all.body().contains("BIRTHDAY"));
         assertTrue(all.body().contains("BABY_SHOWER"));
+        // app.poster.seed-count in the test properties; six per ceremony.
+        assertEquals(42, num(all.body(), "totalItems"));
 
         // The URL form the app actually sends, and the layout comes back whole.
         HttpResponse<String> marriage = send("GET", "/api/poster/templates/marriage", null, childToken, null);
         assertEquals(200, marriage.statusCode(), marriage.body());
-        assertTrue(marriage.body().contains("Maroon & Gold Mandala"), marriage.body());
-        assertTrue(marriage.body().contains("\"backgroundColor\":\"#FDF6EC\""));
+        assertEquals(6, num(marriage.body(), "totalItems"), marriage.body());
+        assertTrue(marriage.body().contains("Wedding Invitation"), marriage.body());
+        assertTrue(marriage.body().contains("\"backgroundColor\""));
         assertTrue(marriage.body().contains("\"textBoxes\""));
         assertFalse(marriage.body().contains("BIRTHDAY"));
 
@@ -126,6 +144,42 @@ class PosterTemplateIntegrationTest {
         HttpResponse<String> frames = send("GET", "/api/poster/components?type=frame", null, childToken, null);
         assertTrue(frames.body().contains("borderColor"), frames.body());
         assertFalse(frames.body().contains("\"type\":\"STICKER\""));
+    }
+
+    @Test
+    void a_catalog_this_size_is_paged_and_can_be_asked_for_without_layouts() throws Exception {
+        HttpResponse<String> first = send("GET", "/api/poster/templates?page=0&size=10", null, childToken, null);
+        assertEquals(200, first.statusCode(), first.body());
+        assertEquals(0, num(first.body(), "page"));
+        assertEquals(10, num(first.body(), "size"));
+        assertEquals(42, num(first.body(), "totalItems"));
+        assertEquals(5, num(first.body(), "totalPages"));
+        assertEquals(10, itemCount(first.body()));
+
+        // A later page is different templates, not the same ones again.
+        HttpResponse<String> second = send("GET", "/api/poster/templates?page=1&size=10", null, childToken, null);
+        assertEquals(1, num(second.body(), "page"));
+        assertFalse(second.body().contains(extract(first.body(), "id")), "page 1 repeated a row from page 0");
+
+        // Past the end is an empty page rather than an error.
+        HttpResponse<String> beyond = send("GET", "/api/poster/templates?page=99&size=10", null, childToken, null);
+        assertEquals(200, beyond.statusCode());
+        assertEquals(0, itemCount(beyond.body()));
+
+        // size is clamped, not trusted: nobody gets the whole catalog in one response.
+        assertEquals(100, num(send("GET", "/api/poster/templates?size=5000", null, childToken, null).body(), "size"));
+        assertEquals(1, num(send("GET", "/api/poster/templates?size=0", null, childToken, null).body(), "size"));
+
+        // The picker grid's view: everything but the layout, which is the bulk of it.
+        HttpResponse<String> summary =
+                send("GET", "/api/poster/templates/marriage?view=summary", null, childToken, null);
+        assertEquals(200, summary.statusCode());
+        assertEquals(6, num(summary.body(), "totalItems"));
+        assertTrue(summary.body().contains("\"thumbnail\""));
+        assertTrue(summary.body().contains("\"colorThemes\""));
+        assertFalse(summary.body().contains("\"layout\""), summary.body());
+        assertTrue(summary.body().length() * 3 < send("GET", "/api/poster/templates/marriage",
+                null, childToken, null).body().length(), "a summary should be far smaller than the full page");
     }
 
     @Test

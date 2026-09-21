@@ -1,7 +1,5 @@
 package com.example.kido.poster;
 
-import java.util.List;
-
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -17,6 +15,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.poster.dto.PosterDtos.TemplateDto;
+import com.example.kido.poster.dto.PosterDtos.TemplatePageDto;
 import com.example.kido.poster.dto.PosterDtos.TemplateRequest;
 import com.example.kido.user.AppUser;
 
@@ -47,32 +46,40 @@ public class PosterTemplateController {
     }
 
     /**
-     * Every published template, ordered by category and then by the order a designer
-     * gave them.
+     * Published templates, a page at a time, ordered by category and then by the order
+     * a designer gave them.
      *
+     * @param view          {@code summary} drops the layout from each item — the right
+     *                      call for a picker grid, which draws thumbnails
      * @param includeDrafts admin-only: also returns unpublished rows, so a set can be
      *                      reviewed before anyone's phone lists it
      */
     @GetMapping
-    public List<TemplateDto> all(@AuthenticationPrincipal AppUser user,
-                                 @RequestParam(defaultValue = "false") boolean includeDrafts,
-                                 @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+    public TemplatePageDto<?> all(@AuthenticationPrincipal AppUser user,
+                                  @RequestParam(defaultValue = "0") int page,
+                                  @RequestParam(defaultValue = "40") int size,
+                                  @RequestParam(required = false) String view,
+                                  @RequestParam(defaultValue = "false") boolean includeDrafts,
+                                  @RequestHeader(value = "X-Admin-Key", required = false) String key) {
         if (includeDrafts) {
             admin.require(user, key);
         }
-        return service.list(includeDrafts);
+        return service.list(includeDrafts, page, size, summary(view));
     }
 
     /** One ceremony's templates: {@code marriage}, {@code baby-shower}, … */
     @GetMapping("/{category}")
-    public List<TemplateDto> byCategory(@AuthenticationPrincipal AppUser user,
-                                        @PathVariable String category,
-                                        @RequestParam(defaultValue = "false") boolean includeDrafts,
-                                        @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+    public TemplatePageDto<?> byCategory(@AuthenticationPrincipal AppUser user,
+                                         @PathVariable String category,
+                                         @RequestParam(defaultValue = "0") int page,
+                                         @RequestParam(defaultValue = "40") int size,
+                                         @RequestParam(required = false) String view,
+                                         @RequestParam(defaultValue = "false") boolean includeDrafts,
+                                         @RequestHeader(value = "X-Admin-Key", required = false) String key) {
         if (includeDrafts) {
             admin.require(user, key);
         }
-        return service.byCategory(category, includeDrafts);
+        return service.byCategory(category, includeDrafts, page, size, summary(view));
     }
 
     /** A single template, for a client that kept an id rather than a category. */
@@ -107,5 +114,14 @@ public class PosterTemplateController {
                        @PathVariable String id) {
         admin.require(user, key);
         service.delete(id);
+    }
+
+    /**
+     * Anything other than {@code summary} is the full view, including a misspelling of
+     * it. A listing is not the place to refuse a request over a query parameter that
+     * only decides how much of each row to send.
+     */
+    private boolean summary(String view) {
+        return "summary".equalsIgnoreCase(view);
     }
 }

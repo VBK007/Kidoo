@@ -58,6 +58,57 @@ public final class PosterDtos {
     }
 
     /**
+     * A template without its layout, for the picker grid.
+     *
+     * <p>The grid draws a thumbnail, a name and a swatch row; the layout behind it is
+     * the bulk of the response and none of it is on screen. At a catalog of a thousand
+     * that is the difference between a page of 40 costing tens of kilobytes and costing
+     * most of a megabyte. Ask for the whole thing with {@code /by-id/{id}} when
+     * somebody opens one.
+     */
+    public record TemplateSummaryDto(
+            String id,
+            String category,
+            String categorySlug,
+            String name,
+            String thumbnail,
+            List<ColorTheme> colorThemes,
+            boolean published,
+            int sortOrder,
+            Instant updatedAt
+    ) {
+        public static TemplateSummaryDto from(PosterTemplate t) {
+            return new TemplateSummaryDto(
+                    t.getId(),
+                    t.getCategory().name(),
+                    t.getCategory().slug(),
+                    t.getName(),
+                    t.getThumbnail(),
+                    t.getColorThemes() == null ? List.of() : List.copyOf(t.getColorThemes()),
+                    t.isPublished(),
+                    t.getSortOrder(),
+                    t.getUpdatedAt());
+        }
+    }
+
+    /**
+     * A page of templates, in the envelope the rest of this server uses.
+     *
+     * <p>Generic in what it holds because the same page is served two ways: full
+     * templates by default, and {@link TemplateSummaryDto} when the client asks for
+     * {@code view=summary}.
+     *
+     * @see com.example.kido.media.dto.CatalogDtos.ItemPageDto
+     */
+    public record TemplatePageDto<T>(
+            List<T> items,
+            int page,
+            int size,
+            long totalItems,
+            int totalPages
+    ) {}
+
+    /**
      * Creates a template, and replaces one whole on {@code PUT}.
      *
      * <p>{@code PUT} is a replacement rather than a patch because a layout only makes

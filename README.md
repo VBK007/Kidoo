@@ -32,7 +32,7 @@ transcoding, which then will not work either.
 # Normal path: spring-boot-docker-compose starts Postgres from compose.yaml
 ./gradlew bootRun
 
-# Tests (483, all in-process against H2)
+# Tests (488, all in-process against H2)
 ./gradlew test
 
 # Container — the image installs ffmpeg
@@ -274,8 +274,13 @@ Saving a template resolves every component reference and refuses one that is
 missing or of the wrong kind, and a component cannot be deleted while a template
 still uses it — both of which would otherwise surface as a poster with a hole in
 it. Reads need a signed-in profile; authoring needs a parent account and the
-admin key. One sample template per ceremony is seeded into an empty catalog.
-The endpoints and payloads are in [`docs/poster-api.md`](docs/poster-api.md).
+admin key.
+
+An empty database is seeded with **1000 templates**, generated from 7 ceremonies
+× 18 designs × 10 palettes rather than hand-written, so a picker is not four
+cards deep on its first run. Listings are paged and `?view=summary` drops the
+layouts for the grid. The endpoints and payloads are in
+[`docs/poster-api.md`](docs/poster-api.md).
 
 ---
 
@@ -303,7 +308,7 @@ src/main/java/com/example/kido/
 - **Flyway owns the schema**; Hibernate is `ddl-auto=validate` and refuses to
   start on a mismatch. One baseline per dialect, because a `@Lob String` is
   `oid` on Postgres and `clob` on H2.
-- **483 tests**, most of them full-stack integration tests over real HTTP against
+- **488 tests**, most of them full-stack integration tests over real HTTP against
   a running context — including real WebSocket connections, two accounts and
   guest tokens for watch parties.
 
