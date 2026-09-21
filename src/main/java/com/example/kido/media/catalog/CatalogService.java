@@ -209,7 +209,12 @@ public class CatalogService {
     /** Chip label to type. Unknown labels are a client bug, so they are a 400. */
     private static Set<MediaType> typeOf(String category) {
         if (category == null || category.isBlank() || category.equalsIgnoreCase("all")) {
-            return null;
+            // Every type a household browses together, which is all of them but
+            // ADULT — see MediaType.isEverydayBrowsing. This was null, meaning
+            // "no opinion, return everything", and under that an 18+ title
+            // would appear under All between a children's film and a wedding
+            // video, which is the one thing the category exists to prevent.
+            return Set.copyOf(MediaType.everydayBrowsing());
         }
         return Set.of(MediaType.parse(category).orElseThrow(() -> new ApiException(
                 HttpStatus.BAD_REQUEST, "Unknown category '" + category + "'")));
