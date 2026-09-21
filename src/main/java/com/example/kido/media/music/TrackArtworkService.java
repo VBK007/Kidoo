@@ -119,7 +119,7 @@ public class TrackArtworkService {
     }
 
     private String search(String query) throws IOException, InterruptedException {
-        String url = "https://itunes.apple.com/search?media=music&entity=song&limit=1&term="
+        String url = "https://itunes.apple.com/search?media=music&entity=song&limit=1&country=IN&term="
                 + URLEncoder.encode(query, StandardCharsets.UTF_8);
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(Math.max(1, props.getMusicArtwork().getTimeoutSeconds())))
