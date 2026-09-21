@@ -56,6 +56,10 @@ public class SecurityConfig {
                         // Content reads and the plans catalog are public so the app can
                         // fetch/cache offline-first before a parent signs in.
                         .requestMatchers(HttpMethod.GET, "/api/content/**", "/api/plans").permitAll()
+                        // The real catalog and its artwork, read-only and stripped of every
+                        // per-profile field, so a visitor can browse the real library before
+                        // creating an account — see CatalogService#browsePublic.
+                        .requestMatchers(HttpMethod.GET, "/api/media/public/**").permitAll()
                         // A guest asks for a seat and polls for the answer before they
                         // hold any credential at all, so these two are public. Neither
                         // works without a live join code, and neither hands out a token

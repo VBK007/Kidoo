@@ -181,6 +181,81 @@ public final class CatalogDtos {
             long totalItems,
             int totalPages) {}
 
+    /**
+     * The same grid-tile shape as {@link ItemSummaryDto}, minus every per-profile
+     * field — this is what an unauthenticated visitor is allowed to see, so there is
+     * no resume position, watched mark, or like to leak from someone else's account.
+     */
+    public record PublicItemSummaryDto(
+            String id,
+            String type,
+            String title,
+            Integer year,
+            Integer runtimeMinutes,
+            Double rating,
+            Set<String> genres,
+            boolean hasPoster,
+            boolean hasBackdrop,
+            String artist,
+            String album,
+            String language) {
+
+        public static PublicItemSummaryDto from(MediaItem item) {
+            return new PublicItemSummaryDto(
+                    item.getId(),
+                    item.getType().name(),
+                    item.getTitle(),
+                    item.getYear(),
+                    item.getRuntimeMinutes(),
+                    item.getRating(),
+                    item.getGenres(),
+                    item.hasPoster(),
+                    item.hasBackdrop(),
+                    item.getArtist(),
+                    item.getAlbum(),
+                    item.getPrimaryLanguage());
+        }
+    }
+
+    public record PublicItemPageDto(
+            List<PublicItemSummaryDto> items,
+            int page,
+            int size,
+            long totalItems,
+            int totalPages) {}
+
+    /**
+     * The same title-opened view as {@link ItemDetailDto}, minus resume/watched state,
+     * engagement counts and {@code liked} — all per-profile — and minus {@code
+     * fileSize}/{@code fileName}, which a signed-out visitor has no business seeing.
+     */
+    public record PublicItemDetailDto(
+            String id,
+            String type,
+            String title,
+            String originalTitle,
+            Integer year,
+            String plot,
+            String tagline,
+            Integer runtimeMinutes,
+            Double rating,
+            String certification,
+            Set<String> genres,
+            String language,
+            String directors,
+            String castMembers,
+            String studio,
+            String quality,
+            String imdbId,
+            String artist,
+            String album,
+            Integer trackNumber,
+            boolean hasPoster,
+            boolean hasBackdrop,
+            MediaInfoDto mediaInfo,
+            List<SubtitleTrackDto> subtitles,
+            List<PlayerDtos.AudioTrackDto> audioTracks) {}
+
     /** One category chip, with the counts the client shows beneath the library title. */
     public record CategoryDto(String type, String label, long itemCount, long totalBytes) {
 

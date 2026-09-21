@@ -29,6 +29,9 @@ import com.example.kido.media.dto.CatalogDtos.ItemSummaryDto;
 import com.example.kido.media.dto.CatalogDtos.LanguageDto;
 import com.example.kido.media.dto.CatalogDtos.LibrarySummaryDto;
 import com.example.kido.media.dto.CatalogDtos.MediaInfoDto;
+import com.example.kido.media.dto.CatalogDtos.PublicItemDetailDto;
+import com.example.kido.media.dto.CatalogDtos.PublicItemPageDto;
+import com.example.kido.media.dto.CatalogDtos.PublicItemSummaryDto;
 import com.example.kido.media.dto.CatalogDtos.SubtitleTrackDto;
 import com.example.kido.media.dto.CatalogDtos.TimelineDto;
 import com.example.kido.media.dto.CatalogDtos.TimelineGroupDto;
@@ -164,6 +167,39 @@ public class CatalogService {
 
         return new ItemPageDto(
                 summarise(profile, results.getContent()),
+                results.getNumber(),
+                results.getSize(),
+                results.getTotalElements(),
+                results.getTotalPages());
+    }
+
+    /**
+     * Same query the browse endpoint runs, for a visitor with no account and no
+     * profile — so it must never reach {@link #summarise}, which dereferences the
+     * profile unconditionally to look up resume/like state.
+     */
+    @Transactional(readOnly = true)
+    public PublicItemPageDto browsePublic(String category,
+                                          String query,
+                                          String genre,
+                                          String sort,
+                                          int page,
+                                          int size) {
+        CatalogQuery built = CatalogQuery.builder()
+                .types(typeOf(category))
+                .titleContains(query)
+                .genres(genre == null || genre.isBlank() ? null : Set.of(genre))
+                .sort(sort)
+                .build()
+                .validated();
+
+        int pageSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
+        Page<MediaItem> results = items.findAll(
+                CatalogQuerySpecs.toSpecification(built, null),
+                PageRequest.of(Math.max(0, page), pageSize, CatalogSort.of(built.sort()).sort()));
+
+        return new PublicItemPageDto(
+                results.getContent().stream().map(PublicItemSummaryDto::from).toList(),
                 results.getNumber(),
                 results.getSize(),
                 results.getTotalElements(),
@@ -314,6 +350,38 @@ public class CatalogService {
                 item.getLikeCount(),
                 !likes.likedItemIds(profile, List.of(itemId)).isEmpty(),
                 comments.countFor(itemId));
+    }
+
+    /** {@link #detail} for a visitor with no profile — see {@link #browsePublic}. */
+    @Transactional(readOnly = true)
+    public PublicItemDetailDto detailPublic(String itemId) {
+        MediaItem item = require(itemId);
+        return new PublicItemDetailDto(
+                item.getId(),
+                item.getType().name(),
+                item.getTitle(),
+                item.getOriginalTitle(),
+                item.getYear(),
+                item.getPlot(),
+                item.getTagline(),
+                item.getRuntimeMinutes(),
+                item.getRating(),
+                item.getCertification(),
+                item.getGenres(),
+                item.getPrimaryLanguage(),
+                item.getDirectors(),
+                item.getCastMembers(),
+                item.getStudio(),
+                item.getQuality(),
+                item.getImdbId(),
+                item.getArtist(),
+                item.getAlbum(),
+                item.getTrackNumber(),
+                item.hasPoster(),
+                item.hasBackdrop(),
+                MediaInfoDto.from(item.getMediaInfo()),
+                subtitleTracks(item),
+                audioTracks(item));
     }
 
     /** Library header counts, per-category breakdown and the genre facet list. */
