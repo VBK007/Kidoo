@@ -32,7 +32,7 @@ transcoding, which then will not work either.
 # Normal path: spring-boot-docker-compose starts Postgres from compose.yaml
 ./gradlew bootRun
 
-# Tests (263, all in-process against H2)
+# Tests (483, all in-process against H2)
 ./gradlew test
 
 # Container — the image installs ffmpeg
@@ -260,6 +260,23 @@ limit, per-profile and per-account settings, **subscription plans** with Google
 Play purchase verification (or a dev verifier), **ad configuration** that returns
 an empty config for paying members, and login analytics (device, IP, geo, time).
 
+### Ceremony posters
+
+A **template catalog** for invitation posters — marriage, birthday, baby shower
+and four more ceremonies — under `/api/poster`. A template carries its whole
+design as one JSON layout (background, text boxes, photo slots, sticker
+placements) plus the **colour themes** that design was drawn for, and points at
+shared **components**: fonts, stickers and frames the client fetches once and
+caches. Coordinates are fractions of the canvas, so the same template renders on
+a phone preview and a print export.
+
+Saving a template resolves every component reference and refuses one that is
+missing or of the wrong kind, and a component cannot be deleted while a template
+still uses it — both of which would otherwise surface as a poster with a hole in
+it. Reads need a signed-in profile; authoring needs a parent account and the
+admin key. One sample template per ceremony is seeded into an empty catalog.
+The endpoints and payloads are in [`docs/poster-api.md`](docs/poster-api.md).
+
 ---
 
 ## How it is built
@@ -278,6 +295,7 @@ src/main/java/com/example/kido/
     metadata/ matchfix/      artwork, subtitles, wrong-guess repair
     admin/ engagement/       owner tools, likes, comments
   content/ activity/ analytics/ billing/ ads/   the kids app
+  poster/                    ceremony poster templates and components
 ```
 
 - **Java 21, Spring Boot 4.1**, Spring Security, Spring Data JPA.
@@ -285,7 +303,7 @@ src/main/java/com/example/kido/
 - **Flyway owns the schema**; Hibernate is `ddl-auto=validate` and refuses to
   start on a mismatch. One baseline per dialect, because a `@Lob String` is
   `oid` on Postgres and `clob` on H2.
-- **263 tests**, most of them full-stack integration tests over real HTTP against
+- **483 tests**, most of them full-stack integration tests over real HTTP against
   a running context — including real WebSocket connections, two accounts and
   guest tokens for watch parties.
 
