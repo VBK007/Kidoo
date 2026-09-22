@@ -215,23 +215,53 @@ public class TeaserClipService {
      *
      * @return how many movies were newly queued (each for three clips)
      */
-    public int backfillForNewMovies() {
+    /**
+     * Movies with no teaser clip yet — the candidate list {@link #queueAutoTeasers}
+     * turns into encode jobs.
+     *
+     * <p>Kept as its own {@code @Transactional} call, invoked from outside this class
+     * rather than from {@link #backfillForNewMovies} below, deliberately: a self-call
+     * would bypass the proxy that annotation depends on (see the state-transition
+     * methods further down for the same rule), and — separately — {@code MediaItem}
+     * carries two {@code @Lob} columns that Postgres refuses to stream outside an
+     * active transaction at all, which is exactly what reading these rows with no
+     * transaction open did the first time this ran.
+     */
+    @Transactional(readOnly = true)
+    public List<MediaItem> moviesMissingTeasers() {
+        Set<String> haveClips = clips.mediaItemIdsWithUsableClips(TeaserClip.State.FAILED);
+        return items.findByTypeAndMissingFalseAndHiddenFalse(MediaType.FILM).stream()
+                .filter(movie -> !haveClips.contains(movie.getId()))
+                .toList();
+    }
+
+    /**
+     * Queues three auto-picked clips for each of the given movies.
+     *
+     * <p>Deliberately not {@code @Transactional}, same reasoning as {@link
+     * #requestGeneration}: each call already commits its own row before handing the
+     * job to the worker thread, and wrapping this loop would hold all of them open
+     * until every movie in the batch had been processed.
+     *
+     * @return how many movies were newly queued (each for three clips)
+     */
+    public int queueAutoTeasers(List<MediaItem> movies) {
         if (!props.getTeasers().isEnabled()) {
             return 0;
         }
-        Set<String> haveClips = clips.mediaItemIdsWithClips();
-        List<MediaItem> movies = items.findByTypeAndMissingFalseAndHiddenFalse(MediaType.FILM);
         int queued = 0;
         for (MediaItem movie : movies) {
-            if (haveClips.contains(movie.getId())) {
-                continue;
-            }
             MediaInfo info = movie.getMediaInfo();
             if (info == null || info.getDurationSeconds() == null || info.getDurationSeconds() <= 0) {
                 // Not probed yet — ffprobe runs during ingest, so a movie added this
                 // same scan catches up automatically on the next one.
                 continue;
             }
+            // Every row this movie could still have here is FAILED — that is exactly
+            // what excluded it from mediaItemIdsWithUsableClips — so this is a retry,
+            // not a first attempt, and the stale rows would otherwise just accumulate
+            // by three every scan a flaky source keeps failing on.
+            clips.deleteByMediaItemId(movie.getId());
             boolean any = false;
             for (double start : autoPickStarts(info.getDurationSeconds())) {
                 double end = Math.min(info.getDurationSeconds(), start + AUTO_CLIP_SECONDS);

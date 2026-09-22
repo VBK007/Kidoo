@@ -7,6 +7,7 @@ import java.util.Set;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 public interface TeaserClipRepository extends JpaRepository<TeaserClip, String> {
 
@@ -59,11 +60,26 @@ public interface TeaserClipRepository extends JpaRepository<TeaserClip, String> 
 
     Optional<TeaserClip> findByIdAndMediaItemId(String id, String mediaItemId);
 
-    /** Every clip for an item, e.g. when the item itself is being purged. */
+    /**
+     * Every clip for an item, e.g. when the item itself is being purged.
+     *
+     * <p>{@code @Transactional} here specifically: unlike the base {@code save}/{@code
+     * findById} CRUD methods, a derived delete query does not get its own transaction
+     * for free, and this is called from {@link TeaserClipService#queueAutoTeasers}
+     * with none open around it on purpose (see that method's own docs).
+     */
+    @Transactional
     void deleteByMediaItemId(String mediaItemId);
 
-    /** Every media item that already has at least one clip, so a backfill pass over
-     * the whole library knows which titles to leave alone. */
-    @Query("select distinct c.mediaItemId from TeaserClip c")
-    Set<String> mediaItemIdsWithClips();
+    /**
+     * Every media item that has at least one clip not stuck in {@code FAILED}, so a
+     * backfill pass over the whole library knows which titles to leave alone.
+     *
+     * <p>{@code FAILED} does not count: a title where all three auto-picked cuts
+     * failed (the source unreachable, most often — an external drive dropping mid-cut)
+     * has no usable clip either, and ought to get another try on a later scan rather
+     * than being treated as done forever because a row exists.
+     */
+    @Query("select distinct c.mediaItemId from TeaserClip c where c.state <> :failed")
+    Set<String> mediaItemIdsWithUsableClips(@Param("failed") TeaserClip.State failed);
 }

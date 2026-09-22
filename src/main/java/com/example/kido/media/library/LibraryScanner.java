@@ -100,8 +100,10 @@ public class LibraryScanner {
             int languageBackfilled = ingest.backfillMusicLanguage();
             // Queues encodes on TeaserClipService's own worker thread and returns
             // immediately — a movie's three clips are typically still cutting when this
-            // scan's own log line below prints, not because it failed.
-            int teasersQueued = teasers.backfillForNewMovies();
+            // scan's own log line below prints, not because it failed. Two calls,
+            // deliberately: see TeaserClipService#moviesMissingTeasers for why the read
+            // and the queueing cannot be one method here.
+            int teasersQueued = teasers.queueAutoTeasers(teasers.moviesMissingTeasers());
             status.finish(null);
             log.info("Library scan finished: {} seen, {} added, {} updated, {} unchanged, "
                             + "{} missing, {} failed, {} backfilled artwork, {} backfilled metadata, "

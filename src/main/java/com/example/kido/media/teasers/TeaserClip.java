@@ -118,7 +118,13 @@ public class TeaserClip {
     @Builder.Default
     private int sortOrder = 0;
 
-    @Lob
+    // Plain text, deliberately not @Lob: this is a short ffmpeg-failure message, not
+    // large content, and Postgres large objects need an explicit transaction to write
+    // correctly — which every save here (see the state-transition methods' own doc)
+    // runs without on purpose. @Lob silently stored the large-object's own numeric
+    // OID here instead of the message itself, discovered when the auto-teaser backfill
+    // ran a real batch of failures for the first time.
+    @Column(columnDefinition = "text")
     private String error;
 
     /** The admin account that requested this clip, for audit only. */
