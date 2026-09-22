@@ -268,6 +268,10 @@ accounts across all of them. "Active" means signed in, not watched something:
 playback is recorded per profile and most of what the apps do never starts a
 stream.
 
+The web console that reads it lives in [`admin-web/`](admin-web/README.md) —
+React + TypeScript on Vite, `npm install && npm run dev`, proxying `/api` to
+this server on port 8080.
+
 ### Kids app side
 
 Versioned **content manifest** so a client syncs only what changed, activity
@@ -318,6 +322,8 @@ src/main/java/com/example/kido/
   content/ activity/ analytics/ billing/ ads/   the kids app
   poster/                    ceremony poster templates and components
   admin/                     server-wide dashboard counts, for the web console
+
+admin-web/                   the admin console that reads them (React + Vite)
 ```
 
 - **Java 21, Spring Boot 4.1**, Spring Security, Spring Data JPA.
