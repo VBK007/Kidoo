@@ -32,7 +32,7 @@ transcoding, which then will not work either.
 # Normal path: spring-boot-docker-compose starts Postgres from compose.yaml
 ./gradlew bootRun
 
-# Tests (488, all in-process against H2)
+# Tests (500, all in-process against H2)
 ./gradlew test
 
 # Container — the image installs ffmpeg
@@ -252,6 +252,22 @@ disk usage per library with reclaimable-space estimates, cache clearing, missing
 item purge, artwork backfill, and demo-data seeding. Movie admin adds titles and
 artwork by upload or JSON.
 
+### Web admin dashboard
+
+A read-only count of the whole server under `/api/admin`, for a dashboard rather
+than for a phone: accounts and signups, how many signed in today and over the
+last week and month, **a row per client application** (Android, iOS, web) built
+from the platform each sign-in declares, and totals for everything there is to
+use — movies, anime, series, video songs, home videos, music, photos, poster
+templates and components, and kids-app content entries. One call returns the
+whole page; each section is also fetchable on its own for a tile that refreshes
+faster than the rest.
+
+Where the admin panel above is about one household's media server, this counts
+accounts across all of them. "Active" means signed in, not watched something:
+playback is recorded per profile and most of what the apps do never starts a
+stream.
+
 ### Kids app side
 
 Versioned **content manifest** so a client syncs only what changed, activity
@@ -301,6 +317,7 @@ src/main/java/com/example/kido/
     admin/ engagement/       owner tools, likes, comments
   content/ activity/ analytics/ billing/ ads/   the kids app
   poster/                    ceremony poster templates and components
+  admin/                     server-wide dashboard counts, for the web console
 ```
 
 - **Java 21, Spring Boot 4.1**, Spring Security, Spring Data JPA.
@@ -308,7 +325,7 @@ src/main/java/com/example/kido/
 - **Flyway owns the schema**; Hibernate is `ddl-auto=validate` and refuses to
   start on a mismatch. One baseline per dialect, because a `@Lob String` is
   `oid` on Postgres and `clob` on H2.
-- **488 tests**, most of them full-stack integration tests over real HTTP against
+- **500 tests**, most of them full-stack integration tests over real HTTP against
   a running context — including real WebSocket connections, two accounts and
   guest tokens for watch parties.
 

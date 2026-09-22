@@ -16,4 +16,7 @@ public interface ContentRepository extends JpaRepository<ContentItem, String> {
 
     @Query("select coalesce(max(c.version), 0) from ContentItem c")
     long maxVersion();
+
+    /** Published manifest entries, for the admin dashboard. */
+    long countByPublishedTrue();
 }

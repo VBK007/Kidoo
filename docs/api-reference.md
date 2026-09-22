@@ -1274,6 +1274,74 @@ running, startedAt, finishedAt, currentFile, error, filesSeen, added,
 updated, unchanged, markedMissing, failed, moviesInLibrary, rootsConfigured
 ```
 
+### Web admin dashboard — admin key **and** PARENT
+
+Read-only counts for an operator's dashboard, under `/api/admin`. Same gate as
+everything above. Where `/api/media/admin` runs one household's media server —
+disks, transcodes, the profiles inside a single account — this counts **accounts**
+across the whole server, which is the number a dashboard is opened for.
+
+**`GET /api/admin/dashboard`** — all four sections in one request, which is what
+a first paint wants →
+```
+generatedAt, users{…}, applications[…], catalog{…}, engagement{…}
+```
+
+The three sections are also fetchable on their own, for panels that refresh at
+different rates — a live tile polling every few seconds should not re-count the
+poster catalog to do it.
+
+**`GET /api/admin/users`** →
+```
+total, parents, children, premium,
+newToday, newLast7Days, newLast30Days, profiles,
+activeToday, activeLast7Days, activeLast30Days
+```
+
+`premium` counts a subscription that is paid **and** not yet expired, so the tile
+does not keep billing figures alive after the term ran out. **Active means signed
+in**: distinct accounts with a login event in the window, which is the one
+per-account trace every client leaves — most of what the apps do (browsing,
+posters, settings) never starts a stream. `newToday` and `activeToday` are the
+calendar day in the server's zone; the 7- and 30-day figures are rolling windows
+from now, so a Monday morning does not read as a collapsed week.
+
+**`GET /api/admin/applications`** → one row per client app, busiest first
+```
+platform, users, activeLast7Days, activeLast30Days, loginsLast30Days, lastSeenAt
+```
+
+`platform` is whatever the client declared on `POST /api/analytics/login`
+(`android`, `ios`, `web`); a build that declares nothing appears as `unknown`.
+Someone who uses the phone and the browser is counted in **both** rows, so these
+do not sum to `users.total` — the question answered is "how many people use the
+Android app", not "how do the users divide up". An app that has never logged a
+sign-in has no row at all.
+
+**`GET /api/admin/catalog`** →
+```
+library{ movies, anime, series, videoSongs, homeVideos, music, photos, adult,
+         totalItems, totalBytes, missingItems, addedLast7Days,
+         byType[{ type, label, items, bytes }] },
+posters{ templates, published, unpublished, byCategory[{ key, count }],
+         components, componentsByType[{ key, count }] },
+content{ items, published }
+```
+
+The named fields are the headline tiles; `byType` carries every category,
+including the ones at zero, so the table keeps its shape between refreshes. Both
+exclude hidden rows and rows whose file is gone — `missingItems` reports those
+separately rather than folding them in.
+
+**`GET /api/admin/engagement`** →
+```
+liveStreams, streamingNow, peakConcurrentStreams,
+watchHoursLast7Days, watchHoursThisMonth
+```
+
+`streamingNow` is distinct profiles, so it is smaller than `liveStreams` when
+someone has a phone and a TV going at once.
+
 ---
 
 ## Thumbnail scrubbing arithmetic

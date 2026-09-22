@@ -1382,6 +1382,40 @@ drift &gt; 2.0s        seek to target
         <p class="meta"><b>→</b> 202 ScanStatusDto · <b>409</b> a scan is already running</p>
       </div>
     </div>
+
+    <div class="group">
+      <h3>Web admin dashboard · admin key + PARENT</h3>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/dashboard</span>
+        <p class="desc">Every section below in one request, which is what a dashboard's first paint wants. Counts accounts across the whole server, where the panel above runs one household.</p>
+        <p class="meta"><b>→</b> { generatedAt, users{…}, applications[…], catalog{…}, engagement{…} }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/users</span>
+        <p class="desc">Accounts, signups and how many came back. Active means signed in, not watched something — most of what the apps do never starts a stream. <code>premium</code> excludes a term that has run out.</p>
+        <p class="meta"><b>→</b> { total, parents, children, premium, newToday, newLast7Days, newLast30Days, profiles, activeToday, activeLast7Days, activeLast30Days }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/applications</span>
+        <p class="desc">One row per client app, busiest first, from the platform each sign-in declares; a build that declares nothing is <code>unknown</code>. Someone using two apps counts in both rows, so these do not sum to the account total.</p>
+        <p class="meta"><b>→</b> [{ platform, users, activeLast7Days, activeLast30Days, loginsLast30Days, lastSeenAt }]</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/catalog</span>
+        <p class="desc">Everything there is to use, counted: library by category (empty ones included, so the table keeps its shape), poster templates and components, kids-app content.</p>
+        <p class="meta"><b>→</b> { library{ movies, anime, series, videoSongs, homeVideos, music, photos, adult, totalItems, totalBytes, missingItems, addedLast7Days, byType[{ type, label, items, bytes }] }, posters{ templates, published, unpublished, byCategory[], components, componentsByType[] }, content{ items, published } }</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/engagement</span>
+        <p class="desc">The tile worth polling on its own. <code>streamingNow</code> is distinct profiles, so it is smaller than <code>liveStreams</code> when one person has a phone and a TV going.</p>
+        <p class="meta"><b>→</b> { liveStreams, streamingNow, peakConcurrentStreams, watchHoursLast7Days, watchHoursThisMonth }</p>
+      </div>
+    </div>
   </section>
 
   <section>

@@ -320,6 +320,9 @@ public interface MediaItemRepository
 
     long countByMissingTrue();
 
+    /** How much the library grew inside a window, for the admin dashboard. */
+    long countByAddedAtGreaterThanEqualAndMissingFalseAndHiddenFalse(Instant since);
+
     /** Items whose metadata is trustworthy, as candidate sources for fixing others. */
     List<MediaItem> findByMetadataSourceInAndMissingFalseAndHiddenFalse(
             List<MetadataSource> sources, Pageable pageable);
