@@ -2,7 +2,6 @@ package com.example.kido.media.teasers;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -60,8 +59,13 @@ public interface TeaserClipRepository extends JpaRepository<TeaserClip, String> 
 
     Optional<TeaserClip> findByIdAndMediaItemId(String id, String mediaItemId);
 
+    /** Every clip for an item, e.g. when the item itself is being purged. */
+    void deleteByMediaItemId(String mediaItemId);
+
     /**
-     * Every clip for an item, e.g. when the item itself is being purged.
+     * Just an item's failed clips — the ones an auto-teaser retry clears before
+     * topping the item back up, leaving any real (hand-picked or already-{@code
+     * READY}) clip alone.
      *
      * <p>{@code @Transactional} here specifically: unlike the base {@code save}/{@code
      * findById} CRUD methods, a derived delete query does not get its own transaction
@@ -69,17 +73,13 @@ public interface TeaserClipRepository extends JpaRepository<TeaserClip, String> 
      * with none open around it on purpose (see that method's own docs).
      */
     @Transactional
-    void deleteByMediaItemId(String mediaItemId);
+    void deleteByMediaItemIdAndState(String mediaItemId, TeaserClip.State state);
 
     /**
-     * Every media item that has at least one clip not stuck in {@code FAILED}, so a
-     * backfill pass over the whole library knows which titles to leave alone.
-     *
-     * <p>{@code FAILED} does not count: a title where all three auto-picked cuts
-     * failed (the source unreachable, most often — an external drive dropping mid-cut)
-     * has no usable clip either, and ought to get another try on a later scan rather
-     * than being treated as done forever because a row exists.
+     * How many of an item's clips are not stuck in {@code FAILED} — what {@link
+     * TeaserClipService#moviesUnderTeaserTarget} tops up to three, whether that means
+     * zero, or a single clip somebody curated by hand that a first pass at this
+     * feature used to treat as "done" outright.
      */
-    @Query("select distinct c.mediaItemId from TeaserClip c where c.state <> :failed")
-    Set<String> mediaItemIdsWithUsableClips(@Param("failed") TeaserClip.State failed);
+    long countByMediaItemIdAndStateNot(String mediaItemId, TeaserClip.State state);
 }

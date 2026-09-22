@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -199,28 +198,23 @@ public class TeaserClipService {
      * reason a pick gets rejected. */
     private static final double AUTO_CLIP_SECONDS = 16;
 
+    /** The floor {@link #moviesUnderTeaserTarget}/{@link #queueAutoTeasers} top every
+     * movie up to — three, however many of those are already there by hand. */
+    private static final int TARGET_CLIP_COUNT = 3;
+
     /**
-     * Backfills three evenly-spaced teaser clips for every movie that has none yet.
+     * Movies with fewer than {@link #TARGET_CLIP_COUNT} usable clips — the candidate
+     * list {@link #queueAutoTeasers} tops up.
      *
-     * <p>This is a pick, not curation: three points spaced through the runtime rather
-     * than anything that has watched the film, so a clip can land on a dull moment or a
-     * scene change. That is the tradeoff for this running unattended on a library
-     * nobody has time to hand-cut three clips per title for — see {@link
-     * #requestGeneration} for the curated path this skips.
-     *
-     * <p>Not {@code @Transactional} for the same reason {@link #requestGeneration}
-     * is not: it only reads before handing each clip off, and wrapping a loop of
-     * {@code worker.submit} calls in one long transaction would hold a connection open
-     * for no benefit.
-     *
-     * @return how many movies were newly queued (each for three clips)
-     */
-    /**
-     * Movies with no teaser clip yet — the candidate list {@link #queueAutoTeasers}
-     * turns into encode jobs.
+     * <p>"Usable" excludes {@code FAILED} but counts everything else, hand-curated
+     * clips included: a movie somebody already cut one real clip for is short two, not
+     * done, and a movie whose three auto-picks all failed (the source unreachable,
+     * most often — an external drive dropping mid-cut) has no usable clip at all
+     * either way, so it belongs back in this list rather than being treated as
+     * finished because rows exist.
      *
      * <p>Kept as its own {@code @Transactional} call, invoked from outside this class
-     * rather than from {@link #backfillForNewMovies} below, deliberately: a self-call
+     * rather than from {@link #queueAutoTeasers} itself, deliberately: a self-call
      * would bypass the proxy that annotation depends on (see the state-transition
      * methods further down for the same rule), and — separately — {@code MediaItem}
      * carries two {@code @Lob} columns that Postgres refuses to stream outside an
@@ -228,22 +222,30 @@ public class TeaserClipService {
      * transaction open did the first time this ran.
      */
     @Transactional(readOnly = true)
-    public List<MediaItem> moviesMissingTeasers() {
-        Set<String> haveClips = clips.mediaItemIdsWithUsableClips(TeaserClip.State.FAILED);
+    public List<MediaItem> moviesUnderTeaserTarget() {
         return items.findByTypeAndMissingFalseAndHiddenFalse(MediaType.FILM).stream()
-                .filter(movie -> !haveClips.contains(movie.getId()))
+                .filter(movie -> clips.countByMediaItemIdAndStateNot(
+                        movie.getId(), TeaserClip.State.FAILED) < TARGET_CLIP_COUNT)
                 .toList();
     }
 
     /**
-     * Queues three auto-picked clips for each of the given movies.
+     * Tops each of the given movies up to {@link #TARGET_CLIP_COUNT} usable clips,
+     * auto-picking only as many as it is actually short.
+     *
+     * <p>This is a pick, not curation: points spaced through the runtime rather than
+     * anything that has watched the film, so a clip can land on a dull moment or a
+     * scene change. That is the tradeoff for this running unattended on a library
+     * nobody has time to hand-cut three clips per title for — see {@link
+     * #requestGeneration} for the curated path a movie's existing clip(s) came from,
+     * and which this only ever adds to, never replaces.
      *
      * <p>Deliberately not {@code @Transactional}, same reasoning as {@link
      * #requestGeneration}: each call already commits its own row before handing the
-     * job to the worker thread, and wrapping this loop would hold all of them open
-     * until every movie in the batch had been processed.
+     * job to the worker thread, and wrapping this loop would hold every movie's
+     * transaction open until the whole batch had been processed.
      *
-     * @return how many movies were newly queued (each for three clips)
+     * @return how many movies were newly queued
      */
     public int queueAutoTeasers(List<MediaItem> movies) {
         if (!props.getTeasers().isEnabled()) {
@@ -257,13 +259,19 @@ public class TeaserClipService {
                 // same scan catches up automatically on the next one.
                 continue;
             }
-            // Every row this movie could still have here is FAILED — that is exactly
-            // what excluded it from mediaItemIdsWithUsableClips — so this is a retry,
-            // not a first attempt, and the stale rows would otherwise just accumulate
-            // by three every scan a flaky source keeps failing on.
-            clips.deleteByMediaItemId(movie.getId());
+            // Stale failures would otherwise pile up by however many a flaky source
+            // keeps failing every scan; a real clip (READY, or still mid-encode) is
+            // left alone rather than replaced.
+            clips.deleteByMediaItemIdAndState(movie.getId(), TeaserClip.State.FAILED);
+            long existing = clips.countByMediaItemIdAndStateNot(movie.getId(), TeaserClip.State.FAILED);
+            int needed = (int) Math.max(0, TARGET_CLIP_COUNT - existing);
+            if (needed == 0) {
+                continue;
+            }
+            List<Double> picks = autoPickStarts(info.getDurationSeconds());
             boolean any = false;
-            for (double start : autoPickStarts(info.getDurationSeconds())) {
+            for (int i = 0; i < needed && i < picks.size(); i++) {
+                double start = picks.get(i);
                 double end = Math.min(info.getDurationSeconds(), start + AUTO_CLIP_SECONDS);
                 if (end - start < props.getTeasers().getMinClipSeconds()) {
                     continue;
