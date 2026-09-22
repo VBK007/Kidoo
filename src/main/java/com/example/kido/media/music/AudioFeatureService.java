@@ -57,20 +57,40 @@ public class AudioFeatureService {
             return Optional.empty();
         }
         try {
+            // Merged into one stream and drained on its own thread: reading stdout to
+            // completion before calling waitFor (the previous approach) deadlocks the
+            // instant a script writes enough to stderr to fill its pipe buffer while
+            // nothing is draining it — the child blocks writing, so readAll() blocks
+            // reading, and the timeout below is never even reached to save it. This
+            // way waitFor's timeout is the only thing that can end the wait, no matter
+            // how much either stream receives.
             Process process = new ProcessBuilder(
                     config.getPythonPath(), scriptPath.toString(),
                     file.toString(), String.valueOf(config.getAnalyzeSeconds()))
-                    .redirectErrorStream(false)
+                    .redirectErrorStream(true)
                     .start();
 
-            String output = readAll(process.getInputStream());
+            StringBuilder collected = new StringBuilder();
+            Thread reader = new Thread(() -> {
+                try {
+                    collected.append(readAll(process.getInputStream()));
+                } catch (IOException ignored) {
+                    // Process died or was destroyed out from under the read; whatever
+                    // was captured so far (possibly nothing) is all there is.
+                }
+            }, "audio-feature-reader");
+            reader.setDaemon(true);
+            reader.start();
+
             boolean finished = process.waitFor(config.getTimeoutSeconds(), TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
+                reader.join(TimeUnit.SECONDS.toMillis(1));
                 log.debug("Audio analysis timed out for '{}'", file);
                 return Optional.empty();
             }
-            return parse(output, file);
+            reader.join(TimeUnit.SECONDS.toMillis(1));
+            return parse(collected.toString(), file);
         } catch (IOException ex) {
             log.debug("Audio analysis failed to start for '{}': {}", file, ex.getMessage());
             return Optional.empty();
