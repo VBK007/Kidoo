@@ -1416,6 +1416,46 @@ drift &gt; 2.0s        seek to target
         <p class="meta"><b>→</b> { liveStreams, streamingNow, peakConcurrentStreams, watchHoursLast7Days, watchHoursThisMonth }</p>
       </div>
     </div>
+
+    <div class="group">
+      <h3>Database browser · admin key + PARENT</h3>
+      <p class="desc">
+        Every table in the schema, read-only, a page at a time. No endpoint takes
+        SQL and none writes: statements are assembled server side, all of them
+        <code>SELECT</code>, and a table or sort column is matched against the
+        schema read at startup — a name that is not a real column comes back
+        <b>400</b> rather than reaching a statement. Every column arrives with a
+        <code>handling</code>: <code>PLAIN</code> as stored, <code>PERSONAL</code>
+        masked in a listing and whole in one row, <code>SECRET</code> never sent at
+        all, <code>LARGE</code> described rather than shipped. Identifiers are
+        reported lower-case whatever the dialect does with them. Switchable off with
+        <code>app.admin.db-browser.enabled=false</code>.
+      </p>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/db/tables</span>
+        <p class="desc">Every table with its live row count and primary key.</p>
+        <p class="meta"><b>→</b> [{ name, rows, columnCount, primaryKey[] }]</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/db/tables/{table}/columns</span>
+        <p class="desc">What each column is, and what this API will do with it.</p>
+        <p class="meta"><b>→</b> [{ name, type, nullable, primaryKey, handling(PLAIN|PERSONAL|SECRET|LARGE) }]</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/db/tables/{table}/rows</span>
+        <p class="desc">A page of rows, ordered by the primary key unless <code>sort</code> names another column. <code>size</code> caps at 200. A row carries a key for every column, including the ones not selected, which are null.</p>
+        <p class="meta"><b>query</b> page · size · sort · direction · q<br><b>→</b> { table, columns[], rows[{ column: value }], page, size, total, totalPages, sort, direction, query, masked } · <b>400</b> a sort column that is not one · <b>404</b> no such table</p>
+      </div>
+      <div class="ep">
+        <span class="verb">GET</span>
+        <span class="sig">/api/admin/db/tables/{table}/rows/{id}</span>
+        <p class="desc">One row by primary key, personal columns unmasked — the deliberate click behind a listing. Secrets stay out of this too.</p>
+        <p class="meta"><b>→</b> { table, columns[], values{}, masked: false } · <b>400</b> composite or absent primary key · <b>404</b> no such row</p>
+      </div>
+    </div>
   </section>
 
   <section>
