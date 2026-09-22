@@ -188,10 +188,30 @@ public class LibraryIngestService {
      * a stray MP3 in a film library is indexed as music rather than as a silent film,
      * and a video dropped into a photo library stays a video.
      */
+    /**
+     * Folder names that mark everything directly inside as {@link MediaType#ADULT},
+     * regardless of the library's own declared type — sorting a title in by putting it
+     * in a folder named for what it is, the same convention {@link
+     * com.example.kido.media.metadata.SidecarLocator#isInPosterFolder} reads for
+     * shared artwork.
+     */
+    private static final Set<String> ADULT_FOLDER_NAMES = Set.of("18+", "adult", "adults", "nsfw", "mature");
+
+    private static boolean isInAdultFolder(Path file) {
+        Path folder = file.getParent();
+        if (folder == null || folder.getFileName() == null) {
+            return false;
+        }
+        return ADULT_FOLDER_NAMES.contains(folder.getFileName().toString().toLowerCase(Locale.ROOT));
+    }
+
     private static MediaType typeFor(Path file, MediaPaths.LibraryRoot library) {
         Optional<MediaType.Kind> kind = MediaFiles.kindOf(file);
         if (kind.isEmpty()) {
             return null;
+        }
+        if (kind.get() == MediaType.Kind.VIDEO && isInAdultFolder(file)) {
+            return MediaType.ADULT;
         }
         if (kind.get() == library.type().kind()) {
             return library.type();

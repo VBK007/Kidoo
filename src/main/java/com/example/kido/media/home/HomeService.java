@@ -110,6 +110,14 @@ public class HomeService {
     @Transactional(readOnly = true)
     public HomeDto home(AppUser owner, Profile profile, List<MediaType> types, int limit) {
         List<MediaType> requested = types == null || types.isEmpty() ? DEFAULT_TYPES : types;
+        // The home screen is shared, unnarrowed browsing — the same reasoning
+        // CatalogService's "All" applies — so ADULT never belongs in a rail here
+        // even if a caller explicitly asked for it, the way "All" already refuses
+        // to hand it back under no filter at all.
+        requested = requested.stream().filter(MediaType::isEverydayBrowsing).toList();
+        if (requested.isEmpty()) {
+            requested = DEFAULT_TYPES;
+        }
         int railSize = Math.min(Math.max(1, limit), MAX_RAIL_SIZE);
         Pageable railPage = PageRequest.of(0, railSize);
 

@@ -244,7 +244,11 @@ public class PlaybackService {
         List<ContinueWatchingDto> out = new ArrayList<>();
         for (PlaybackProgress progress : started) {
             Optional<MediaItem> item = items.findById(progress.getMediaItemId());
-            if (item.isEmpty() || !item.get().isBrowsable()) {
+            // Continue Watching sits on the shared home screen, unnarrowed — an
+            // in-progress ADULT title has no business surfacing there any more
+            // than it belongs in "All"; whoever left it mid-watch can still find
+            // it back under the 18+ chip itself.
+            if (item.isEmpty() || !item.get().isBrowsable() || !item.get().getType().isEverydayBrowsing()) {
                 continue;
             }
             out.add(new ContinueWatchingDto(
