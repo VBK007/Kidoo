@@ -28,8 +28,8 @@ COPY --from=build /app/build/libs/*.jar app.jar
 # both default to a relative "data/..." path under here, so appuser needs write access
 # before it can create either. Made ahead of USER so a volume later mounted under
 # /app/data (teaser clips) inherits this ownership on first mount rather than root's.
-RUN mkdir -p /app/data/teaser-clips /app/data/artwork /app/data/music-previews /app/data/remux \
-    && chown -R appuser:appuser /app/data
+RUN mkdir -p /app/data/teaser-clips /app/data/artwork /app/data/music-previews /app/data/remux /app/logs \
+    && chown -R appuser:appuser /app/data /app/logs
 USER appuser
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
