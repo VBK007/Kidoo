@@ -69,8 +69,28 @@ public class SidecarLocator {
     }
 
     public Optional<Path> findPoster(Path videoFile) {
-        Optional<Path> conventional = findArtwork(videoFile, POSTER_NAMES);
+        Optional<Path> conventional = findConventionalPoster(videoFile);
         return conventional.isPresent() ? conventional : findLooseMatch(videoFile);
+    }
+
+    /**
+     * Just the named/same-basename match — no fuzzy fallback.
+     *
+     * <p>For a caller (music ingest) that has a higher-confidence source of its own to
+     * try in between: a sidecar this sure of itself should win outright, but the fuzzy
+     * {@link #findLooseMatch} guess should not be allowed to pre-empt it.
+     */
+    public Optional<Path> findConventionalPoster(Path videoFile) {
+        return findArtwork(videoFile, POSTER_NAMES);
+    }
+
+    /**
+     * The fuzzy last-resort match alone, for a caller that wants to try it only after
+     * every higher-confidence source — including one of its own, like a file's embedded
+     * cover art — has already come up empty.
+     */
+    public Optional<Path> findLoosePoster(Path videoFile) {
+        return findLooseMatch(videoFile);
     }
 
     public Optional<Path> findBackdrop(Path videoFile) {
@@ -194,6 +214,15 @@ public class SidecarLocator {
     private static final int LOOSE_MATCH_MIN_KEY_LENGTH = 5;
 
     /**
+     * Suffixes that mark an image as a derivative of the audio itself, not artwork for
+     * it — an analysis tool's {@code <title>-spectrogram.png} or {@code
+     * <title>-waveform.png} scores a near-perfect loose-prefix match against the very
+     * track it was generated from, which is exactly backwards from what this lookup is
+     * for.
+     */
+    private static final Set<String> DERIVATIVE_IMAGE_SUFFIXES = Set.of("spectrogram", "waveform");
+
+    /**
      * Last-resort poster lookup for a folder that holds several videos and images with
      * no naming convention linking them — a quickly-made thumbnail is often just the
      * title with the spaces dropped ({@code Anbe Diana} to {@code anabediana.jpg}), which
@@ -224,6 +253,10 @@ public class SidecarLocator {
                 }
                 String imageKey = alnumKey(MediaFiles.baseName(name));
                 if (imageKey.length() < LOOSE_MATCH_MIN_KEY_LENGTH) {
+                    continue;
+                }
+                if (imageKey.startsWith(videoKey)
+                        && DERIVATIVE_IMAGE_SUFFIXES.contains(imageKey.substring(videoKey.length()))) {
                     continue;
                 }
                 double score = loosePrefixSimilarity(videoKey, imageKey);

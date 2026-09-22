@@ -1,6 +1,7 @@
 package com.example.kido.media.library;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -289,11 +290,20 @@ public class LibraryIngestService {
         List<MediaItem> updated = new ArrayList<>();
         for (MediaItem item : items.findByMissingFalse()) {
             boolean changed;
-            if (item.getType().isVideo()) {
-                changed = backfillVideoArtwork(item);
-            } else if (item.getType() == MediaType.MUSIC) {
-                changed = backfillTrackArtwork(item);
-            } else {
+            try {
+                if (item.getType().isVideo()) {
+                    changed = backfillVideoArtwork(item);
+                } else if (item.getType() == MediaType.MUSIC) {
+                    changed = backfillTrackArtwork(item);
+                } else {
+                    continue;
+                }
+            } catch (UncheckedIOException ex) {
+                // A library root going away mid-pass (an external drive dropping,
+                // most often) must not sink backfill for every item still to come
+                // in this loop — one unreachable file is not evidence about any
+                // other item's poster.
+                log.warn("Skipping artwork backfill for '{}': {}", item.getFileName(), ex.getMessage());
                 continue;
             }
             if (changed) {
@@ -713,6 +723,13 @@ public class LibraryIngestService {
                     item.setPosterPath(cover);
                 }
             }
+            // Last resort, tried only once nothing more trustworthy has claimed the
+            // slot: a fuzzy filename guess beats no artwork at all, but never a real
+            // cover — embedded or conventional-sidecar — which is why it waits until
+            // both of those have already had their turn.
+            if (!item.hasPoster()) {
+                sidecars.findLoosePoster(file).map(Path::toString).ifPresent(item::setPosterPath);
+            }
         }
         item.setUpdatedAt(Instant.now());
         MediaItem saved = items.save(item);
@@ -855,7 +872,15 @@ public class LibraryIngestService {
         // Additive only: a sidecar image found now is worth taking, but finding none
         // this time must never clear a poster that came from embedded art or the
         // iTunes fallback — both run after this method, on files no sidecar ever had.
-        sidecars.findPoster(file).map(Path::toString).ifPresent(item::setPosterPath);
+        //
+        // The conventional match only, not the fuzzy loose one: a same-basename or
+        // cover.jpg/folder.jpg sidecar is confident enough to win outright, but the
+        // loose guess is not — it can be fooled by a same-titled analysis byproduct
+        // sitting in the same folder (a "-spectrogram"/"-waveform" PNG scores a
+        // near-perfect match against the very track it was generated from), so it
+        // only gets a turn in applyProbe, after the track's own embedded cover art
+        // has already had first refusal.
+        sidecars.findConventionalPoster(file).map(Path::toString).ifPresent(item::setPosterPath);
     }
 
     /**
