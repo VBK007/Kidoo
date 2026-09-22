@@ -32,7 +32,7 @@ transcoding, which then will not work either.
 # Normal path: spring-boot-docker-compose starts Postgres from compose.yaml
 ./gradlew bootRun
 
-# Tests (500, all in-process against H2)
+# Tests (515, all in-process against H2)
 ./gradlew test
 
 # Container — the image installs ffmpeg
@@ -62,6 +62,7 @@ full set and the reasoning behind each default.
 | `DB_URL` / `DB_USER` / `DB_PASSWORD` | local Postgres | Datasource |
 | `JWT_SECRET` | dev value | **Change in production.** ≥ 32 chars for HS256 |
 | `ADMIN_API_KEY` | dev value | `X-Admin-Key` for owner-only endpoints |
+| `ADMIN_DB_BROWSER` | `true` | Read-only `/api/admin/db` table browser; `false` removes it |
 | `MEDIA_ROOTS` | empty | Directories to index; empty keeps the media module dormant |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Absolute paths if not on `PATH` |
 | `MEDIA_SCAN_INTERVAL_MINUTES` | `0` | Automatic re-scan cadence; 0 disables |
@@ -272,6 +273,22 @@ The web console that reads it lives in [`admin-web/`](admin-web/README.md) —
 React + TypeScript on Vite, `npm install && npm run dev`, proxying `/api` to
 this server on port 8080.
 
+### Database browser
+
+Every table in the schema, read-only, a page at a time, under `/api/admin/db` —
+sortable, searchable across text columns, with one row openable on its own.
+Behind the same owner gate, and removable in one switch
+(`ADMIN_DB_BROWSER=false`).
+
+No endpoint takes SQL and none writes. Statements are assembled server side, all
+of them `SELECT`, and a table or sort column is matched against the schema read
+at startup — a name that is not a real column is refused rather than quoted into
+anything. What it will not show is decided by name and type rather than a
+hand-kept list, so a column added next year is covered the day it appears:
+**password and token hashes are never sent**, email addresses and IPs are masked
+in a listing and whole only when a single row is opened deliberately, and blobs
+and JSON documents are described rather than shipped.
+
 ### Kids app side
 
 Versioned **content manifest** so a client syncs only what changed, activity
@@ -331,7 +348,7 @@ admin-web/                   the admin console that reads them (React + Vite)
 - **Flyway owns the schema**; Hibernate is `ddl-auto=validate` and refuses to
   start on a mismatch. One baseline per dialect, because a `@Lob String` is
   `oid` on Postgres and `clob` on H2.
-- **500 tests**, most of them full-stack integration tests over real HTTP against
+- **515 tests**, most of them full-stack integration tests over real HTTP against
   a running context — including real WebSocket connections, two accounts and
   guest tokens for watch parties.
 

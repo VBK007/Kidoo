@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
   ApiError,
   fetchDashboard,
@@ -9,7 +9,11 @@ import {
 import { bytes, clockTime, compact, hours, plain, titleCase } from '../format'
 import { Applications } from './Applications'
 import { BarList, type Bar } from './BarList'
+import { Records } from './Records'
 import { Card, Hero, Tile } from './Tiles'
+
+/** The two things this console does: read the summary, or read the rows. */
+type View = 'overview' | 'records'
 
 /** How often the live panel re-asks. Only the cheap endpoint is polled. */
 const LIVE_INTERVAL_MS = 15_000
@@ -26,6 +30,7 @@ export function Dashboard({
   const [loading, setLoading] = useState(true)
   const [live, setLive] = useState(true)
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null)
+  const [view, setView] = useState<View>('overview')
 
   const report = useCallback(
     (failure: unknown) => {
@@ -112,26 +117,40 @@ export function Dashboard({
     return () => window.clearInterval(timer)
   }, [live, loaded, credentials, report])
 
+  const shell = (body: ReactNode, updatedAt: string | null) => (
+    <main className="shell">
+      <Topbar
+        account={credentials.account.displayName ?? credentials.account.username}
+        onSignOut={onSignOut}
+        onRefresh={() => void refresh()}
+        loading={loading}
+        live={live}
+        setLive={setLive}
+        lastLoadedAt={updatedAt}
+        view={view}
+        setView={setView}
+      />
+      {error ? <Banner message={error} /> : null}
+      {body}
+    </main>
+  )
+
+  // Records does not wait on the overview's numbers — it reads the schema itself,
+  // and someone who came here to look up a row should not sit through a count of
+  // the poster catalog first.
+  if (view === 'records') {
+    return shell(<Records credentials={credentials} onSignOut={onSignOut} />, lastLoadedAt)
+  }
+
   if (!data) {
-    return (
-      <main className="shell">
-        <Topbar
-          account={credentials.account.displayName ?? credentials.account.username}
-          onSignOut={onSignOut}
-          onRefresh={() => void refresh()}
-          loading={loading}
-          live={live}
-          setLive={setLive}
-          lastLoadedAt={null}
-        />
-        {error ? <Banner message={error} /> : null}
-        <div className="grid">
-          <div className="skeleton" />
-          <div className="skeleton" />
-          <div className="skeleton" />
-          <div className="skeleton" />
-        </div>
-      </main>
+    return shell(
+      <div className="grid">
+        <div className="skeleton" />
+        <div className="skeleton" />
+        <div className="skeleton" />
+        <div className="skeleton" />
+      </div>,
+      null,
     )
   }
 
@@ -152,20 +171,8 @@ export function Dashboard({
     value: row.count,
   }))
 
-  return (
-    <main className="shell">
-      <Topbar
-        account={credentials.account.displayName ?? credentials.account.username}
-        onSignOut={onSignOut}
-        onRefresh={() => void refresh()}
-        loading={loading}
-        live={live}
-        setLive={setLive}
-        lastLoadedAt={lastLoadedAt}
-      />
-
-      {error ? <Banner message={error} /> : null}
-
+  return shell(
+    <>
       <section className="section">
         <div className="card">
           <Hero
@@ -303,7 +310,8 @@ export function Dashboard({
           />
         </div>
       </section>
-    </main>
+    </>,
+    lastLoadedAt,
   )
 }
 
@@ -326,6 +334,8 @@ function Topbar({
   live,
   setLive,
   lastLoadedAt,
+  view,
+  setView,
 }: {
   account: string
   onRefresh: () => void
@@ -334,26 +344,57 @@ function Topbar({
   live: boolean
   setLive: (value: boolean) => void
   lastLoadedAt: string | null
+  view: View
+  setView: (value: View) => void
 }) {
+  const overview = view === 'overview'
   return (
     <header className="topbar">
       <div>
         <p className="eyebrow">Kido</p>
         <h1>Admin console</h1>
       </div>
+
+      <nav className="tabs" aria-label="Views">
+        <button
+          className={overview ? 'tab current' : 'tab'}
+          onClick={() => setView('overview')}
+          aria-current={overview ? 'page' : undefined}
+        >
+          Overview
+        </button>
+        <button
+          className={overview ? 'tab' : 'tab current'}
+          onClick={() => setView('records')}
+          aria-current={overview ? undefined : 'page'}
+        >
+          Records
+        </button>
+      </nav>
+
       <span className="spacer" />
       <span className="meta">
         {account}
-        {lastLoadedAt ? ` · updated ${clockTime(lastLoadedAt)}` : ''}
+        {lastLoadedAt && overview ? ` · updated ${clockTime(lastLoadedAt)}` : ''}
       </span>
-      <label className="toggle">
-        <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} />
-        Live
-      </label>
+      {/* Both only act on the overview's numbers, so they are hidden rather than
+          left on screen doing nothing while the records grid is up. */}
+      {overview ? (
+        <>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={live}
+              onChange={(event) => setLive(event.target.checked)}
+            />
+            Live
+          </label>
+          <button className="btn" onClick={onRefresh} disabled={loading}>
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </>
+      ) : null}
       <ThemeToggle />
-      <button className="btn" onClick={onRefresh} disabled={loading}>
-        {loading ? 'Refreshing…' : 'Refresh'}
-      </button>
       <button className="btn" onClick={onSignOut}>
         Sign out
       </button>

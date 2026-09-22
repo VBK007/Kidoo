@@ -49,12 +49,35 @@ signs out rather than leaving a page of stale numbers on screen.
 
 ## What is on it
 
+Two views, switched in the header.
+
+**Overview** — the numbers.
+
 | Section | Reads |
 | --- | --- |
 | Hero + People | `GET /api/admin/dashboard` → `users`, `engagement` |
 | Applications | `applications` — one row per client app |
 | Catalog | `catalog.library`, `catalog.posters`, `catalog.content` |
 | Usage | watch hours, content, the count timestamp |
+
+**Records** — the rows. Pick a table from the left, page through it, sort by
+clicking a header, search across its text columns, and open one row to see it
+whole. Reads `GET /api/admin/db/tables`, `…/{table}/rows` and
+`…/{table}/rows/{id}`.
+
+Three things the grid shows that a plain table view would not:
+
+- **Every header carries how that column is handled** — `SECRET`, `PERSONAL`,
+  `LARGE`, or its type. A blank cell under a secret is legibly a refusal, not an
+  empty field.
+- **Personal columns are masked in the list** (`r***@example.com`) and whole only
+  in the row you open. Password and token hashes are never sent at all, in either
+  view — revealing an address is not revealing a credential.
+- **Columns are reordered for reading**: key first, then the text that names a
+  row, then the rest. Hibernate writes its DDL grouped by type, so `users`
+  otherwise opens on six booleans and pushes `id`, `username` and `email` past
+  the right edge. The API still reports the schema's own order; this is the
+  client's reading order.
 
 The **Live** toggle re-polls `GET /api/admin/engagement` every 15 seconds —
 only that one, because the full dashboard re-counts a four-figure poster
@@ -89,7 +112,8 @@ src/
   App.tsx             signed in or not
   components/
     SignIn.tsx        account + admin key
-    Dashboard.tsx     the page, the live poll, the theme toggle
+    Dashboard.tsx     the shell, the two views, the live poll, the theme toggle
+    Records.tsx       the table browser, its grid and the row panel
     Applications.tsx  the per-app table
     BarList.tsx       magnitude bars
     Tiles.tsx         hero, stat tile, card

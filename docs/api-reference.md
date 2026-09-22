@@ -1342,6 +1342,73 @@ watchHoursLast7Days, watchHoursThisMonth
 `streamingNow` is distinct profiles, so it is smaller than `liveStreams` when
 someone has a phone and a TV going at once.
 
+### Database browser — admin key **and** PARENT
+
+Every table in the schema, read-only, a page at a time, under `/api/admin/db`.
+Switchable off entirely with `app.admin.db-browser.enabled=false`
+(`ADMIN_DB_BROWSER`).
+
+**No endpoint here takes SQL and none writes.** Statements are assembled server
+side, all of them `SELECT`. A table name, a sort column and a direction are
+matched against the schema the server read at startup and the *schema's own*
+spelling is what is quoted into the statement, so a name that is not a real
+column never reaches one — it comes back **400**. The search term is a bound
+parameter.
+
+Every column arrives with a `handling` that says what you are being given:
+
+| handling | what you get |
+| --- | --- |
+| `PLAIN` | the value as stored (long text cut at 300 characters in a listing) |
+| `PERSONAL` | masked in a listing (`r***@example.com`, `192.168.***.***`), whole when one row is opened |
+| `SECRET` | **never sent, in any mode** — password hashes, PIN hashes, tokens |
+| `LARGE` | a blob, large object or JSON document: `null` in a listing, cut to 4000 characters in one row |
+
+Classification is by name and type, not a hand-kept list, so a new
+`reset_password_token` is hidden the day it is added. A name match on a column
+that cannot hold text is ignored — `weekly_email_summary` is a boolean
+preference, not an address.
+
+Identifiers are reported **lower-case** whatever the database does with them
+(H2 uppercases an unquoted `create table`, PostgreSQL lowercases it), so a
+client keying on a column name does not change shape with the deployment.
+
+**`GET /api/admin/db/tables`** →
+```
+[{ name, rows, columnCount, primaryKey[] }]
+```
+
+**`GET /api/admin/db/tables/{table}/columns`** →
+```
+[{ name, type, nullable, primaryKey, handling }]
+```
+
+**`GET /api/admin/db/tables/{table}/rows`** — query `page` `size` `sort`
+`direction` `q` →
+```
+table, columns[], rows[{ column: value }], page, size, total, totalPages,
+sort, direction, query, masked
+```
+
+`size` defaults to 25 and is capped at **200**; anything ≤ 0 falls back to the
+default. Ordered by the primary key unless `sort` names another column —
+without an `ORDER BY` a database may hand back the same row on two pages and
+never hand back another. Every row carries a key for **every** column of the
+table, including the ones not selected, which come back `null`: present and
+empty beside a `SECRET` column says "there is a column here and you are not
+being given it", where an absent key would just look like a gap.
+
+**`GET /api/admin/db/tables/{table}/rows/{id}`** →
+```
+table, columns[], values{}, masked: false
+```
+
+One row by primary key, with its `PERSONAL` columns unmasked — the deliberate
+click behind a listing. Secrets stay out of this too: revealing an address is
+not revealing a credential. **400** for a table with a composite primary key or
+none at all (a join table has no single value to address a row by), **404** for
+a key that is not there.
+
 ---
 
 ## Thumbnail scrubbing arithmetic

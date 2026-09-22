@@ -416,6 +416,320 @@ tbody tr:hover td {
   background: var(--bar);
 }
 
+/* --- tabs --- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.tab {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tab.current {
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* --- records: table picker + grid --- */
+
+.records {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .records {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.tables {
+  position: sticky;
+  top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+
+.tables .filter {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--axis);
+  border-radius: 7px;
+  background: var(--page);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.tables ul {
+  max-height: 60vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.table-pick {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+}
+
+.table-pick:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.table-pick.current {
+  background: var(--bar-track);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.table-pick .name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-pick .count {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rows {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+
+.rows-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.rows-bar h2 {
+  font-size: 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.rows-bar input,
+.rows-bar select {
+  padding: 6px 9px;
+  border: 1px solid var(--axis);
+  border-radius: 7px;
+  background: var(--page);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.rows-bar input {
+  min-width: 180px;
+}
+
+.masked-note {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--bar);
+  border-radius: 0 6px 6px 0;
+  background: var(--surface-2);
+}
+
+/* The grid scrolls sideways on its own: a table with thirty columns should not
+   make the whole page scroll, and the picker beside it must stay put. */
+.grid-scroll {
+  overflow-x: auto;
+}
+
+.records-grid {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.records-grid th {
+  padding: 0 12px 8px 0;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.records-grid th.sortable {
+  cursor: pointer;
+}
+
+.records-grid th.sortable:hover .col-name {
+  color: var(--text-primary);
+}
+
+.records-grid .col-name {
+  display: block;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.records-grid .pk {
+  margin-right: 5px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bar);
+  color: #ffffff;
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+.handling {
+  display: inline-block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Status colours, and only for status: withheld and masked are states of the
+   data, not series in a chart, so they wear the reserved palette with a word
+   beside them rather than colour alone. */
+.handling.secret {
+  color: var(--critical);
+}
+
+.handling.personal {
+  color: var(--serious);
+}
+
+.handling.large {
+  color: var(--text-muted);
+}
+
+.records-grid td {
+  padding: 7px 12px 7px 0;
+  text-align: left;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.records-grid td.opener,
+.records-grid th.opener {
+  width: 48px;
+  padding-right: 8px;
+}
+
+.records-grid .null {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.records-grid .withheld {
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+}
+
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--bar);
+  font-size: 12.5px;
+  text-decoration: underline;
+}
+
+/* --- one row, opened --- */
+
+.row-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  width: min(520px, 100vw);
+  padding: 20px;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--surface-1);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.18);
+}
+
+.row-panel > header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.row-panel h2 {
+  font-size: 18px;
+}
+
+.row-panel dl {
+  margin: 16px 0 0;
+}
+
+.row-panel dl > div {
+  padding: 9px 0;
+  border-top: 1px solid var(--grid);
+}
+
+.row-panel dt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.row-panel dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 13.5px;
+}
+
 /* --- states --- */
 
 .empty {

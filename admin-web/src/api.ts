@@ -153,7 +153,7 @@ export async function signIn(usernameOrEmail: string, password: string) {
   return body
 }
 
-async function get<T>(path: string, credentials: Credentials): Promise<T> {
+async function fetchJson<T>(path: string, credentials: Credentials): Promise<T> {
   const response = await fetch(`${BASE}/api/admin${path}`, {
     headers: {
       Authorization: `Bearer ${credentials.token}`,
@@ -167,7 +167,7 @@ async function get<T>(path: string, credentials: Credentials): Promise<T> {
 }
 
 export const fetchDashboard = (credentials: Credentials) =>
-  get<Dashboard>('/dashboard', credentials)
+  fetchJson<Dashboard>('/dashboard', credentials)
 
 /**
  * The live tile on its own.
@@ -176,4 +176,88 @@ export const fetchDashboard = (credentials: Credentials) =>
  * the panel that refreshes every few seconds asks for this instead.
  */
 export const fetchEngagement = (credentials: Credentials) =>
-  get<Engagement>('/engagement', credentials)
+  fetchJson<Engagement>('/engagement', credentials)
+
+// --- the database browser ---
+
+/**
+ * What the server will do with a column's values.
+ *
+ * `SECRET` never arrives at all, `PERSONAL` arrives masked in a listing and whole
+ * in a single row, `LARGE` is described rather than sent. The value under such a
+ * column is `null` in a listing — present, so a grid keeps its shape, and empty,
+ * because that is the truth about what was sent.
+ */
+export type Handling = 'PLAIN' | 'PERSONAL' | 'SECRET' | 'LARGE'
+
+export type DbColumn = {
+  name: string
+  type: string
+  nullable: boolean
+  primaryKey: boolean
+  handling: Handling
+}
+
+export type DbTable = {
+  name: string
+  rows: number
+  columnCount: number
+  primaryKey: string[]
+}
+
+export type DbValue = string | number | boolean | null
+
+export type DbPage = {
+  table: string
+  columns: DbColumn[]
+  rows: Record<string, DbValue>[]
+  page: number
+  size: number
+  total: number
+  totalPages: number
+  sort: string
+  direction: 'asc' | 'desc'
+  query: string | null
+  masked: boolean
+}
+
+export type DbRow = {
+  table: string
+  columns: DbColumn[]
+  values: Record<string, DbValue>
+  masked: boolean
+}
+
+export const fetchTables = (credentials: Credentials) =>
+  fetchJson<DbTable[]>('/db/tables', credentials)
+
+export function fetchRows(
+  credentials: Credentials,
+  table: string,
+  options: { page: number; size: number; sort?: string; direction?: string; query?: string },
+) {
+  const params = new URLSearchParams({
+    page: String(options.page),
+    size: String(options.size),
+  })
+  if (options.sort) {
+    params.set('sort', options.sort)
+  }
+  if (options.direction) {
+    params.set('direction', options.direction)
+  }
+  if (options.query) {
+    params.set('q', options.query)
+  }
+  return fetchJson<DbPage>(
+    `/db/tables/${encodeURIComponent(table)}/rows?${params}`,
+    credentials,
+  )
+}
+
+/** One row by primary key — the deliberate click that unmasks it. */
+export const fetchRow = (credentials: Credentials, table: string, id: string) =>
+  fetchJson<DbRow>(
+    `/db/tables/${encodeURIComponent(table)}/rows/${encodeURIComponent(id)}`,
+    credentials,
+  )
