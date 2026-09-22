@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -25,6 +26,8 @@ import com.example.kido.media.MediaPaths;
 import com.example.kido.media.MediaProperties;
 import com.example.kido.media.catalog.MediaInfo;
 import com.example.kido.media.catalog.MediaItem;
+import com.example.kido.media.catalog.MediaItemRepository;
+import com.example.kido.media.catalog.MediaType;
 import com.example.kido.user.AppUser;
 
 import jakarta.annotation.PostConstruct;
@@ -54,6 +57,7 @@ public class TeaserClipService {
     private final MediaProperties props;
     private final MediaPaths paths;
     private final TeaserClipRepository clips;
+    private final MediaItemRepository items;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "media-teaser-worker");
@@ -65,10 +69,12 @@ public class TeaserClipService {
 
     private Path outputRoot;
 
-    public TeaserClipService(MediaProperties props, MediaPaths paths, TeaserClipRepository clips) {
+    public TeaserClipService(MediaProperties props, MediaPaths paths, TeaserClipRepository clips,
+                             MediaItemRepository items) {
         this.props = props;
         this.paths = paths;
         this.clips = clips;
+        this.items = items;
     }
 
     @PostConstruct
@@ -175,6 +181,94 @@ public class TeaserClipService {
         log.info("Teaser clip {} queued for '{}' [{}-{}]",
                 saved.getId(), item.getTitle(), startSeconds, endSeconds);
         return saved;
+    }
+
+    /** Runtime trimmed off each end before picking auto timestamps — clear of a typical
+     * intro or credits roll, scaled to the film's own length so a 20-minute short and a
+     * three-hour epic are not trimmed by the same fixed number of minutes. */
+    private static final double AUTO_EDGE_MARGIN_FRACTION = 0.07;
+    private static final double AUTO_EDGE_MARGIN_MIN_SECONDS = 60;
+    private static final double AUTO_EDGE_MARGIN_MAX_SECONDS = 600;
+
+    /** Where, across what's left after trimming the margins, the three clips are
+     * centred — a quarter, half and three-quarters of the way through. */
+    private static final double[] AUTO_PICK_FRACTIONS = {0.25, 0.5, 0.75};
+
+    /** Length of an auto-generated clip — inside {@code minClipSeconds}/{@code
+     * maxClipSeconds} for any reasonable configuration, so it is never itself the
+     * reason a pick gets rejected. */
+    private static final double AUTO_CLIP_SECONDS = 16;
+
+    /**
+     * Backfills three evenly-spaced teaser clips for every movie that has none yet.
+     *
+     * <p>This is a pick, not curation: three points spaced through the runtime rather
+     * than anything that has watched the film, so a clip can land on a dull moment or a
+     * scene change. That is the tradeoff for this running unattended on a library
+     * nobody has time to hand-cut three clips per title for — see {@link
+     * #requestGeneration} for the curated path this skips.
+     *
+     * <p>Not {@code @Transactional} for the same reason {@link #requestGeneration}
+     * is not: it only reads before handing each clip off, and wrapping a loop of
+     * {@code worker.submit} calls in one long transaction would hold a connection open
+     * for no benefit.
+     *
+     * @return how many movies were newly queued (each for three clips)
+     */
+    public int backfillForNewMovies() {
+        if (!props.getTeasers().isEnabled()) {
+            return 0;
+        }
+        Set<String> haveClips = clips.mediaItemIdsWithClips();
+        List<MediaItem> movies = items.findByTypeAndMissingFalseAndHiddenFalse(MediaType.FILM);
+        int queued = 0;
+        for (MediaItem movie : movies) {
+            if (haveClips.contains(movie.getId())) {
+                continue;
+            }
+            MediaInfo info = movie.getMediaInfo();
+            if (info == null || info.getDurationSeconds() == null || info.getDurationSeconds() <= 0) {
+                // Not probed yet — ffprobe runs during ingest, so a movie added this
+                // same scan catches up automatically on the next one.
+                continue;
+            }
+            boolean any = false;
+            for (double start : autoPickStarts(info.getDurationSeconds())) {
+                double end = Math.min(info.getDurationSeconds(), start + AUTO_CLIP_SECONDS);
+                if (end - start < props.getTeasers().getMinClipSeconds()) {
+                    continue;
+                }
+                requestGeneration(null, movie, start, end, null, null, "Auto-generated", true);
+                any = true;
+            }
+            if (any) {
+                queued++;
+            }
+        }
+        if (queued > 0) {
+            log.info("Queued auto teaser clips for {} movie(s)", queued);
+        }
+        return queued;
+    }
+
+    private static List<Double> autoPickStarts(double durationSeconds) {
+        double margin = Math.min(AUTO_EDGE_MARGIN_MAX_SECONDS,
+                Math.max(AUTO_EDGE_MARGIN_MIN_SECONDS, durationSeconds * AUTO_EDGE_MARGIN_FRACTION));
+        double usableStart = margin;
+        double usableEnd = durationSeconds - margin;
+        if (usableEnd <= usableStart) {
+            // A file too short for any margin to leave usable room: spread across the
+            // whole thing rather than refuse it three clips entirely.
+            usableStart = 0;
+            usableEnd = durationSeconds;
+        }
+        double span = usableEnd - usableStart;
+        List<Double> starts = new ArrayList<>();
+        for (double fraction : AUTO_PICK_FRACTIONS) {
+            double center = usableStart + span * fraction;
+            starts.add(Math.max(0, center - AUTO_CLIP_SECONDS / 2));
+        }
+        return starts;
     }
 
     // --- the worker ---

@@ -19,6 +19,7 @@ import com.example.kido.common.ApiException;
 import com.example.kido.media.MediaFiles;
 import com.example.kido.media.MediaPaths;
 import com.example.kido.media.metadata.SidecarLocator;
+import com.example.kido.media.teasers.TeaserClipService;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +42,7 @@ public class LibraryScanner {
 
     private final MediaPaths paths;
     private final LibraryIngestService ingest;
+    private final TeaserClipService teasers;
 
     private final ScanStatus status = new ScanStatus();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
@@ -49,9 +51,10 @@ public class LibraryScanner {
         return thread;
     });
 
-    public LibraryScanner(MediaPaths paths, LibraryIngestService ingest) {
+    public LibraryScanner(MediaPaths paths, LibraryIngestService ingest, TeaserClipService teasers) {
         this.paths = paths;
         this.ingest = ingest;
+        this.teasers = teasers;
     }
 
     public ScanStatus status() {
@@ -95,14 +98,19 @@ public class LibraryScanner {
             // See backfillMusicLanguage's own docs for why this is a guess rather than
             // a real lookup, and why it runs here rather than during per-file ingest.
             int languageBackfilled = ingest.backfillMusicLanguage();
+            // Queues encodes on TeaserClipService's own worker thread and returns
+            // immediately — a movie's three clips are typically still cutting when this
+            // scan's own log line below prints, not because it failed.
+            int teasersQueued = teasers.backfillForNewMovies();
             status.finish(null);
             log.info("Library scan finished: {} seen, {} added, {} updated, {} unchanged, "
                             + "{} missing, {} failed, {} backfilled artwork, {} backfilled metadata, "
-                            + "{} backfilled audio features, {} backfilled music language",
+                            + "{} backfilled audio features, {} backfilled music language, "
+                            + "{} movies queued for auto teasers",
                     status.getFilesSeen().get(), status.getAdded().get(), status.getUpdated().get(),
                     status.getUnchanged().get(), status.getMarkedMissing().get(),
                     status.getFailed().get(), backfilled, metadataBackfilled, audioBackfilled,
-                    languageBackfilled);
+                    languageBackfilled, teasersQueued);
         } catch (Exception ex) {
             log.error("Library scan failed", ex);
             status.finish(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());

@@ -2,6 +2,7 @@ package com.example.kido.media.teasers;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -60,4 +61,9 @@ public interface TeaserClipRepository extends JpaRepository<TeaserClip, String> 
 
     /** Every clip for an item, e.g. when the item itself is being purged. */
     void deleteByMediaItemId(String mediaItemId);
+
+    /** Every media item that already has at least one clip, so a backfill pass over
+     * the whole library knows which titles to leave alone. */
+    @Query("select distinct c.mediaItemId from TeaserClip c")
+    Set<String> mediaItemIdsWithClips();
 }
