@@ -87,10 +87,16 @@ public class PlaybackStarter {
 
             // The session parameter is what makes a direct play visible in the admin
             // panel and stoppable from it; a plain /stream still works without one.
+            // source=remux tells /stream to serve the cached HEVC remux instead of the
+            // original file — the decision already established that is what this
+            // client needs, and /stream has no client capabilities of its own to
+            // re-derive that from.
+            String url = "/api/media/items/" + item.getId() + "/stream?session=" + session.getId()
+                    + (decision.viaRemux() ? "&source=remux" : "");
             return new PlaybackDecisionDto(
                     item.getId(),
                     PlaybackDecisionDto.Mode.DIRECT,
-                    "/api/media/items/" + item.getId() + "/stream?session=" + session.getId(),
+                    url,
                     session.getId(),
                     startSeconds,
                     MediaInfoDto.from(item.getMediaInfo()),

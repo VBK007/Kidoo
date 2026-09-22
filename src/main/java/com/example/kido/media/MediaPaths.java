@@ -32,9 +32,12 @@ public class MediaPaths {
 
     private final List<LibraryRoot> roots;
     private final Path artworkDir;
+    private final Path remuxDir;
 
     public MediaPaths(MediaProperties props) {
         this.artworkDir = Path.of(props.getArtworkDir().trim())
+                .toAbsolutePath().normalize();
+        this.remuxDir = Path.of(props.getRemux().getDir().trim())
                 .toAbsolutePath().normalize();
         List<LibraryRoot> resolved = new ArrayList<>();
         for (MediaProperties.Library library : props.effectiveLibraries()) {
@@ -85,7 +88,7 @@ public class MediaPaths {
      * @throws ApiException 404 if the file is gone, 403 if it resolves outside every root
      */
     public Path requireWithinRoots(String raw) {
-        return resolveWithin(raw, false);
+        return resolveWithin(raw, false, false);
     }
 
     /**
@@ -98,7 +101,19 @@ public class MediaPaths {
      * that skips the check.
      */
     public Path requireImage(String raw) {
-        return resolveWithin(raw, true);
+        return resolveWithin(raw, true, false);
+    }
+
+    /**
+     * The same check for a cached HEVC remux, widened to include the remux directory
+     * instead of the artwork one — see {@link #requireImage} for why a second allowed
+     * base exists at all rather than trusting the stored path outright: this one is
+     * server-generated too, by {@code HevcRemuxService}, but it is still a path read
+     * off a database row into a file open, and every other such path in this class
+     * goes through the same containment check regardless of who wrote the row.
+     */
+    public Path requireRemux(String raw) {
+        return resolveWithin(raw, false, true);
     }
 
     /** Where uploaded artwork is written. Created by the caller that writes to it. */
@@ -106,7 +121,7 @@ public class MediaPaths {
         return artworkDir;
     }
 
-    private Path resolveWithin(String raw, boolean allowArtwork) {
+    private Path resolveWithin(String raw, boolean allowArtwork, boolean allowRemux) {
         if (raw == null || raw.isBlank()) {
             throw new ApiException(HttpStatus.NOT_FOUND, "File not available");
         }
@@ -121,6 +136,9 @@ public class MediaPaths {
         }
         Path real = realOrNormalized(candidate);
         if (allowArtwork && real.startsWith(realOrNormalized(artworkDir))) {
+            return real;
+        }
+        if (allowRemux && real.startsWith(realOrNormalized(remuxDir))) {
             return real;
         }
         for (LibraryRoot root : roots) {

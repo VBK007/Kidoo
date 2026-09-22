@@ -69,7 +69,7 @@ public class PlaybackDecisionService {
             // m4a...) already plays natively in a browser or ExoPlayer over plain HTTP,
             // which /stream already serves with the right content type.
             reasons.add("Direct play: audio is served as-is, no transcode path exists");
-            return new Decision(true, reasons, null);
+            return new Decision(true, reasons, null, false);
         }
 
         MediaInfo info = item.getMediaInfo();
@@ -78,7 +78,7 @@ public class PlaybackDecisionService {
             // Without a probe there is nothing to compare against. Transcoding produces
             // a known-good H.264/AAC stream, so it is the safe answer.
             reasons.add("File has not been probed; cannot verify client compatibility");
-            return new Decision(false, reasons, targetHeight(caps, null));
+            return new Decision(false, reasons, targetHeight(caps, null), false);
         }
 
         boolean compatible = true;
@@ -129,14 +129,27 @@ public class PlaybackDecisionService {
 
         if (compatible) {
             reasons.add("Direct play: container and codecs match client capabilities");
-            return new Decision(true, reasons, null);
+            return new Decision(true, reasons, null, false);
+        }
+
+        if (item.hasRemux()) {
+            // A cached H264/MP4 copy already exists for this source, made because this
+            // server cannot hardware-decode HEVC to transcode it live (see
+            // HevcRemuxService). It is a universal container/codec baseline by
+            // construction, so no further capability check is needed — the same reason
+            // an unprobed file above cannot fail this the other way, this cannot fail it
+            // either.
+            reasons.add("Direct play: serving a pre-transcoded H264 copy "
+                    + "(original " + orUnknown(info.getContainer()) + "/" + orUnknown(videoCodec)
+                    + " is not directly playable on this client)");
+            return new Decision(true, reasons, null, true);
         }
 
         if (!caps.hlsAllowed()) {
             // Nothing left to offer: the client rejected HLS and cannot take the original.
             reasons.add("Client does not support HLS, so no transcode path is available");
         }
-        return new Decision(false, reasons, targetHeight(caps, info));
+        return new Decision(false, reasons, targetHeight(caps, info), false);
     }
 
     /**
@@ -185,9 +198,13 @@ public class PlaybackDecisionService {
     }
 
     /**
-     * @param directPlay   true when the original bytes can be served as-is
+     * @param directPlay   true when bytes can be served as-is (the original file, or a
+     *                     cached remux when {@code viaRemux} is set)
      * @param reasons      why, in client-readable form — useful in the app's debug view
      * @param targetHeight height to transcode to, null when direct playing
+     * @param viaRemux     true when {@code directPlay} means the cached HEVC remux, not
+     *                     the original file — callers must resolve the served path
+     *                     accordingly, see {@code MediaItem#getRemuxedPath()}
      */
-    public record Decision(boolean directPlay, List<String> reasons, Integer targetHeight) {}
+    public record Decision(boolean directPlay, List<String> reasons, Integer targetHeight, boolean viaRemux) {}
 }

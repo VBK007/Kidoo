@@ -357,4 +357,12 @@ public interface MediaItemRepository
      */
     Page<MediaItem> findByTypeInAndMissingFalseAndHiddenFalseOrderByCapturedAtDescIdDesc(
             List<MediaType> types, Pageable pageable);
+
+    /**
+     * HEVC sources still waiting on {@code HevcRemuxService}. Video codec alone is
+     * enough of a filter without also naming the video types: only video is ever
+     * probed for a codec, so a music or photo row can never match.
+     */
+    List<MediaItem> findByMediaInfoVideoCodecAndRemuxedPathIsNullAndRemuxCheckedAtIsNullAndMissingFalse(
+            String videoCodec, Pageable pageable);
 }

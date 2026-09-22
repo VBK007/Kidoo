@@ -347,6 +347,30 @@ public class MediaItem {
     @Column(name = "music_artwork_checked_at")
     private Instant musicArtworkCheckedAt;
 
+    // --- HEVC remux cache ---
+
+    /**
+     * Absolute path to a one-time H264/MP4 remux of this file, made because the server
+     * has no hardware HEVC decode and a client that cannot take the original container
+     * or codec would otherwise force a live software transcode on every single play.
+     * Null until {@code HevcRemuxService} has produced one. See {@link #remuxCheckedAt}.
+     */
+    @Column(name = "remuxed_path", length = 1024)
+    private String remuxedPath;
+
+    /**
+     * When a remux last ran, regardless of outcome — same gating as {@link
+     * #musicArtworkCheckedAt}: null is the only thing that means "try again", so a file
+     * the remux genuinely fails on (corrupt source, disk full) is not re-attempted
+     * every pass.
+     */
+    @Column(name = "remux_checked_at")
+    private Instant remuxCheckedAt;
+
+    public boolean hasRemux() {
+        return remuxedPath != null && !remuxedPath.isBlank();
+    }
+
     // --- probe cache ---
 
     @Embedded

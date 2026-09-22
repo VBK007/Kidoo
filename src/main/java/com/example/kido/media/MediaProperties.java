@@ -161,6 +161,10 @@ public class MediaProperties {
     @Setter
     private AudioAnalysis audioAnalysis = new AudioAnalysis();
 
+    @Getter
+    @Setter
+    private Remux remux = new Remux();
+
     /**
      * Offline copies prepared for a device to take away.
      *
@@ -201,6 +205,37 @@ public class MediaProperties {
 
         /** Default vertical resolution when the client does not ask for one. */
         private int defaultHeight = 720;
+    }
+
+    /**
+     * One-time H264 remux for HEVC sources, cached so a client that cannot take the
+     * original never forces a live software transcode more than once per file.
+     *
+     * <p>Off by default: this is a background CPU job with no urgency to the person who
+     * just deployed the server, unlike {@link #transcodeHwaccelEnabled} which gates a
+     * per-request path. A household turns it on once it knows it needs it.
+     */
+    @Getter
+    @Setter
+    public static class Remux {
+
+        private boolean enabled = false;
+
+        /** Where finished remuxes are kept. Never inside a media library, persists across restarts. */
+        private String dir = "data/remux";
+
+        /**
+         * Slower than the live-transcode preset, same reasoning as {@link Downloads#preset}:
+         * nothing is waiting on this frame-by-frame, only the backlog clearing eventually.
+         * Ignored when the software fallback below is what actually runs.
+         */
+        private String preset = "medium";
+
+        /** Constant Rate Factor for the software fallback encode. */
+        private int crf = 20;
+
+        /** A whole film on a slow CPU legitimately takes a while; this is the ceiling per file. */
+        private int timeoutMinutes = 240;
     }
 
     /**

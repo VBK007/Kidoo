@@ -105,18 +105,26 @@ public class StreamController {
     }
 
     /**
-     * Serves the original file with {@code Range} support.
+     * Serves the original file, or a cached HEVC remux, with {@code Range} support.
      *
      * <p>Safe to call without a session — it is just bytes — but passing the session
      * from the decision is what meters the stream and lets the owner end it. A session
      * the owner has ended is refused here, which is how "end this stream" reaches a
      * direct play: there is no process to kill, so the next range request is stopped
      * instead, and a player asking every few seconds halts almost immediately.
+     *
+     * @param source {@code "remux"} when the decision that produced this URL resolved
+     *               to the cached HEVC remux rather than the original file — see
+     *               {@code PlaybackDecisionService.Decision#viaRemux}. Anything else
+     *               (including absent) serves the original; an item with no remux on
+     *               record falls back to the original too, rather than 404ing a client
+     *               replaying an old URL after the remux was cleared.
      */
     @GetMapping("/stream")
     public void stream(@AuthenticationPrincipal GuestPrincipal guest,
                        @PathVariable String id,
                        @RequestParam(name = "session", required = false) String sessionId,
+                       @RequestParam(name = "source", required = false) String source,
                        HttpServletRequest request,
                        HttpServletResponse response) throws IOException {
 
@@ -127,10 +135,18 @@ public class StreamController {
             throw new ApiException(HttpStatus.FORBIDDEN, "This stream was ended by the owner");
         }
         MediaItem item = catalog.require(id);
-        Path file = paths.requireWithinRoots(item.getFilePath());
 
-        long written = streamer.serve(file, MediaFiles.contentType(item.getFileName()),
-                VIDEO_CACHE_SECONDS, request, response);
+        Path file;
+        String contentType;
+        if ("remux".equals(source) && item.hasRemux()) {
+            file = paths.requireRemux(item.getRemuxedPath());
+            contentType = "video/mp4";
+        } else {
+            file = paths.requireWithinRoots(item.getFilePath());
+            contentType = MediaFiles.contentType(item.getFileName());
+        }
+
+        long written = streamer.serve(file, contentType, VIDEO_CACHE_SECONDS, request, response);
         sessions.recordBytes(sessionId, written);
     }
 
