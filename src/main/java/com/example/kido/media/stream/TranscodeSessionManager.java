@@ -149,6 +149,14 @@ public class TranscodeSessionManager {
     }
 
     private List<String> buildCommand(Path file, Path directory, double startSeconds, int height) {
+        // H.264 encodes in 16x16 macroblocks, and VAAPI enforces that strictly at the
+        // encoder rather than padding around it like libx264 does — a height that isn't
+        // a multiple of 16 (which happens whenever the source itself isn't one, since
+        // the target is clamped to the source height) fails hwaccel encoding outright
+        // with "Task finished with error code: -22 (Invalid argument)". Rounding down
+        // loses at most 15 rows, applied to both paths for one consistent output size
+        // regardless of which encoder actually runs.
+        height = height - (height % 16);
         boolean hwaccel = props.isTranscodeHwaccelEnabled();
         List<String> command = new ArrayList<>();
         command.add(props.getFfmpegPath());
