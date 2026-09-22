@@ -93,6 +93,14 @@ public final class MediaFiles {
             "poster", "folder", "cover", "fanart", "backdrop", "background",
             "art", "banner", "logo", "thumb", "clearart", "disc", "landscape");
 
+    /**
+     * Suffixes an analysis tool appends to a track's own name for a derivative image —
+     * {@code "Title_spectrogram.png"}, {@code "Title-waveform.png"} — that would
+     * otherwise dodge the exact-basename check just below: it depicts the audio, not
+     * anything a person would call a photo, but its name is not quite the track's own.
+     */
+    private static final Set<String> DERIVATIVE_IMAGE_SUFFIXES = Set.of("spectrogram", "waveform");
+
     public static String extension(String fileName) {
         int dot = fileName.lastIndexOf('.');
         return dot < 0 || dot == fileName.length() - 1
@@ -201,6 +209,14 @@ public final class MediaFiles {
             return false;
         }
         String base = baseName(fileName);
+        if (hasPlayableSibling(base, parent)) {
+            return true;
+        }
+        String withoutDerivativeSuffix = stripDerivativeSuffix(base);
+        return withoutDerivativeSuffix != null && hasPlayableSibling(withoutDerivativeSuffix, parent);
+    }
+
+    private static boolean hasPlayableSibling(String base, Path parent) {
         for (String extension : PLAYABLE_EXTENSIONS) {
             // Both cases because the check is a filesystem lookup: Windows does not
             // care, ext4 very much does, and "HOLIDAY.MP4" is a real way for a camera
@@ -211,6 +227,21 @@ public final class MediaFiles {
             }
         }
         return false;
+    }
+
+    /** {@code "Title_spectrogram"}/{@code "Title-waveform"} -> {@code "Title"}, or null
+     * when the name carries none of {@link #DERIVATIVE_IMAGE_SUFFIXES}. */
+    private static String stripDerivativeSuffix(String base) {
+        String lower = base.toLowerCase(Locale.ROOT);
+        for (String suffix : DERIVATIVE_IMAGE_SUFFIXES) {
+            for (String separator : new String[] {"-", "_"}) {
+                String marker = separator + suffix;
+                if (lower.endsWith(marker)) {
+                    return base.substring(0, base.length() - marker.length());
+                }
+            }
+        }
+        return null;
     }
 
     public static String contentType(String fileName) {
