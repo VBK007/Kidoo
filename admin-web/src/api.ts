@@ -99,18 +99,43 @@ export type Credentials = {
   token: string
   adminKey: string
   account: Account
+  /** Which server these credentials are for — see {@link normaliseBase}. */
+  baseUrl: string
 }
 
 /**
- * Where the backend is.
+ * Where the backend is, as a build-time default.
  *
  * Empty by default, which makes every call same-origin and lets the dev server
  * proxy `/api` to the running Spring app — the browser then has no CORS
  * preflight to fail on, and a built console can be served by any host that
  * reverse-proxies the API under the same origin. `VITE_API_BASE` overrides it
  * for the case where it cannot be.
+ *
+ * This is only what the sign-in form opens on. The address actually used is
+ * whatever was typed there, because a home server reached through a free tunnel
+ * gets a new hostname every time the tunnel restarts, and a console that can
+ * only be repointed by rebuilding it is a console that is wrong most days.
  */
-const BASE: string = import.meta.env.VITE_API_BASE ?? ''
+export const DEFAULT_BASE: string = import.meta.env.VITE_API_BASE ?? ''
+
+/**
+ * What the form's address field means, in one place.
+ *
+ * Blank stays blank rather than becoming a URL: that is the same-origin case,
+ * where `/api/...` is the whole path and the dev proxy or a reverse proxy does
+ * the rest. A bare host gets `https://`, which is what a tunnel hands out; type
+ * `http://` explicitly for a LAN address that has no certificate. The trailing
+ * slash goes because every caller appends a path that starts with one, and
+ * `//api/...` is answered by some proxies and 404ed by others.
+ */
+export function normaliseBase(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '')
+  if (trimmed === '') {
+    return ''
+  }
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+}
 
 /** The error envelope every failure comes back in — see GlobalExceptionHandler. */
 type ErrorBody = { status?: number; error?: string; message?: string }
@@ -139,9 +164,30 @@ async function failure(response: Response): Promise<ApiError> {
   return new ApiError(response.status, message)
 }
 
-/** Exchanges a password for an access token. */
-export async function signIn(usernameOrEmail: string, password: string) {
-  const response = await fetch(`${BASE}/api/auth/login`, {
+/**
+ * A request that names the address when there was nothing at it.
+ *
+ * `fetch` rejects with a bare `TypeError` for a hostname that does not resolve,
+ * a refused connection and a CORS wall alike, and "Failed to fetch" on its own
+ * sends someone looking at their password. Since the address is now typed in
+ * rather than built in, the address is the first thing worth suspecting, so it
+ * goes in the message. Status 0 marks "never got an answer", which is not any
+ * HTTP status and must not be mistaken for one.
+ */
+async function reach(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch {
+    throw new ApiError(
+      0,
+      `Could not reach ${url.replace(/\/api\/.*$/, '') || 'this origin'} — check the server address, and that the server is up.`,
+    )
+  }
+}
+
+/** Exchanges a password for an access token, at the address just typed in. */
+export async function signIn(baseUrl: string, usernameOrEmail: string, password: string) {
+  const response = await reach(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ usernameOrEmail, password }),
@@ -154,7 +200,7 @@ export async function signIn(usernameOrEmail: string, password: string) {
 }
 
 async function fetchJson<T>(path: string, credentials: Credentials): Promise<T> {
-  const response = await fetch(`${BASE}/api/admin${path}`, {
+  const response = await reach(`${credentials.baseUrl}/api/admin${path}`, {
     headers: {
       Authorization: `Bearer ${credentials.token}`,
       'X-Admin-Key': credentials.adminKey,
@@ -196,6 +242,8 @@ export type DbColumn = {
   nullable: boolean
   primaryKey: boolean
   handling: Handling
+  /** Has text to match a sub-string against — so `contains` applies to it. */
+  searchable: boolean
 }
 
 export type DbTable = {
@@ -218,8 +266,28 @@ export type DbPage = {
   sort: string
   direction: 'asc' | 'desc'
   query: string | null
+  filterColumn: string | null
+  filterOp: FilterOp | null
+  filterValue: string | null
   masked: boolean
 }
+
+/**
+ * What a filter may ask, mirroring `DatabaseBrowser.FilterOp`.
+ *
+ * `contains` is a sub-string match and so only means anything on text; the server
+ * refuses it on a column that has no sub-string, which is why the picker below
+ * offers it only where it applies.
+ */
+export type FilterOp = 'contains' | 'eq' | 'ne' | 'null' | 'notnull'
+
+export const FILTER_OPS: { value: FilterOp; label: string; needsValue: boolean; textOnly: boolean }[] = [
+  { value: 'contains', label: 'contains', needsValue: true, textOnly: true },
+  { value: 'eq', label: '=', needsValue: true, textOnly: false },
+  { value: 'ne', label: '≠', needsValue: true, textOnly: false },
+  { value: 'null', label: 'is empty', needsValue: false, textOnly: false },
+  { value: 'notnull', label: 'is not empty', needsValue: false, textOnly: false },
+]
 
 export type DbRow = {
   table: string
@@ -234,7 +302,16 @@ export const fetchTables = (credentials: Credentials) =>
 export function fetchRows(
   credentials: Credentials,
   table: string,
-  options: { page: number; size: number; sort?: string; direction?: string; query?: string },
+  options: {
+    page: number
+    size: number
+    sort?: string
+    direction?: string
+    query?: string
+    filterColumn?: string
+    filterOp?: FilterOp
+    filterValue?: string
+  },
 ) {
   const params = new URLSearchParams({
     page: String(options.page),
@@ -248,6 +325,15 @@ export function fetchRows(
   }
   if (options.query) {
     params.set('q', options.query)
+  }
+  if (options.filterColumn) {
+    params.set('filter', options.filterColumn)
+    if (options.filterOp) {
+      params.set('filterOp', options.filterOp)
+    }
+    if (options.filterValue) {
+      params.set('filterValue', options.filterValue)
+    }
   }
   return fetchJson<DbPage>(
     `/db/tables/${encodeURIComponent(table)}/rows?${params}`,

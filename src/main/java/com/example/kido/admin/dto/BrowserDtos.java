@@ -24,13 +24,19 @@ public final class BrowserDtos {
      *                 at all · {@code LARGE} reported by size
      * @param type     the database's own type name, which is what an operator
      *                 reading a schema expects to see
+     * @param searchable whether this column has text to match a sub-string against —
+     *                 what the free-text search reads, and the only kind of column a
+     *                 {@code contains} filter means anything on. Reported so a client
+     *                 can offer the comparisons that will work rather than discover
+     *                 the others by being refused.
      */
     public record ColumnDto(
             String name,
             String type,
             boolean nullable,
             boolean primaryKey,
-            String handling) {}
+            String handling,
+            boolean searchable) {}
 
     /** One table in the schema, with enough about it to render a picker. */
     public record TableDto(
@@ -57,6 +63,9 @@ public final class BrowserDtos {
             String sort,
             String direction,
             String query,
+            String filterColumn,
+            String filterOp,
+            String filterValue,
             boolean masked) {}
 
     /**
