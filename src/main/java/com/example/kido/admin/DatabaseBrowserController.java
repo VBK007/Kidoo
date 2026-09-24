@@ -67,8 +67,16 @@ public class DatabaseBrowserController {
     /**
      * A page of rows, ordered by the primary key unless told otherwise.
      *
-     * @param q sub-string match across the table's text columns, case-insensitive
-     *          and bound as a parameter — never concatenated into the statement
+     * @param q           sub-string match across the table's text columns, case-insensitive
+     *                    and bound as a parameter — never concatenated into the statement
+     * @param filter      one column to compare, matched against the schema; a name that is
+     *                    not a column of this table, or one whose values this API refuses
+     *                    to hand out, is a 400 rather than a statement
+     * @param filterOp    {@code contains} · {@code eq} · {@code ne} · {@code null} ·
+     *                    {@code notnull}; defaults to {@code contains}
+     * @param filterValue what to compare against, bound as a parameter like {@code q}.
+     *                    Ignored by the two null tests, and an empty one means no filter
+     *                    at all rather than a filter matching everything
      */
     @GetMapping("/tables/{table}/rows")
     public RowPageDto rows(@AuthenticationPrincipal AppUser user,
@@ -78,9 +86,13 @@ public class DatabaseBrowserController {
                            @RequestParam(defaultValue = "25") int size,
                            @RequestParam(required = false) String sort,
                            @RequestParam(defaultValue = "asc") String direction,
-                           @RequestParam(required = false) String q) {
+                           @RequestParam(required = false) String q,
+                           @RequestParam(required = false) String filter,
+                           @RequestParam(required = false) String filterOp,
+                           @RequestParam(required = false) String filterValue) {
         access.require(user, key);
-        return browser.page(table, page, size, sort, direction, q);
+        return browser.page(table, page, size, sort, direction, q,
+                new DatabaseBrowser.FilterRequest(filter, filterOp, filterValue));
     }
 
     /**

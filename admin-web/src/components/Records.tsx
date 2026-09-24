@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   ApiError,
+  FILTER_OPS,
   fetchRow,
   fetchRows,
   fetchTables,
@@ -10,6 +11,7 @@ import {
   type DbRow,
   type DbTable,
   type DbValue,
+  type FilterOp,
 } from '../api'
 import { plain } from '../format'
 
@@ -41,6 +43,12 @@ export function Records({
   const [direction, setDirection] = useState<'asc' | 'desc'>('asc')
   const [query, setQuery] = useState('')
   const [search, setSearch] = useState('')
+  // The filter, on one column. Separate from the search above, which asks every
+  // text column the same question at once; these narrow together.
+  const [filterColumn, setFilterColumn] = useState('')
+  const [filterOp, setFilterOp] = useState<FilterOp>('contains')
+  const [filterValue, setFilterValue] = useState('')
+  const [filterTerm, setFilterTerm] = useState('')
   const [open, setOpen] = useState<DbRow | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -90,6 +98,12 @@ export function Records({
     return () => window.clearTimeout(timer)
   }, [query])
 
+  // Typing a filter value is a query per keystroke for the same reason.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setFilterTerm(filterValue.trim()), 300)
+    return () => window.clearTimeout(timer)
+  }, [filterValue])
+
   useEffect(() => {
     if (!table) {
       return
@@ -104,6 +118,9 @@ export function Records({
           sort,
           direction,
           query: search,
+          filterColumn: filterColumn || undefined,
+          filterOp,
+          filterValue: filterTerm,
         })
         if (current) {
           setPage(next)
@@ -122,7 +139,19 @@ export function Records({
     return () => {
       current = false
     }
-  }, [credentials, table, pageNumber, size, sort, direction, search, report])
+  }, [
+    credentials,
+    table,
+    pageNumber,
+    size,
+    sort,
+    direction,
+    search,
+    filterColumn,
+    filterOp,
+    filterTerm,
+    report,
+  ])
 
   function choose(name: string) {
     setTable(name)
@@ -131,8 +160,19 @@ export function Records({
     setDirection('asc')
     setQuery('')
     setSearch('')
+    // The filter names a column of the table being left, so it cannot survive the
+    // move — carried over, it would be a 400 from the next table for a column it
+    // has never heard of.
+    clearFilter()
     setOpen(null)
     setPage(null)
+  }
+
+  function clearFilter() {
+    setFilterColumn('')
+    setFilterOp('contains')
+    setFilterValue('')
+    setFilterTerm('')
   }
 
   function sortBy(column: DbColumn) {
@@ -265,6 +305,80 @@ export function Records({
               </button>
             </header>
 
+            {/* One column, one comparison. Server-side like the search: a filter
+                applied here to the rows already fetched would narrow the page in
+                hand and still report the unfiltered total underneath it, which is
+                a grid that lies about how much it is not showing. */}
+            <div className="filter-bar">
+              <label htmlFor="filter-column">Filter</label>
+              <select
+                id="filter-column"
+                value={filterColumn}
+                onChange={(event) => {
+                  const next = event.target.value
+                  setFilterColumn(next)
+                  // `contains` has no meaning on a column with no text in it, so a
+                  // move to one carries the comparison to the nearest thing that does.
+                  const column = (page?.columns ?? []).find((one) => one.name === next)
+                  if (next && column && !column.searchable && filterOp === 'contains') {
+                    setFilterOp('eq')
+                  }
+                  setPageNumber(0)
+                }}
+              >
+                <option value="">no filter</option>
+                {filterable(page?.columns ?? []).map((column) => (
+                  <option key={column.name} value={column.name}>
+                    {column.name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={filterOp}
+                onChange={(event) => {
+                  setFilterOp(event.target.value as FilterOp)
+                  setPageNumber(0)
+                }}
+                disabled={!filterColumn}
+                aria-label="Comparison"
+              >
+                {FILTER_OPS.filter(
+                  (option) =>
+                    !option.textOnly ||
+                    (page?.columns ?? []).find((one) => one.name === filterColumn)?.searchable,
+                ).map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+
+              <input
+                value={filterValue}
+                onChange={(event) => {
+                  setFilterValue(event.target.value)
+                  setPageNumber(0)
+                }}
+                placeholder="value"
+                aria-label="Filter value"
+                disabled={!filterColumn || !needsValue(filterOp)}
+              />
+
+              {filterColumn ? (
+                <button className="btn" onClick={clearFilter}>
+                  Clear
+                </button>
+              ) : null}
+
+              <span className="spacer" />
+              {page?.filterColumn ? (
+                <span className="meta">
+                  {plain(page.total)} row{page.total === 1 ? '' : 's'} match
+                </span>
+              ) : null}
+            </div>
+
             {page && page.masked ? (
               <p className="meta masked-note">
                 Email addresses and IPs are masked in this list, and password and token
@@ -332,6 +446,29 @@ export function Records({
       {open ? <RowPanel row={open} onClose={() => setOpen(null)} /> : null}
     </div>
   )
+}
+
+/**
+ * The columns a filter may name.
+ *
+ * The server refuses `SECRET` and `LARGE` with a 400, so this is the same rule
+ * stated twice — deliberately. A column that cannot be filtered on should not be
+ * offered in the picker at all; leaving it there and letting the refusal explain
+ * itself would be a menu whose entries fail when chosen.
+ *
+ * `SECRET` in particular is not tidiness: a filter over a password hash would
+ * answer "how many rows match this value?" for anything asked, which is an oracle
+ * for the one thing the column exists to keep.
+ */
+function filterable(columns: DbColumn[]): DbColumn[] {
+  return forReading(columns).filter(
+    (column) => column.handling !== 'SECRET' && column.handling !== 'LARGE',
+  )
+}
+
+/** Whether a comparison takes a value — the two null tests do not. */
+function needsValue(op: FilterOp): boolean {
+  return FILTER_OPS.find((option) => option.value === op)?.needsValue ?? true
 }
 
 /**

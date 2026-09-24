@@ -14,7 +14,15 @@ const STORE_KEY = 'kido-admin-credentials'
 function stored(): Credentials | null {
   try {
     const raw = sessionStorage.getItem(STORE_KEY)
-    return raw ? (JSON.parse(raw) as Credentials) : null
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw) as Credentials
+    // A session stored before the address was part of one has no `baseUrl`, and
+    // `${undefined}/api/...` is a request to a path beginning "undefined" — a
+    // 404 from this origin that reads like the server refusing. Same-origin is
+    // what those sessions were, so say so.
+    return { ...parsed, baseUrl: parsed.baseUrl ?? '' }
   } catch {
     return null
   }

@@ -99,7 +99,8 @@ public class DatabaseBrowser {
         }
 
         ColumnDto toDto() {
-            return new ColumnDto(reported(), typeName, nullable, primaryKey, handling.name());
+            return new ColumnDto(reported(), typeName, nullable, primaryKey, handling.name(),
+                    searchable);
         }
     }
 
@@ -122,7 +123,7 @@ public class DatabaseBrowser {
         return catalog().values().stream()
                 .map(table -> new TableDto(
                         table.reported(),
-                        count(table, null),
+                        count(table, null, null),
                         table.columns().size(),
                         table.reportedPrimaryKey()))
                 .toList();
@@ -145,13 +146,14 @@ public class DatabaseBrowser {
      */
     @Transactional(readOnly = true)
     public RowPageDto page(String tableName, int page, int size, String sort, String direction,
-                           String query) {
+                           String query, FilterRequest requested) {
         Table table = table(tableName);
         int pageNumber = Math.max(0, page);
         int pageSize = Math.clamp(size <= 0 ? DEFAULT_PAGE_SIZE : size, 1, MAX_PAGE_SIZE);
         Column sortColumn = sortColumn(table, sort);
         boolean descending = "desc".equalsIgnoreCase(direction);
         String search = query == null || query.isBlank() ? null : query.trim();
+        Filter filter = filter(table, requested);
 
         // Secrets are not selected at all, so they cannot be logged, cached or
         // leaked by a later mistake in this file; large values are not selected
@@ -161,14 +163,14 @@ public class DatabaseBrowser {
                 .filter(column -> column.handling() != Handling.LARGE)
                 .toList();
 
-        long total = count(table, search);
+        long total = count(table, search, filter);
         List<Map<String, Object>> rows = List.of();
         if (total > 0 && pageNumber * (long) pageSize < total) {
             StringBuilder sql = new StringBuilder("select ")
                     .append(selectList(shown))
                     .append(" from ").append(quoted(table.name()));
             List<Object> params = new ArrayList<>();
-            appendSearch(sql, params, table, search);
+            appendWhere(sql, params, table, search, filter);
             sql.append(" order by ").append(quoted(sortColumn.name()))
                     .append(descending ? " desc" : " asc")
                     .append(" limit ? offset ?");
@@ -192,6 +194,9 @@ public class DatabaseBrowser {
                 sortColumn.reported(),
                 descending ? "desc" : "asc",
                 search,
+                filter == null ? null : filter.column().reported(),
+                filter == null ? null : filter.op().wire(),
+                filter == null ? null : filter.value(),
                 true);
     }
 
@@ -255,29 +260,80 @@ public class DatabaseBrowser {
                 .orElse("*");
     }
 
-    private void appendSearch(StringBuilder sql, List<Object> params, Table table, String search) {
-        if (search == null) {
-            return;
-        }
-        List<Column> searchable = table.columns().stream().filter(Column::searchable).toList();
-        if (searchable.isEmpty()) {
-            return;
-        }
-        sql.append(" where (");
-        for (int index = 0; index < searchable.size(); index++) {
-            if (index > 0) {
-                sql.append(" or ");
+    /**
+     * The search and the filter together, as one {@code where}.
+     *
+     * <p>They are different questions and both may be asked at once: the search is
+     * "this string, anywhere in the text of a row", the filter is "this column, this
+     * comparison". Joined with {@code and} rather than {@code or}, because narrowing
+     * twice is the only reading of setting both that is any use.
+     *
+     * <p>Clauses are appended in the same order their parameters are, which is what
+     * keeps a positional statement honest — a clause added here without its parameter
+     * added in step binds the next filter's value into the search.
+     */
+    private void appendWhere(StringBuilder sql, List<Object> params, Table table,
+                             String search, Filter filter) {
+        List<String> clauses = new ArrayList<>();
+        if (search != null) {
+            List<Column> searchable = table.columns().stream().filter(Column::searchable).toList();
+            if (!searchable.isEmpty()) {
+                StringBuilder any = new StringBuilder("(");
+                for (int index = 0; index < searchable.size(); index++) {
+                    if (index > 0) {
+                        any.append(" or ");
+                    }
+                    any.append("lower(").append(quoted(searchable.get(index).name())).append(") like ?");
+                    params.add("%" + search.toLowerCase(Locale.ROOT) + "%");
+                }
+                clauses.add(any.append(")").toString());
             }
-            sql.append("lower(").append(quoted(searchable.get(index).name())).append(") like ?");
-            params.add("%" + search.toLowerCase(Locale.ROOT) + "%");
         }
-        sql.append(")");
+        if (filter != null) {
+            clauses.add(filterClause(filter, params));
+        }
+        if (!clauses.isEmpty()) {
+            sql.append(" where ").append(String.join(" and ", clauses));
+        }
     }
 
-    private long count(Table table, String search) {
+    /**
+     * One column compared to one value, as SQL.
+     *
+     * <p>Compared as lower-cased text throughout, so that one box can match a uuid, a
+     * number, a boolean and a timestamp without the person typing in it having to
+     * know which of those they are looking at — and so that {@code true} finds a
+     * boolean that H2 casts to {@code TRUE} and PostgreSQL to {@code true}.
+     *
+     * <p>{@code NE} deliberately keeps the null rows. In SQL {@code x <> 'CHILD'} is
+     * unknown where x is null, so a plain inequality quietly drops every row that has
+     * no value at all — and "not a child" plainly includes "no role recorded" to
+     * anyone reading a grid.
+     */
+    private String filterClause(Filter filter, List<Object> params) {
+        String column = quoted(filter.column().name());
+        return switch (filter.op()) {
+            case IS_NULL -> column + " is null";
+            case IS_NOT_NULL -> column + " is not null";
+            case CONTAINS -> {
+                params.add("%" + filter.value().toLowerCase(Locale.ROOT) + "%");
+                yield "lower(" + column + ") like ?";
+            }
+            case EQ -> {
+                params.add(filter.value().toLowerCase(Locale.ROOT));
+                yield "lower(" + castToText(filter.column()) + ") = ?";
+            }
+            case NE -> {
+                params.add(filter.value().toLowerCase(Locale.ROOT));
+                yield "(lower(" + castToText(filter.column()) + ") <> ? or " + column + " is null)";
+            }
+        };
+    }
+
+    private long count(Table table, String search, Filter filter) {
         StringBuilder sql = new StringBuilder("select count(*) from ").append(quoted(table.name()));
         List<Object> params = new ArrayList<>();
-        appendSearch(sql, params, table, search);
+        appendWhere(sql, params, table, search, filter);
         Long total = jdbc.queryForObject(sql.toString(), Long.class, params.toArray());
         return total == null ? 0 : total;
     }
@@ -426,6 +482,100 @@ public class DatabaseBrowser {
                     "No table named '" + name + "'. Ask GET /api/admin/db/tables for the list.");
         }
         return table;
+    }
+
+    /**
+     * What a request may ask a column to be compared to.
+     *
+     * <p>An enum rather than an operator taken from the request, for the same reason
+     * a column name is matched against the schema instead of quoted in: the set of
+     * things that can appear between a column and a parameter is fixed here, in this
+     * file, and a request only chooses among them.
+     */
+    public enum FilterOp {
+        CONTAINS("contains"),
+        EQ("eq"),
+        NE("ne"),
+        IS_NULL("null"),
+        IS_NOT_NULL("notnull");
+
+        private final String wire;
+
+        FilterOp(String wire) {
+            this.wire = wire;
+        }
+
+        String wire() {
+            return wire;
+        }
+
+        /** Whether this comparison needs a value at all — the null tests do not. */
+        boolean needsValue() {
+            return this == CONTAINS || this == EQ || this == NE;
+        }
+
+        static FilterOp of(String requested) {
+            for (FilterOp candidate : values()) {
+                if (candidate.wire.equalsIgnoreCase(requested.trim())) {
+                    return candidate;
+                }
+            }
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "'" + requested + "' is not a comparison this browser knows. Use one of: "
+                            + String.join(", ", java.util.Arrays.stream(values()).map(FilterOp::wire).toList()));
+        }
+    }
+
+    /** A filter as it arrives: three strings, none of them yet trusted. */
+    public record FilterRequest(String column, String op, String value) {}
+
+    /** A filter once the column is one this schema really has. */
+    private record Filter(Column column, FilterOp op, String value) {}
+
+    /**
+     * Resolves a requested filter against the schema, or refuses it.
+     *
+     * <p>{@code SECRET} columns cannot be filtered on, and that is a rule about more
+     * than tidiness. A password hash is never <em>sent</em>, but a filter that could
+     * be applied to one would answer "how many rows match this?" for any value asked
+     * about — which is an oracle for guessing the thing the column exists to protect.
+     * Not selecting it and not comparing it are two halves of the same guarantee.
+     *
+     * <p>{@code LARGE} columns are refused too, for the duller reason that a
+     * sub-string match against every blob in a table is a way to make this server
+     * read a disk's worth of data to answer one grid.
+     */
+    private Filter filter(Table table, FilterRequest requested) {
+        if (requested == null || requested.column() == null || requested.column().isBlank()) {
+            return null;
+        }
+        String name = requested.column().trim();
+        Column column = table.columns().stream()
+                .filter(one -> one.name().equalsIgnoreCase(name))
+                .findFirst()
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST,
+                        "'" + name + "' is not a column of '" + table.name() + "'"));
+        if (column.handling() == Handling.SECRET || column.handling() == Handling.LARGE) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "'" + column.reported() + "' is " + column.handling()
+                            + " and cannot be filtered on");
+        }
+
+        FilterOp op = requested.op() == null || requested.op().isBlank()
+                ? FilterOp.CONTAINS
+                : FilterOp.of(requested.op());
+        String value = requested.value() == null ? "" : requested.value().trim();
+        if (op.needsValue() && value.isEmpty()) {
+            // Not an error: an empty box is someone who has chosen a column and not
+            // yet typed. Filtering on "" would match every row and look broken.
+            return null;
+        }
+        if (op == FilterOp.CONTAINS && !column.searchable()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "'" + column.reported() + "' is " + column.typeName()
+                            + ", which has no sub-string to match. Compare it with = instead.");
+        }
+        return new Filter(column, op, value);
     }
 
     private Column sortColumn(Table table, String requested) {

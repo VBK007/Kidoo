@@ -121,6 +121,7 @@ export function Dashboard({
     <main className="shell">
       <Topbar
         account={credentials.account.displayName ?? credentials.account.username}
+        baseUrl={credentials.baseUrl}
         onSignOut={onSignOut}
         onRefresh={() => void refresh()}
         loading={loading}
@@ -326,8 +327,29 @@ function Banner({ message }: { message: string }) {
   )
 }
 
+/**
+ * The address, short enough to sit in a header.
+ *
+ * Host only: the scheme is noise once it is working, and the path is always
+ * empty. Blank means same-origin, which is the dev proxy or a reverse proxy —
+ * "this host" is the honest name for it, since the console cannot tell which.
+ */
+function serverLabel(baseUrl: string): string {
+  if (baseUrl === '') {
+    return 'this host'
+  }
+  try {
+    return new URL(baseUrl).host
+  } catch {
+    // Stored by an older build, or hand-edited. Showing it raw beats throwing
+    // inside a header.
+    return baseUrl
+  }
+}
+
 function Topbar({
   account,
+  baseUrl,
   onRefresh,
   onSignOut,
   loading,
@@ -338,6 +360,7 @@ function Topbar({
   setView,
 }: {
   account: string
+  baseUrl: string
   onRefresh: () => void
   onSignOut: () => void
   loading: boolean
@@ -374,7 +397,11 @@ function Topbar({
 
       <span className="spacer" />
       <span className="meta">
-        {account}
+        {/* Which server this is. Worth a few characters on screen now that the
+            address is typed in rather than built in: a local dev database and
+            somebody's actual household look identical once the numbers land,
+            and the Records grid makes that a difference worth seeing. */}
+        {serverLabel(baseUrl)} · {account}
         {lastLoadedAt && overview ? ` · updated ${clockTime(lastLoadedAt)}` : ''}
       </span>
       {/* Both only act on the overview's numbers, so they are hidden rather than

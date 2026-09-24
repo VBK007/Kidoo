@@ -209,6 +209,97 @@ class AdminDatabaseBrowserIntegrationTest {
         assertTrue(response.body().contains(username), response.body());
     }
 
+    // --- filtering ---
+
+    @Test
+    void filtersOnOneColumn() throws Exception {
+        String username = usernameOfFirstUser();
+        HttpResponse<String> response = get("/api/admin/db/tables/users/rows?filter=username&filterOp=eq"
+                + "&filterValue=" + URLEncoder.encode(username, StandardCharsets.UTF_8));
+        assertEquals(200, response.statusCode(), response.body());
+        assertEquals(1, number(response.body(), "total"), response.body());
+        assertTrue(response.body().contains(username), response.body());
+    }
+
+    /** The setUp registers one PARENT and one CHILD, so both are there to tell apart. */
+    @Test
+    void filtersOnAColumnThatIsNotText() throws Exception {
+        long parents = number(get("/api/admin/db/tables/users/rows?filter=role&filterOp=eq"
+                + "&filterValue=PARENT").body(), "total");
+        long notParents = number(get("/api/admin/db/tables/users/rows?filter=role&filterOp=ne"
+                + "&filterValue=PARENT").body(), "total");
+        long all = number(get("/api/admin/db/tables/users/rows").body(), "total");
+
+        assertTrue(parents >= 1, "the owner this test signed in as is a PARENT");
+        assertTrue(notParents >= 1, "setUp also registers a CHILD");
+        // The halves account for every row: `ne` keeps the nulls precisely so that
+        // filtering one way and then the other cannot lose rows between them.
+        assertEquals(all, parents + notParents, "eq and ne should partition the table");
+    }
+
+    @Test
+    void filterAndSearchNarrowTogether() throws Exception {
+        String username = usernameOfFirstUser();
+        // A search that matches this row, and a filter that cannot: no rows, rather
+        // than the search's answer or the filter's.
+        HttpResponse<String> response = get("/api/admin/db/tables/users/rows"
+                + "?q=" + URLEncoder.encode(username, StandardCharsets.UTF_8)
+                + "&filter=username&filterOp=eq&filterValue=" + UUID.randomUUID());
+        assertEquals(200, response.statusCode(), response.body());
+        assertEquals(0, number(response.body(), "total"), response.body());
+    }
+
+    /** An empty box is somebody mid-thought, not a filter that matches everything. */
+    @Test
+    void anEmptyFilterValueIsNoFilter() throws Exception {
+        long all = number(get("/api/admin/db/tables/users/rows").body(), "total");
+        assertEquals(all,
+                number(get("/api/admin/db/tables/users/rows?filter=username&filterValue=").body(), "total"));
+    }
+
+    /**
+     * The injection guard again, on the filter this time: the column is matched
+     * against the catalogue and the value is bound, so neither half of a filter can
+     * carry SQL into a statement.
+     */
+    @Test
+    void refusesAFilterColumnItDoesNotHave() throws Exception {
+        HttpResponse<String> response =
+                get("/api/admin/db/tables/users/rows?filter=id%3B%20drop%20table%20users&filterValue=x");
+        assertEquals(400, response.statusCode(), response.body());
+        assertTrue(response.body().contains("is not a column"), response.body());
+        assertEquals(200, get("/api/admin/db/tables/users/rows").statusCode());
+    }
+
+    @Test
+    void aFilterValueIsBoundRatherThanConcatenated() throws Exception {
+        HttpResponse<String> response = get("/api/admin/db/tables/users/rows?filter=username&filterOp=eq"
+                + "&filterValue=" + URLEncoder.encode("' or '1'='1", StandardCharsets.UTF_8));
+        assertEquals(200, response.statusCode(), response.body());
+        assertEquals(0, number(response.body(), "total"),
+                "a bound parameter matches the literal string, so nothing matches");
+        assertEquals(200, get("/api/admin/db/tables/users/rows").statusCode());
+    }
+
+    /**
+     * Filtering on a hash would answer "does any row have this value?" for anything
+     * asked — an oracle for the one thing the column exists to keep. Not selecting
+     * it and not comparing it are two halves of the same guarantee.
+     */
+    @Test
+    void refusesToFilterOnASecretColumn() throws Exception {
+        HttpResponse<String> response =
+                get("/api/admin/db/tables/users/rows?filter=password_hash&filterOp=eq&filterValue=x");
+        assertEquals(400, response.statusCode(), response.body());
+        assertTrue(response.body().contains("cannot be filtered on"), response.body());
+    }
+
+    @Test
+    void refusesAComparisonItDoesNotKnow() throws Exception {
+        assertEquals(400, get("/api/admin/db/tables/users/rows"
+                + "?filter=username&filterOp=regex&filterValue=x").statusCode());
+    }
+
     /** A page size is a cap; nonsense falls back to the default rather than to one row. */
     @Test
     void clampsAnAbsurdPageSize() throws Exception {

@@ -41,6 +41,12 @@ dependencies {
     // own JWT on every request after sign-in.
     implementation 'com.google.firebase:firebase-admin:9.4.1'
 
+    // HTML parsing for the mymirror page extractor.
+    implementation 'org.jsoup:jsoup:1.18.3'
+
+    // Health and the /actuator/tokens endpoint for the mymirror token manager.
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
     // Claude, for the search box only. Optional at runtime: with app.media.ai.enabled
     // off (the default) or no API key set, nothing here is constructed and search falls
     // back to the rule-based parser, which is what a home server offline should do.
