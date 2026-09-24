@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -13,8 +14,11 @@ import com.example.kido.media.catalog.MediaType;
 import com.example.kido.media.dto.HomeDtos.HomeDto;
 import com.example.kido.media.dto.HomeDtos.HomeRailDto;
 import com.example.kido.media.web.ActiveProfile;
+import com.example.kido.mymirror.MirrorCookie;
+import com.example.kido.mymirror.service.MirrorHomeService;
 import com.example.kido.profile.Profile;
 import com.example.kido.user.AppUser;
+import com.example.kido.user.Role;
 
 /** The home screen, composed server-side. Profile-scoped like everything else. */
 @RestController
@@ -22,9 +26,11 @@ import com.example.kido.user.AppUser;
 public class HomeController {
 
     private final HomeService service;
+    private final MirrorHomeService mirrorHome;
 
-    public HomeController(HomeService service) {
+    public HomeController(HomeService service, MirrorHomeService mirrorHome) {
         this.service = service;
+        this.mirrorHome = mirrorHome;
     }
 
     /**
@@ -33,13 +39,21 @@ public class HomeController {
      *
      * @param types comma-separated {@link MediaType} names; defaults to films and anime
      * @param limit posters per rail, capped at 50
+     * @param mirrorCookie the caller's mirror session; when a parent sends it, the mirror's
+     *                     home titles and their playlists come back in {@code mirror}. Never
+     *                     for a child account: the mirror's catalogue has no age filtering.
      */
     @GetMapping("/home")
     public HomeDto home(@AuthenticationPrincipal AppUser user,
                         @ActiveProfile Profile profile,
                         @RequestParam(required = false) String types,
-                        @RequestParam(defaultValue = "20") int limit) {
-        return service.home(user, profile, parseTypes(types), limit);
+                        @RequestParam(defaultValue = "20") int limit,
+                        @RequestHeader(value = MirrorCookie.HEADER, required = false) String mirrorCookie) {
+        HomeDto home = service.home(user, profile, parseTypes(types), limit);
+        if (user == null || user.getRole() != Role.PARENT) {
+            return home;
+        }
+        return mirrorHome.rail(mirrorCookie).map(home::withMirror).orElse(home);
     }
 
     /**

@@ -213,7 +213,8 @@ public class HomeService {
                 new RankingWeightsDto(PopularityRanker.RATING_WEIGHT,
                         PopularityRanker.VIEW_WEIGHT,
                         PopularityRanker.LIKE_WEIGHT),
-                Instant.now().toString());
+                Instant.now().toString(),
+                null);
     }
     /**
      * Tonight's picks, when there is anything to pick from.
