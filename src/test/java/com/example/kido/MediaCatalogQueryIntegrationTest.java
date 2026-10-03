@@ -150,6 +150,24 @@ class MediaCatalogQueryIntegrationTest {
     }
 
     @Test
+    void multiWordSearchMatchesWordsIndependentlyAndDropsEpisodeFiller() {
+        film("[Anime Time] Naruto - 002 - My Name is Konohamaru!", MediaType.ANIME, 2002, 24, 8.3, null, 720);
+        film("Kaithi", MediaType.FILM, 2019, 145, 8.5, null, 1080);
+
+        // Neither word sits next to the other in the real title, so the old
+        // single-phrase substring match found nothing for either query.
+        assertEquals(List.of("[Anime Time] Naruto - 002 - My Name is Konohamaru!"),
+                titlesOf(CatalogQuery.builder().titleContains("naruto 2").build()));
+        // "episode" names no field on the item at all — only the number next to
+        // it does — so it is dropped rather than required to appear literally.
+        assertEquals(List.of("[Anime Time] Naruto - 002 - My Name is Konohamaru!"),
+                titlesOf(CatalogQuery.builder().titleContains("naruto episode 2").build()));
+        // A second word narrows the match rather than loosening it.
+        assertEquals(List.of(),
+                titlesOf(CatalogQuery.builder().titleContains("naruto episode 9").build()));
+    }
+
+    @Test
     void rangesAreInclusiveAndOpenEnded() {
         film("Short", MediaType.FILM, 2019, 95, 7.0, null, 1080);
         film("Long", MediaType.FILM, 1998, 180, 9.0, null, 1080);

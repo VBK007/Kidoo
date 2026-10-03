@@ -86,9 +86,44 @@ public final class CatalogQuerySpecs {
         };
     }
 
+    /**
+     * Words people type that name no field on the item itself — "episode", "season" —
+     * because the number next to them is the part that is actually in the filename.
+     * "Naruto episode 2" against a library that only ever calls it "002" was three
+     * words that, matched as one contiguous phrase, appeared in zero titles; stripped
+     * of the word episode, "naruto" and "2" each find their own match independently,
+     * which is what the fix below relies on.
+     */
+    private static final Set<String> SEARCH_FILLER_WORDS = Set.of("episode", "episodes", "ep", "season");
+
+    /**
+     * Every word has to match somewhere, but not all in the same field and not next to
+     * each other — "naruto 2" has no reason to require the literal substring "naruto 2"
+     * when "Naruto - 002" plainly means it. One word's match costs one {@code or} across
+     * the same fields the old single-phrase match checked; the words are joined with
+     * {@code and}, so a query does not get looser just for adding a second word.
+     */
     private static Predicate titleMatches(Root<MediaItem> root, CriteriaBuilder cb, String text) {
-        // Already trimmed by validation; lowercased here because the column is not.
-        String pattern = "%" + text.toLowerCase(Locale.ROOT) + "%";
+        List<String> tokens = new ArrayList<>();
+        for (String word : text.toLowerCase(Locale.ROOT).trim().split("\\s+")) {
+            if (!word.isBlank() && !SEARCH_FILLER_WORDS.contains(word)) {
+                tokens.add(word);
+            }
+        }
+        // A query that is nothing but filler words ("season", say) still has to search
+        // for something rather than match everything.
+        if (tokens.isEmpty()) {
+            tokens.add(text.toLowerCase(Locale.ROOT).trim());
+        }
+
+        Predicate[] perWord = tokens.stream()
+                .map(token -> singleWordMatch(root, cb, token))
+                .toArray(Predicate[]::new);
+        return cb.and(perWord);
+    }
+
+    private static Predicate singleWordMatch(Root<MediaItem> root, CriteriaBuilder cb, String word) {
+        String pattern = "%" + word + "%";
         return cb.or(
                 cb.like(cb.lower(root.get("title")), pattern),
                 cb.like(cb.lower(root.get("sortTitle")), pattern),
