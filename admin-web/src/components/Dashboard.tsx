@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
   ApiError,
+  fetchActivity,
   fetchDashboard,
   fetchEngagement,
+  fetchRecentSignups,
+  fetchSiteTraffic,
   type Credentials,
   type Dashboard as DashboardData,
+  type LiveScreen,
+  type RecentSignup,
+  type SiteTraffic,
 } from '../api'
 import { bytes, clockTime, compact, hours, plain, titleCase } from '../format'
 import { Applications } from './Applications'
 import { BarList, type Bar } from './BarList'
+import { LiveActivity } from './LiveActivity'
 import { Records } from './Records'
+import { RecentSignups } from './RecentSignups'
 import { Card, Hero, Tile } from './Tiles'
 
 /** The two things this console does: read the summary, or read the rows. */
@@ -26,6 +34,9 @@ export function Dashboard({
   onSignOut: () => void
 }) {
   const [data, setData] = useState<DashboardData | null>(null)
+  const [siteTraffic, setSiteTraffic] = useState<SiteTraffic | null>(null)
+  const [recentSignups, setRecentSignups] = useState<RecentSignup[]>([])
+  const [activity, setActivity] = useState<LiveScreen[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [live, setLive] = useState(true)
@@ -49,11 +60,17 @@ export function Dashboard({
     [onSignOut],
   )
 
-  const received = useCallback((next: DashboardData) => {
-    setData(next)
-    setError(null)
-    setLastLoadedAt(new Date().toISOString())
-  }, [])
+  const received = useCallback(
+    (next: DashboardData, traffic: SiteTraffic, signups: RecentSignup[], live: LiveScreen[]) => {
+      setData(next)
+      setSiteTraffic(traffic)
+      setRecentSignups(signups)
+      setActivity(live)
+      setError(null)
+      setLastLoadedAt(new Date().toISOString())
+    },
+    [],
+  )
 
   // Load once per set of credentials, and ignore a response that arrives after
   // this console has signed out or swapped credentials underneath it.
@@ -61,9 +78,14 @@ export function Dashboard({
     let current = true
     void (async () => {
       try {
-        const next = await fetchDashboard(credentials)
+        const [next, traffic, signups, live] = await Promise.all([
+          fetchDashboard(credentials),
+          fetchSiteTraffic(credentials),
+          fetchRecentSignups(credentials),
+          fetchActivity(credentials),
+        ])
         if (current) {
-          received(next)
+          received(next, traffic, signups, live)
         }
       } catch (failure) {
         if (current) {
@@ -84,7 +106,13 @@ export function Dashboard({
   async function refresh() {
     setLoading(true)
     try {
-      received(await fetchDashboard(credentials))
+      const [next, traffic, signups, live] = await Promise.all([
+        fetchDashboard(credentials),
+        fetchSiteTraffic(credentials),
+        fetchRecentSignups(credentials),
+        fetchActivity(credentials),
+      ])
+      received(next, traffic, signups, live)
     } catch (failure) {
       report(failure)
     } finally {
@@ -92,9 +120,9 @@ export function Dashboard({
     }
   }
 
-  // The live panel refreshes on its own, and only it: re-counting a four-figure
-  // poster catalog every fifteen seconds to find out whether anyone is watching
-  // something would be the whole page paying for one tile.
+  // The live tiles refresh on their own, and only them: re-counting a
+  // four-figure poster catalog every fifteen seconds to find out whether
+  // anyone is watching something would be the whole page paying for two tiles.
   //
   // The timer depends on *whether* there is data, never on the data itself, so
   // a tick does not tear down and rebuild the interval it was fired from. The
@@ -107,8 +135,12 @@ export function Dashboard({
     }
     const timer = window.setInterval(async () => {
       try {
-        const engagement = await fetchEngagement(credentials)
+        const [engagement, liveScreens] = await Promise.all([
+          fetchEngagement(credentials),
+          fetchActivity(credentials),
+        ])
         setData((current) => (current ? { ...current, engagement } : current))
+        setActivity(liveScreens)
         setLastLoadedAt(new Date().toISOString())
       } catch (failure) {
         report(failure)
@@ -143,7 +175,7 @@ export function Dashboard({
     return shell(<Records credentials={credentials} onSignOut={onSignOut} />, lastLoadedAt)
   }
 
-  if (!data) {
+  if (!data || !siteTraffic) {
     return shell(
       <div className="grid">
         <div className="skeleton" />
@@ -156,6 +188,7 @@ export function Dashboard({
   }
 
   const { users, applications, catalog, engagement } = data
+  const topPage = siteTraffic.topPaths[0]
   const { library, posters, content } = catalog
 
   const categoryBars: Bar[] = library.byType.map((category) => ({
@@ -228,6 +261,48 @@ export function Dashboard({
         <p className="meta" style={{ marginTop: 10 }}>
           Active means signed in — most of what the apps do never starts a stream, so
           watch data cannot answer it.
+        </p>
+        <div style={{ marginTop: 'var(--gap)' }}>
+          <RecentSignups signups={recentSignups} />
+        </div>
+      </section>
+
+      <section className="section">
+        <p className="eyebrow">Activity</p>
+        <LiveActivity screens={activity} />
+        <p className="meta" style={{ marginTop: 10 }}>
+          Logged by the app on every screen change — a stale row just means nobody is
+          on that screen anymore, not that anything is wrong.
+        </p>
+      </section>
+
+      <section className="section">
+        <p className="eyebrow">Site</p>
+        <div className="grid">
+          <Tile
+            label="Site visits"
+            value={compact(siteTraffic.allTime)}
+            sub={`${plain(siteTraffic.today)} today`}
+          />
+          <Tile
+            label="This week"
+            value={plain(siteTraffic.last7Days)}
+            sub="site visits, last 7 days"
+          />
+          <Tile
+            label="This month"
+            value={plain(siteTraffic.last30Days)}
+            sub="site visits, last 30 days"
+          />
+          <Tile
+            label="Top page"
+            value={topPage ? topPage.key : '—'}
+            sub={topPage ? `${plain(topPage.count)} views, last 30 days` : 'no visits yet'}
+          />
+        </div>
+        <p className="meta" style={{ marginTop: 10 }}>
+          Page views on the public landing site — a different crowd from the accounts
+          above, most of whom never sign in at all.
         </p>
       </section>
 

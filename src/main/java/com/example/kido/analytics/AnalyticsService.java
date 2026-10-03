@@ -5,6 +5,7 @@ import java.util.List;
 import org.springframework.stereotype.Service;
 
 import com.example.kido.analytics.dto.LogLoginEventRequest;
+import com.example.kido.analytics.dto.LogScreenViewRequest;
 import com.example.kido.common.ClientAddress;
 import com.example.kido.user.AppUser;
 
@@ -16,9 +17,11 @@ import lombok.extern.slf4j.Slf4j;
 public class AnalyticsService {
 
     private final LoginEventRepository events;
+    private final ScreenViewRepository screenViews;
 
-    public AnalyticsService(LoginEventRepository events) {
+    public AnalyticsService(LoginEventRepository events, ScreenViewRepository screenViews) {
         this.events = events;
+        this.screenViews = screenViews;
     }
 
     public LoginEvent logLogin(AppUser user, LogLoginEventRequest req, HttpServletRequest request) {
@@ -39,6 +42,17 @@ public class AnalyticsService {
 
     public List<LoginEvent> history(AppUser user) {
         return events.findByUserIdOrderByAtDesc(user.getId());
+    }
+
+    public ScreenView logScreen(AppUser user, LogScreenViewRequest req) {
+        return screenViews.save(ScreenView.builder()
+                .userId(user.getId())
+                .profileId(req.profileId())
+                .deviceId(req.deviceId())
+                .screen(req.screen())
+                .itemId(req.itemId())
+                .platform(req.platform())
+                .build());
     }
 
     /** Null rather than blank: Cloudflare's geolocation headers are Enterprise-only and

@@ -8,11 +8,15 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.example.kido.admin.dto.ActivityDtos.LiveScreenDto;
+import com.example.kido.admin.dto.ActivityDtos.RecentSignupDto;
 import com.example.kido.admin.dto.DashboardDtos.ApplicationStatsDto;
 import com.example.kido.admin.dto.DashboardDtos.CatalogStatsDto;
 import com.example.kido.admin.dto.DashboardDtos.DashboardDto;
 import com.example.kido.admin.dto.DashboardDtos.EngagementDto;
 import com.example.kido.admin.dto.DashboardDtos.UserStatsDto;
+import com.example.kido.site.SiteTrafficDtos.SiteTrafficDto;
+import com.example.kido.site.SiteVisitService;
 import com.example.kido.user.AppUser;
 
 /**
@@ -39,10 +43,15 @@ public class AdminDashboardController {
 
     private final AdminDashboardService dashboard;
     private final AdminAccess access;
+    private final SiteVisitService siteVisits;
+    private final AdminActivityService activity;
 
-    public AdminDashboardController(AdminDashboardService dashboard, AdminAccess access) {
+    public AdminDashboardController(AdminDashboardService dashboard, AdminAccess access,
+                                    SiteVisitService siteVisits, AdminActivityService activity) {
         this.dashboard = dashboard;
         this.access = access;
+        this.siteVisits = siteVisits;
+        this.activity = activity;
     }
 
     /** Users, applications, catalog and engagement in one response. */
@@ -90,5 +99,36 @@ public class AdminDashboardController {
                                     @RequestHeader(value = "X-Admin-Key", required = false) String key) {
         access.require(user, key);
         return dashboard.engagement();
+    }
+
+    /**
+     * Page views on the public GitHub Pages site — a different audience from
+     * everything else here, which is all about accounts on this server. This is
+     * anonymous foot traffic on the landing page, most of whom never sign in at all.
+     */
+    @GetMapping("/site-traffic")
+    public SiteTrafficDto siteTraffic(@AuthenticationPrincipal AppUser user,
+                                      @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        access.require(user, key);
+        return siteVisits.stats();
+    }
+
+    /**
+     * Each account currently on a screen, newest first — what they're looking at
+     * right now, not just that they're signed in.
+     */
+    @GetMapping("/activity")
+    public List<LiveScreenDto> activity(@AuthenticationPrincipal AppUser user,
+                                        @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        access.require(user, key);
+        return activity.liveScreens();
+    }
+
+    /** The newest accounts — who "+1 today" on the growth tile actually is. */
+    @GetMapping("/users/recent")
+    public List<RecentSignupDto> recentSignups(@AuthenticationPrincipal AppUser user,
+                                               @RequestHeader(value = "X-Admin-Key", required = false) String key) {
+        access.require(user, key);
+        return activity.recentSignups();
     }
 }

@@ -1,6 +1,7 @@
 package com.example.kido.user;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -35,4 +36,7 @@ public interface UserRepository extends JpaRepository<AppUser, String> {
             where u.subscription.premium = true and u.subscription.premiumUntil > :now
             """)
     long countActivePremium(@Param("now") Instant now);
+
+    /** The newest accounts, for the "someone just signed up" view a count can't answer. */
+    List<AppUser> findTop10ByOrderByCreatedAtDesc();
 }

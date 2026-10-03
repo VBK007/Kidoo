@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.analytics.dto.LogLoginEventRequest;
+import com.example.kido.analytics.dto.LogScreenViewRequest;
 import com.example.kido.analytics.dto.LoginEventDto;
 import com.example.kido.user.AppUser;
 
@@ -47,5 +48,17 @@ public class AnalyticsController {
     @GetMapping("/login")
     public List<LoginEventDto> history(@AuthenticationPrincipal AppUser user) {
         return service.history(user).stream().map(LoginEventDto::from).toList();
+    }
+
+    /**
+     * Logs one screen opened in the app. Fire-and-forget from the client's side, same
+     * as {@code /login} — a dropped call loses one row of "where", never anything the
+     * app itself depends on.
+     */
+    @PostMapping("/screen")
+    public ResponseEntity<Void> logScreen(@AuthenticationPrincipal AppUser user,
+                                          @Valid @RequestBody LogScreenViewRequest req) {
+        service.logScreen(user, req);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).build();
     }
 }

@@ -87,6 +87,57 @@ export type Dashboard = {
   engagement: Engagement
 }
 
+export type SiteDayCount = { date: string; count: number }
+
+export type SiteVisit = {
+  createdAt: string
+  path: string
+  referrer: string | null
+  ipAddress: string
+  deviceType: string
+  browser: string
+  os: string
+}
+
+/** Page views on the public landing site — see {@link SiteTrafficDtos.SiteTrafficDto}. */
+export type SiteTraffic = {
+  allTime: number
+  today: number
+  last7Days: number
+  last30Days: number
+  byDayLast14Days: SiteDayCount[]
+  topPaths: Count[]
+  topReferrers: Count[]
+  topDeviceTypes: Count[]
+  topBrowsers: Count[]
+  topOperatingSystems: Count[]
+  recentVisits: SiteVisit[]
+}
+
+/** One newly created account — what "+1 today" on the growth tile actually is. */
+export type RecentSignup = {
+  id: string
+  username: string
+  email: string
+  displayName: string | null
+  role: string
+  createdAt: string
+  platform: string | null
+  lastSeenAt: string | null
+}
+
+/** One account's most recent screen — the "who's where, right now" live feed. */
+export type LiveScreen = {
+  userId: string
+  accountLabel: string
+  profileId: string | null
+  screen: string
+  itemId: string | null
+  itemTitle: string | null
+  platform: string | null
+  at: string
+}
+
 export type Account = {
   id: string
   username: string
@@ -223,6 +274,19 @@ export const fetchDashboard = (credentials: Credentials) =>
  */
 export const fetchEngagement = (credentials: Credentials) =>
   fetchJson<Engagement>('/engagement', credentials)
+
+/** Anonymous foot traffic on the public landing page — a different audience
+ * from everything else here, most of whom never sign in at all. */
+export const fetchSiteTraffic = (credentials: Credentials) =>
+  fetchJson<SiteTraffic>('/site-traffic', credentials)
+
+/** The newest accounts, most recent first. */
+export const fetchRecentSignups = (credentials: Credentials) =>
+  fetchJson<RecentSignup[]>('/users/recent', credentials)
+
+/** Each account currently on a screen, newest first. */
+export const fetchActivity = (credentials: Credentials) =>
+  fetchJson<LiveScreen[]>('/activity', credentials)
 
 // --- the database browser ---
 
