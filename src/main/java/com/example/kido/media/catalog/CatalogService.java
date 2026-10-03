@@ -611,6 +611,35 @@ public class CatalogService {
         return tracks;
     }
 
+    /**
+     * The ffprobe-absolute stream index behind one embedded subtitle track, keyed by
+     * its position among embedded tracks only (0-based) — the inverse of the
+     * renumbering {@link #subtitleTracks} does to give external and embedded tracks
+     * alike one flat index space, starting after however many external ones there
+     * are, for the client to address by. Null when there is no such track, which a
+     * stale client asking for an index that no longer exists is as good an explanation
+     * for as any.
+     */
+    public Integer embeddedSubtitleStreamIndex(MediaItem item, int embeddedPosition) {
+        MediaInfo info = item.getMediaInfo();
+        if (info == null || info.getEmbeddedSubtitles() == null || embeddedPosition < 0) {
+            return null;
+        }
+        String[] entries = info.getEmbeddedSubtitles().split(";");
+        if (embeddedPosition >= entries.length) {
+            return null;
+        }
+        String[] parts = entries[embeddedPosition].split(":");
+        if (parts.length < 1) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(parts[0]);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
     /** Resolves the media file, then lists the subtitle files sitting next to it. */
     public List<SidecarLocator.SubtitleTrack> externalSubtitles(MediaItem item) {
         if (!paths.isConfigured()) {

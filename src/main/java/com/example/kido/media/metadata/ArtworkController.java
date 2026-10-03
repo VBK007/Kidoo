@@ -109,12 +109,12 @@ public class ArtworkController {
     }
 
     /**
-     * External subtitle track as WebVTT.
+     * One subtitle track as WebVTT, external file or embedded stream alike.
      *
-     * <p>{@code index} is the position from the detail response. Embedded tracks are
-     * listed there too but are not served here — extracting them needs an ffmpeg pass
-     * that is not wired up yet, so requesting one is an explicit 501 rather than a
-     * confusing 404.
+     * <p>{@code index} is the position from the detail response: external tracks
+     * first, then embedded ones, in the same order {@code CatalogService.subtitleTracks}
+     * built the list the client saw — see {@link CatalogService#embeddedSubtitleStreamIndex}
+     * for how an index past the external ones maps back to a real ffprobe stream.
      */
     @GetMapping("/subtitles/{index}")
     public ResponseEntity<byte[]> subtitle(@AuthenticationPrincipal AppUser user,
@@ -123,20 +123,34 @@ public class ArtworkController {
                                            @PathVariable int index) throws IOException {
         grants.requirePlayable(guest, id);
         MediaItem item = catalog.require(id);
-        List<SidecarLocator.SubtitleTrack> tracks = catalog.externalSubtitles(item);
 
         if (index < 0) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Subtitle index must not be negative");
         }
-        if (index >= tracks.size()) {
-            throw new ApiException(HttpStatus.NOT_IMPLEMENTED,
-                    "Only external subtitle files can be served; embedded tracks need "
-                            + "extraction, which is not implemented");
-        }
 
-        SidecarLocator.SubtitleTrack track = tracks.get(index);
-        Path file = paths.requireWithinRoots(track.path());
-        String vtt = subtitles.toWebVtt(file, track.format());
+        List<SidecarLocator.SubtitleTrack> externalTracks = catalog.externalSubtitles(item);
+        String vtt;
+        if (index < externalTracks.size()) {
+            SidecarLocator.SubtitleTrack track = externalTracks.get(index);
+            Path file = paths.requireWithinRoots(track.path());
+            vtt = subtitles.toWebVtt(file, track.format());
+        } else {
+            Integer streamIndex = catalog.embeddedSubtitleStreamIndex(item, index - externalTracks.size());
+            if (streamIndex == null) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "No subtitle track at index " + index);
+            }
+            Path file = paths.requireWithinRoots(item.getFilePath());
+            try {
+                vtt = subtitles.extractEmbeddedWebVtt(file, streamIndex);
+            } catch (IOException ex) {
+                // A bitmap subtitle codec (PGS, VobSub) is the expected case here — there
+                // is no text in it for ffmpeg's webvtt muxer to write — but a genuinely
+                // failed extraction looks identical from here, hence 422 rather than a
+                // more specific status: either way, this index cannot be served as text.
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY,
+                        "This subtitle track could not be converted to text: " + ex.getMessage());
+            }
+        }
 
         return ResponseEntity.ok()
                 .contentType(new MediaType("text", "vtt", StandardCharsets.UTF_8))
