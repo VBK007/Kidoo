@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.springframework.stereotype.Component;
@@ -28,6 +29,12 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Component
 public class SidecarLocator {
+
+    private final FilenameParser filenames;
+
+    public SidecarLocator(FilenameParser filenames) {
+        this.filenames = filenames;
+    }
 
     private static final List<String> IMAGE_EXTENSIONS = List.of("jpg", "jpeg", "png", "webp", "avif");
 
@@ -238,7 +245,7 @@ public class SidecarLocator {
         if (folder == null) {
             return Optional.empty();
         }
-        String videoKey = alnumKey(MediaFiles.baseName(videoFile.getFileName().toString()));
+        String videoKey = matchKey(MediaFiles.baseName(videoFile.getFileName().toString()));
         if (videoKey.isBlank()) {
             return Optional.empty();
         }
@@ -251,7 +258,7 @@ public class SidecarLocator {
                 if (!IMAGE_EXTENSIONS.contains(MediaFiles.extension(name))) {
                     continue;
                 }
-                String imageKey = alnumKey(MediaFiles.baseName(name));
+                String imageKey = matchKey(MediaFiles.baseName(name));
                 if (imageKey.length() < LOOSE_MATCH_MIN_KEY_LENGTH) {
                     continue;
                 }
@@ -280,6 +287,34 @@ public class SidecarLocator {
     /** Lower-cased letters and digits only, so separators never count as a difference. */
     private static String alnumKey(String raw) {
         return raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    /**
+     * A download site's brand tag glued onto the front of a release name, e.g.
+     * {@code "Moviesda.Mobi - Title..."} or {@code "Moviesda.Mobi_-_Title..."}. Matched
+     * generically (any short dotted word followed by a dash) rather than an enumerated
+     * site list, since the point is not knowing which site — it's that a real title
+     * never starts this way.
+     */
+    private static final Pattern SITE_PREFIX = Pattern.compile("^[\\w-]+\\.[a-z]{2,6}\\s*[-:|_]\\s*", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The key {@link #findLooseMatch} scores two filenames by: site branding and
+     * release/quality tags stripped first, leaving just the title both sides are
+     * actually supposed to share.
+     *
+     * <p>Without this, two unrelated films released by the same site in the same
+     * quality ({@code "Moviesda.Mobi - <Title A> 2017 Original 720p HD"} next to
+     * {@code "Moviesda.Mobi - <Title B> 2026 Original 1080p HD"}) can score higher on
+     * that shared boilerplate than the actual titles differ by, and one film ends up
+     * wearing the other's poster. {@link FilenameParser} already draws the
+     * title/year/quality boundary correctly for the metadata pipeline itself; reusing
+     * it here keeps this scoring honest about the same boundary.
+     */
+    private String matchKey(String baseName) {
+        String spaced = baseName.replace('_', ' ');
+        String withoutSite = SITE_PREFIX.matcher(spaced).replaceFirst("");
+        return alnumKey(filenames.parse(withoutSite).title());
     }
 
     /**

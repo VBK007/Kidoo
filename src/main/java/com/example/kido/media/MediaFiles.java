@@ -1,5 +1,6 @@
 package com.example.kido.media;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
@@ -101,6 +102,13 @@ public final class MediaFiles {
      */
     private static final Set<String> DERIVATIVE_IMAGE_SUFFIXES = Set.of("spectrogram", "waveform");
 
+    /**
+     * Same floor {@code SidecarLocator}'s last-resort poster match uses: below this, a
+     * filename resemblance is more likely coincidence than a real cover.
+     */
+    private static final double LOOSE_NAME_MATCH_THRESHOLD = 0.5;
+    private static final int LOOSE_NAME_MATCH_MIN_KEY_LENGTH = 5;
+
     public static String extension(String fileName) {
         int dot = fileName.lastIndexOf('.');
         return dot < 0 || dot == fileName.length() - 1
@@ -195,6 +203,13 @@ public final class MediaFiles {
      * folder has the same name, this image is its cover. Asked file by file rather
      * than by listing the directory, so a photo library of ten thousand images does
      * not turn the scan quadratic.
+     *
+     * <p>A release download rarely keeps that exact-name convention, though — its cover
+     * is more often a short, hand-typed name like {@code helena.jpg} beside {@code
+     * Helena 2026 1080p Tagalog WEB-DL HEVC x265 BONE.mkv}. Falling back to the same
+     * fuzzy match {@code SidecarLocator}'s last-resort poster lookup accepts catches
+     * that case too — without it, a cover found and attached as the movie's poster by
+     * that lookup was also, separately, indexed here as its own playable-looking photo.
      */
     public static boolean isArtworkImage(Path file) {
         String fileName = file.getFileName().toString();
@@ -213,7 +228,58 @@ public final class MediaFiles {
             return true;
         }
         String withoutDerivativeSuffix = stripDerivativeSuffix(base);
-        return withoutDerivativeSuffix != null && hasPlayableSibling(withoutDerivativeSuffix, parent);
+        if (withoutDerivativeSuffix != null && hasPlayableSibling(withoutDerivativeSuffix, parent)) {
+            return true;
+        }
+        return hasLooseMatchingVideoSibling(base, parent);
+    }
+
+    private static boolean hasLooseMatchingVideoSibling(String imageBase, Path parent) {
+        try (Stream<Path> entries = Files.list(parent)) {
+            return entries.filter(Files::isRegularFile)
+                    .filter(MediaFiles::isVideo)
+                    .anyMatch(video -> looseNameMatch(baseName(video.getFileName().toString()), imageBase));
+        } catch (IOException ex) {
+            return false;
+        }
+    }
+
+    /** Same scoring as {@code SidecarLocator.loosePrefixSimilarity}, duplicated rather
+     * than shared so this package does not take on a dependency the other way round. */
+    private static boolean looseNameMatch(String videoBase, String imageBase) {
+        String videoKey = alnumKey(videoBase);
+        String imageKey = alnumKey(imageBase);
+        if (videoKey.isBlank() || imageKey.length() < LOOSE_NAME_MATCH_MIN_KEY_LENGTH) {
+            return false;
+        }
+        int windowLength = Math.min(videoKey.length(), imageKey.length() + 2);
+        String window = videoKey.substring(0, windowLength);
+        double similarity = 1.0 - ((double) levenshtein(window, imageKey) / imageKey.length());
+        return similarity >= LOOSE_NAME_MATCH_THRESHOLD;
+    }
+
+    private static String alnumKey(String raw) {
+        return raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    /** Two-row Levenshtein; these keys are short, so the quadratic cost is irrelevant. */
+    private static int levenshtein(String a, String b) {
+        int[] previous = new int[b.length() + 1];
+        int[] current = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) {
+            previous[j] = j;
+        }
+        for (int i = 1; i <= a.length(); i++) {
+            current[0] = i;
+            for (int j = 1; j <= b.length(); j++) {
+                int substitution = previous[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1);
+                current[j] = Math.min(substitution, Math.min(previous[j] + 1, current[j - 1] + 1));
+            }
+            int[] swap = previous;
+            previous = current;
+            current = swap;
+        }
+        return previous[b.length()];
     }
 
     private static boolean hasPlayableSibling(String base, Path parent) {

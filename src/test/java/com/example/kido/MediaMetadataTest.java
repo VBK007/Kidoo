@@ -16,6 +16,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.example.kido.media.MediaProperties;
 import com.example.kido.media.metadata.FilenameParser;
 import com.example.kido.media.metadata.NfoParser;
 import com.example.kido.media.metadata.SidecarLocator;
@@ -31,8 +32,8 @@ class MediaMetadataTest {
 
     private final FilenameParser filenames = new FilenameParser();
     private final NfoParser nfoParser = new NfoParser();
-    private final SidecarLocator locator = new SidecarLocator();
-    private final SubtitleConverter subtitles = new SubtitleConverter();
+    private final SidecarLocator locator = new SidecarLocator(filenames);
+    private final SubtitleConverter subtitles = new SubtitleConverter(new MediaProperties());
 
     // --- filename parsing ---
 
@@ -258,6 +259,27 @@ class MediaMetadataTest {
 
         Path found = locator.findNfo(movie).orElseThrow();
         assertEquals("Dune.2021.nfo", found.getFileName().toString());
+    }
+
+    @Test
+    void looseMatchIgnoresAnotherFilmsPosterFromTheSameSiteAndQuality(@TempDir Path dir) throws Exception {
+        // Real case: two unrelated films off the same download site, in the same
+        // quality, sharing a folder because a USB drive has no per-title folders.
+        // Nothing here names the poster for the video at all -- only the neighbour's.
+        Path movie = dir.resolve("Moviesda.Mobi - Meesaya Murukku 2017 Original 720p HD.mp4");
+        Files.writeString(movie, "x");
+        Files.writeString(dir.resolve("Moviesda.Mobi_-_Modha_Rathri_2026_Original_1080p_HD.jpg"), "img");
+
+        assertTrue(locator.findLoosePoster(movie).isEmpty());
+    }
+
+    @Test
+    void looseMatchStillFindsAQuickThumbnailWithNoNamingConvention(@TempDir Path dir) throws Exception {
+        Path movie = dir.resolve("Anbe Diana.mp4");
+        Files.writeString(movie, "x");
+        Files.writeString(dir.resolve("anabediana.jpg"), "img");
+
+        assertEquals("anabediana.jpg", locator.findLoosePoster(movie).orElseThrow().getFileName().toString());
     }
 
     // --- subtitle conversion ---

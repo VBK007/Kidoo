@@ -60,6 +60,16 @@ class ArtworkImageTest {
     }
 
     @Test
+    void aShortHandTypedCoverLooselyMatchingAReleaseNamedVideoIsArtwork() throws IOException {
+        // What a download site actually gives you: the video keeps the full release
+        // slug, and whoever added a cover just typed the title.
+        Files.createFile(folder.resolve("Helena 2026 1080p Tagalog WEB-DL HEVC x265 BONE.mkv"));
+        Path cover = Files.createFile(folder.resolve("helena.jpg"));
+
+        assertThat(MediaFiles.isArtworkImage(cover)).isTrue();
+    }
+
+    @Test
     void theOldNameOnlyConventionsStillHold() {
         assertThat(MediaFiles.isArtworkImage(folder.resolve("poster.jpg"))).isTrue();
         assertThat(MediaFiles.isArtworkImage(folder.resolve("Inception-fanart.png"))).isTrue();
