@@ -35,9 +35,12 @@
   --critical: #d03b3b;
   --good-text: #006300;
 
-  --radius: 10px;
+  --radius: 12px;
   --gap: 16px;
   --sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --shadow-rest: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 1px rgba(0, 0, 0, 0.03);
+  --shadow-raised: 0 8px 20px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.05);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -61,6 +64,9 @@
     --bar-track: #184f95;
 
     --good-text: #0ca30c;
+
+    --shadow-rest: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 1px rgba(0, 0, 0, 0.4);
+    --shadow-raised: 0 10px 24px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.4);
   }
 }
 
@@ -84,6 +90,9 @@
   --bar-track: #184f95;
 
   --good-text: #0ca30c;
+
+  --shadow-rest: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 1px rgba(0, 0, 0, 0.4);
+  --shadow-raised: 0 10px 24px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 * {
@@ -166,6 +175,7 @@ input {
   background: var(--surface-1);
   color: var(--text-primary);
   font-size: 14px;
+  transition: background-color 150ms ease, border-color 150ms ease;
 }
 
 .btn:hover:not(:disabled) {
@@ -204,6 +214,13 @@ input {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-1);
+  box-shadow: var(--shadow-rest);
+  transition: box-shadow 180ms ease, transform 180ms ease;
+}
+
+.card:hover {
+  box-shadow: var(--shadow-raised);
+  transform: translateY(-2px);
 }
 
 .card > header {
@@ -250,8 +267,12 @@ input {
 }
 
 .hero .figure {
+  background: linear-gradient(135deg, var(--text-primary) 35%, var(--bar-strong));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
   font-size: 52px;
-  font-weight: 600;
+  font-weight: 650;
   line-height: 1;
   letter-spacing: -0.03em;
 }
@@ -376,6 +397,7 @@ td {
   border-bottom: 1px solid var(--grid);
   text-align: right;
   font-variant-numeric: tabular-nums;
+  transition: background-color 150ms ease;
 }
 
 tbody tr:last-child td {
@@ -434,6 +456,7 @@ tbody tr:hover td {
   background: transparent;
   color: var(--text-secondary);
   font-size: 13.5px;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
 }
 
 .tab:hover {
