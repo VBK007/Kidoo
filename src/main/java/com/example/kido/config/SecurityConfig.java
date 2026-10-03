@@ -60,6 +60,10 @@ public class SecurityConfig {
                         // per-profile field, so a visitor can browse the real library before
                         // creating an account — see CatalogService#browsePublic.
                         .requestMatchers(HttpMethod.GET, "/api/media/public/**").permitAll()
+                        // The GitHub Pages landing page's own view-count beacon. Fired by an
+                        // anonymous browser with no token to send; SiteVisitThrottle is the
+                        // actual guard against abuse here, not this permit.
+                        .requestMatchers(HttpMethod.POST, "/api/site/visit").permitAll()
                         // A guest asks for a seat and polls for the answer before they
                         // hold any credential at all, so these two are public. Neither
                         // works without a live join code, and neither hands out a token
