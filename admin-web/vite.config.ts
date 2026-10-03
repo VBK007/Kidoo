@@ -19,6 +19,10 @@ export default defineConfig({
       '/api': {
         target: process.env.KIDO_API ?? 'http://localhost:8080',
         changeOrigin: true,
+        // A free-tier ngrok static domain shows a browser-warning interstitial
+        // (HTML, status 200) to any request with a browser User-Agent. This
+        // header tells ngrok to skip it, regardless of what the dev proxy forwards.
+        headers: { 'ngrok-skip-browser-warning': 'true' },
       },
     },
   },
