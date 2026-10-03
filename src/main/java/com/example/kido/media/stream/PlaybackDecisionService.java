@@ -53,10 +53,19 @@ public class PlaybackDecisionService {
     }
 
     /**
-     * @param item an item whose {@link MediaInfo} has ideally been probed
+     * @param item            an item whose {@link MediaInfo} has ideally been probed
+     * @param audioTrackIndex the profile's saved audio track choice for this item, or
+     *                        null for "whatever the default is" — direct play (the
+     *                        original file, or a pre-made remux) serves fixed bytes
+     *                        with no way to steer which embedded stream a client's
+     *                        demuxer picks, so any index other than 0 can only be
+     *                        honoured by a live transcode, which maps that stream
+     *                        explicitly. Passing null here is exactly the request a
+     *                        caller with no track preference to honour (a download, the
+     *                        debug explain endpoint) should make.
      * @return the decision plus the human-readable reasons behind it
      */
-    public Decision decide(MediaItem item, ClientCapabilitiesRequest caps) {
+    public Decision decide(MediaItem item, ClientCapabilitiesRequest caps, Integer audioTrackIndex) {
         List<String> reasons = new ArrayList<>();
 
         if (item.getType().kind() == MediaType.Kind.AUDIO) {
@@ -127,12 +136,22 @@ public class PlaybackDecisionService {
                     + caps.maxBitrate() + " bps");
         }
 
+        // Direct play — original or remux alike — is fixed bytes: neither offers a
+        // way to select which embedded audio stream plays, only whichever the
+        // client's own demuxer defaults to (stream 0). Wanting anything else forces
+        // a transcode, which maps the requested stream explicitly.
+        boolean wantsNonDefaultAudio = audioTrackIndex != null && audioTrackIndex != 0;
+        if (wantsNonDefaultAudio && compatible) {
+            compatible = false;
+            reasons.add("Audio track " + audioTrackIndex + " requested; only a transcode can select it");
+        }
+
         if (compatible) {
             reasons.add("Direct play: container and codecs match client capabilities");
             return new Decision(true, reasons, null, false);
         }
 
-        if (item.hasRemux()) {
+        if (item.hasRemux() && !wantsNonDefaultAudio) {
             // A cached H264/MP4 copy already exists for this source, made because this
             // server cannot hardware-decode HEVC to transcode it live (see
             // HevcRemuxService). It is a universal container/codec baseline by

@@ -240,7 +240,7 @@ public class DownloadService {
         if (info.getHeight() != null && info.getHeight() > requestedHeight) {
             return false;
         }
-        return decisions.decide(item, capabilities).directPlay();
+        return decisions.decide(item, capabilities, null).directPlay();
     }
 
     /**

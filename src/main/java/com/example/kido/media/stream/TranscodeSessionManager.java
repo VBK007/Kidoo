@@ -93,11 +93,17 @@ public class TranscodeSessionManager {
     /**
      * Launches a transcode and blocks until the first segment is playable.
      *
-     * @param startSeconds offset to seek to before encoding; the produced stream always
-     *                     starts at zero, so the client applies this offset itself
+     * @param startSeconds    offset to seek to before encoding; the produced stream
+     *                        always starts at zero, so the client applies this offset
+     *                        itself
+     * @param audioTrackIndex which embedded audio stream to map, or null for the
+     *                        first ({@code 0}) — {@link PlaybackDecisionService} is
+     *                        what forces a transcode at all once this is anything else,
+     *                        since direct play cannot honour it.
      * @throws ApiException 429 when all session slots are busy, 500 if ffmpeg will not start
      */
-    public TranscodeSession start(MediaItem item, Path file, double startSeconds, int height) {
+    public TranscodeSession start(MediaItem item, Path file, double startSeconds, int height,
+                                  Integer audioTrackIndex) {
         evictFinishedSessions();
         if (sessions.size() >= props.getMaxTranscodeSessions()) {
             // Better an explicit refusal than thrashing the CPU and stalling every stream.
@@ -115,9 +121,12 @@ public class TranscodeSessionManager {
                     "Could not create transcode workspace");
         }
 
-        List<String> command = buildCommand(file, directory, startSeconds, height);
-        log.info("Starting transcode session={} item={} start={}s height={}p",
-                sessionId, item.getId(), startSeconds, height);
+        boolean hevcSource = item.getMediaInfo() != null
+                && "hevc".equalsIgnoreCase(item.getMediaInfo().getVideoCodec());
+        List<String> command = buildCommand(file, directory, startSeconds, height, audioTrackIndex, hevcSource);
+        log.info("Starting transcode session={} item={} start={}s height={}p audio={}",
+                sessionId, item.getId(), startSeconds, height,
+                audioTrackIndex == null ? 0 : audioTrackIndex);
         log.debug("ffmpeg command: {}", String.join(" ", command));
 
         Process process;
@@ -148,7 +157,8 @@ public class TranscodeSessionManager {
         return session;
     }
 
-    private List<String> buildCommand(Path file, Path directory, double startSeconds, int height) {
+    private List<String> buildCommand(Path file, Path directory, double startSeconds, int height,
+                                      Integer audioTrackIndex, boolean hevcSource) {
         // H.264 encodes in 16x16 macroblocks, and VAAPI enforces that strictly at the
         // encoder rather than padding around it like libx264 does — a height that isn't
         // a multiple of 16 (which happens whenever the source itself isn't one, since
@@ -158,6 +168,16 @@ public class TranscodeSessionManager {
         // regardless of which encoder actually runs.
         height = height - (height % 16);
         boolean hwaccel = props.isTranscodeHwaccelEnabled();
+        // This GPU has no HEVC decode at all (see HevcRemuxService) — asking for
+        // -hwaccel vaapi on an HEVC source fails the encoder with the exact same "-22
+        // (Invalid argument)" symptom as the macroblock case above, just from a decode
+        // that never produced a valid VAAPI surface in the first place. Normally
+        // item.hasRemux() steers these to a pre-made H264 copy before a live transcode
+        // is ever attempted, but the backfill runs one file at a time and can take
+        // hours, so a source can still land here unremuxed. Decode in software and
+        // upload to the GPU only for encoding, same hybrid HevcRemuxService already
+        // uses for exactly this source type.
+        boolean hwaccelDecode = hwaccel && !hevcSource;
         List<String> command = new ArrayList<>();
         command.add(props.getFfmpegPath());
         command.add("-hide_banner");
@@ -169,13 +189,18 @@ public class TranscodeSessionManager {
         // ffmpeg would decode every frame in software and upload it to VAAPI just to
         // encode it, which spends the CPU time this exists to avoid and adds a copy on
         // top. Must come before -i like every other input-side option.
-        if (hwaccel) {
+        if (hwaccelDecode) {
             command.add("-hwaccel");
             command.add("vaapi");
             command.add("-hwaccel_device");
             command.add(props.getVaapiDevice());
             command.add("-hwaccel_output_format");
             command.add("vaapi");
+        } else if (hwaccel) {
+            command.add("-init_hw_device");
+            command.add("vaapi=va:" + props.getVaapiDevice());
+            command.add("-filter_hw_device");
+            command.add("va");
         }
 
         // Before -i, so ffmpeg seeks by keyframe index instead of decoding and discarding
@@ -189,13 +214,20 @@ public class TranscodeSessionManager {
 
         command.add("-map");
         command.add("0:v:0");
-        // The trailing '?' makes the audio stream optional so a silent file still encodes.
+        // The trailing '?' makes the audio stream optional so a silent file still
+        // encodes. `audioTrackIndex`, when present, is the *absolute* ffprobe stream
+        // index CatalogService.audioTracks reported to the client (not a position
+        // among audio streams only) — see AudioTrackDto — so it is mapped as a bare
+        // stream specifier (`0:N`) rather than ffmpeg's audio-relative `0:a:N`, which
+        // would pick the wrong stream whenever something other than video precedes
+        // the chosen track. Nothing chosen falls back to `0:a:0`, the first audio
+        // stream, same default as before this was selectable at all.
         command.add("-map");
-        command.add("0:a:0?");
+        command.add(audioTrackIndex == null ? "0:a:0?" : "0:" + audioTrackIndex + "?");
         command.add("-sn");
         command.add("-dn");
 
-        if (hwaccel) {
+        if (hwaccelDecode) {
             command.add("-c:v");
             command.add("h264_vaapi");
             // profile/level as VAAPI's own numeric enum, not libx264's string form —
@@ -210,6 +242,18 @@ public class TranscodeSessionManager {
             // the copy this whole path exists to skip.
             command.add("-vf");
             command.add("scale_vaapi=-2:" + height);
+        } else if (hwaccel) {
+            // hevcSource: frames decoded in software, so they need scaling in software
+            // too before the explicit hwupload — scale_vaapi only takes a frame that is
+            // already a VAAPI surface, which these are not.
+            command.add("-c:v");
+            command.add("h264_vaapi");
+            command.add("-profile:v");
+            command.add("high");
+            command.add("-level");
+            command.add("41");
+            command.add("-vf");
+            command.add("scale=-2:" + height + ",format=nv12,hwupload");
         } else {
             command.add("-c:v");
             command.add("libx264");

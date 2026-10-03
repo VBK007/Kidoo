@@ -61,6 +61,9 @@ public class GuestPlaybackController {
                 guest.mediaItemId(),
                 startSeconds,
                 capabilities,
-                ClientAddress.resolve(request));
+                ClientAddress.resolve(request),
+                // A guest has no profile, and so nowhere the /tracks endpoint could
+                // have saved a choice to.
+                null);
     }
 }

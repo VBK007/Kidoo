@@ -63,21 +63,27 @@ public class PlaybackStarter {
      * @param viewerId     what the session is filed under: a profile id for an account,
      *                     a party member id for a guest
      * @param viewerName   what the admin panel shows
-     * @param startSeconds where playback will begin — a transcode is seeked to this
-     *                     offset, so resuming mid-film does not re-encode from zero
+     * @param startSeconds    where playback will begin — a transcode is seeked to this
+     *                        offset, so resuming mid-film does not re-encode from zero
+     * @param audioTrackIndex the caller's saved audio track choice, or null for the
+     *                        default — a guest has none to offer. See {@link
+     *                        PlaybackDecisionService#decide} for what a non-default
+     *                        choice does to the decision, and {@link
+     *                        TranscodeSessionManager#start} for where it reaches ffmpeg.
      */
     public PlaybackDecisionDto start(String viewerId,
                                      String viewerName,
                                      String itemId,
                                      double startSeconds,
                                      ClientCapabilitiesRequest capabilities,
-                                     String clientIp) {
+                                     String clientIp,
+                                     Integer audioTrackIndex) {
 
         MediaItem item = catalog.require(itemId);
         Path file = paths.requireWithinRoots(item.getFilePath());
         item = ingest.ensureProbed(item, file);
 
-        PlaybackDecisionService.Decision decision = decisions.decide(item, capabilities);
+        PlaybackDecisionService.Decision decision = decisions.decide(item, capabilities, audioTrackIndex);
         catalog.recordPlaybackDecision(item.getId(), decision.directPlay());
 
         if (decision.directPlay()) {
@@ -110,7 +116,7 @@ public class PlaybackStarter {
         }
 
         TranscodeSession transcode = transcodes.start(
-                item, file, Math.max(0, startSeconds), decision.targetHeight());
+                item, file, Math.max(0, startSeconds), decision.targetHeight(), audioTrackIndex);
 
         PlaybackSession session = sessions.start(
                 viewerId, viewerName, item, PlaybackDecisionDto.Mode.TRANSCODE,

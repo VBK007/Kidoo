@@ -24,6 +24,8 @@ import com.example.kido.media.dto.PlaybackDtos.ClientCapabilitiesRequest;
 import com.example.kido.media.dto.PlaybackDtos.PlaybackDecisionDto;
 import com.example.kido.media.library.LibraryIngestService;
 import com.example.kido.media.music.TrackPreviewService;
+import com.example.kido.media.playback.PlaybackProgress;
+import com.example.kido.media.playback.PlaybackService;
 import com.example.kido.media.session.PlaybackSessionRegistry;
 import com.example.kido.media.together.WatchPartyGrants;
 import com.example.kido.media.web.ActiveProfile;
@@ -62,6 +64,7 @@ public class StreamController {
     private final PlaybackStarter starter;
     private final WatchPartyGrants grants;
     private final TrackPreviewService previews;
+    private final PlaybackService playback;
 
     public StreamController(CatalogService catalog,
                             MediaPaths paths,
@@ -71,7 +74,8 @@ public class StreamController {
                             PlaybackSessionRegistry sessions,
                             PlaybackStarter starter,
                             WatchPartyGrants grants,
-                            TrackPreviewService previews) {
+                            TrackPreviewService previews,
+                            PlaybackService playback) {
         this.catalog = catalog;
         this.paths = paths;
         this.streamer = streamer;
@@ -81,6 +85,7 @@ public class StreamController {
         this.starter = starter;
         this.grants = grants;
         this.previews = previews;
+        this.playback = playback;
     }
 
     /**
@@ -100,8 +105,15 @@ public class StreamController {
                                       @Valid @RequestBody ClientCapabilitiesRequest capabilities,
                                       HttpServletRequest request) {
 
+        // Whatever this profile last chose in the tracks sheet (PlaybackController's
+        // /tracks endpoint) — null for "never chosen", which the decision engine and
+        // the transcoder both already treat as "the default track".
+        Integer audioTrackIndex = playback.findEntity(profile, id)
+                .map(PlaybackProgress::getAudioTrackIndex)
+                .orElse(null);
+
         return starter.start(profile.getId(), profile.getName(), id, startSeconds,
-                capabilities, request.getRemoteAddr());
+                capabilities, request.getRemoteAddr(), audioTrackIndex);
     }
 
     /**
@@ -191,6 +203,6 @@ public class StreamController {
             // Unreachable file: fall through and explain from what is already known.
             log.debug("Explaining {} without disk access: {}", id, ex.getMessage());
         }
-        return decisions.decide(item, capabilities).reasons();
+        return decisions.decide(item, capabilities, null).reasons();
     }
 }
