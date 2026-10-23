@@ -29,7 +29,10 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class TokenManager {
     private static final long LIFETIME_SECONDS = 180;
-    private static final String AD_GATE_CLEARED = "\"statusup\":\"OK\"";
+    // How the live mirror signals a cleared gate. Uncleared it answers
+    // {"c":"n","statusup":"Waiting for your ads click."}; a real ad click flips both fields.
+    private static final String AD_GATE_CLEARED_STATUS = "\"statusup\":\"OK\"";
+    private static final String AD_GATE_CLEARED_FLAG = "\"c\":\"y\"";
 
     public record Tokens(String t, String hash, long expiry) {
         boolean liveAt(long now) { return now < expiry; }
@@ -95,7 +98,8 @@ public class TokenManager {
 
         // Step 1: Verify ad-gate
         String verifyResponse = adGateRepository.verifyAds(baseUrl, cookie, client);
-        if (verifyResponse == null || !verifyResponse.contains(AD_GATE_CLEARED)) {
+        if (verifyResponse == null
+                || !(verifyResponse.contains(AD_GATE_CLEARED_STATUS) || verifyResponse.contains(AD_GATE_CLEARED_FLAG))) {
             throw new ApiException(HttpStatus.PRECONDITION_FAILED,
                     "The mirror's ad-gate has not been cleared for this session");
         }

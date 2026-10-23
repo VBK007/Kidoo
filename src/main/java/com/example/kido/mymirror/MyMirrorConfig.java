@@ -20,13 +20,19 @@ import com.example.kido.common.ApiException;
 @Configuration
 public class MyMirrorConfig implements WebMvcConfigurer {
 
-    /** Shared by the mymirror repositories. Timed out so a dead mirror cannot hang a request thread. */
+    /**
+     * Shared by the mymirror repositories. Timed out so a dead mirror cannot hang a request thread,
+     * and fitted with the Cloudflare-access interceptor so a replayed {@code cf_clearance} rides every
+     * upstream call (a no-op until one is configured — see {@link MirrorAccessProperties}).
+     */
     @Bean
-    public RestTemplate restTemplate() {
+    public RestTemplate restTemplate(MirrorAccessProperties access) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(10));
         factory.setReadTimeout(Duration.ofSeconds(20));
-        return new RestTemplate(factory);
+        RestTemplate restTemplate = new RestTemplate(factory);
+        restTemplate.getInterceptors().add(new CloudflareAccessInterceptor(access));
+        return restTemplate;
     }
 
     @Override

@@ -15,6 +15,7 @@ import java.net.InetAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
@@ -24,6 +25,7 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
 import com.example.kido.common.ApiException;
+import com.example.kido.mymirror.DispatcherProperties;
 import com.example.kido.mymirror.HlsRewriter;
 import com.example.kido.mymirror.UpstreamUrl;
 import com.example.kido.mymirror.manager.TokenManager;
@@ -42,23 +44,38 @@ class MirrorFlowTest {
 
     // ---- Dispatcher ----
 
+    private static final String M1 = "https://mirror-one.example";
+    private static final String M2 = "https://mirror-two.example";
+
+    private static DispatcherProperties props(String... mirrors) {
+        DispatcherProperties p = new DispatcherProperties();
+        p.setMirrors(List.of(mirrors));
+        return p;
+    }
+
+    // The real /check.php hands back the content URL (path and query included), base64-encoded; the
+    // base the rest of the flow hangs off is its origin. The u[] entries are video-CDN hosts, not
+    // backend candidates, so they must never be mistaken for the base.
+    private static final String CHECK_PHP = "{\"token_hash\":\"" + b64("https://net52.cc/mobile/home?app=1")
+            + "\",\"stape\":\"" + b64("https://net52.cc/streamtape.php")
+            + "\",\"u\":[\"" + b64("https://streamtape.com") + "\"]}";
+
     @Test
-    void dispatcherPicksTheFirstLiveMirrorAndCachesIt() {
+    void dispatcherWalksPastABlockedMirrorDerivesTheOriginAndCachesIt() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
-        server.expect(once(), requestTo("https://mobiledetect.app/check.php"))
-                .andRespond(withSuccess("{\"token_hash\":\"" + b64("https://dead.example/") + "\",\"u\":[\""
-                        + b64("https://mirror.example/") + "\"]}", MediaType.APPLICATION_JSON));
-        server.expect(once(), requestTo("https://dead.example")).andExpect(method(HttpMethod.HEAD))
-                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
-        // A mirror redirecting to its home page is up: HEAD is not followed.
-        server.expect(once(), requestTo(BASE)).andExpect(method(HttpMethod.HEAD))
-                .andRespond(withStatus(HttpStatus.MOVED_PERMANENTLY));
+        // First mirror is blocked (403, as most are in the wild); discovery must move on to the next.
+        server.expect(once(), requestTo(M1 + "/check.php")).andRespond(withStatus(HttpStatus.FORBIDDEN));
+        server.expect(once(), requestTo(M2 + "/check.php"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("User-Agent", "okhttp/4.9.2"))
+                .andRespond(withSuccess(CHECK_PHP, MediaType.APPLICATION_JSON));
 
-        DispatcherService dispatcher = new DispatcherService(new DispatcherRepository(rest), rest);
+        DispatcherService dispatcher = new DispatcherService(new DispatcherRepository(props(M1, M2), rest));
 
-        assertEquals(BASE, dispatcher.resolveActiveBaseUrl());
-        assertEquals(BASE, dispatcher.resolveActiveBaseUrl()); // cached: no second check.php
+        // The base is the origin of token_hash: not the whole content URL, not the u[] CDN.
+        assertEquals("https://net52.cc", dispatcher.resolveActiveBaseUrl());
+        assertEquals("https://net52.cc", dispatcher.resolveActiveBaseUrl()); // cached: no second walk
         server.verify();
     }
 
@@ -66,15 +83,14 @@ class MirrorFlowTest {
     void dispatcherFailsLoudlyWhenNoMirrorAnswers() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
-        server.expect(requestTo("https://mobiledetect.app/check.php"))
-                .andRespond(withSuccess("{\"token_hash\":\"" + b64("https://dead.example") + "\",\"u\":[]}",
-                        MediaType.APPLICATION_JSON));
-        server.expect(requestTo("https://dead.example")).andRespond(withStatus(HttpStatus.BAD_GATEWAY));
+        server.expect(once(), requestTo(M1 + "/check.php")).andRespond(withStatus(HttpStatus.FORBIDDEN));
+        server.expect(once(), requestTo(M2 + "/check.php")).andRespond(withStatus(HttpStatus.BAD_GATEWAY));
 
-        DispatcherService dispatcher = new DispatcherService(new DispatcherRepository(rest), rest);
+        DispatcherService dispatcher = new DispatcherService(new DispatcherRepository(props(M1, M2), rest));
 
         ApiException ex = assertThrows(ApiException.class, dispatcher::resolveActiveBaseUrl);
         assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatus());
+        server.verify();
     }
 
     // ---- Ad-gate and tokens ----
@@ -82,7 +98,7 @@ class MirrorFlowTest {
     /** A dispatcher that always answers {@link #BASE} without any network. */
     private static final class FixedDispatcher extends DispatcherService {
         FixedDispatcher() {
-            super(null, null);
+            super(null);
         }
 
         @Override

@@ -64,7 +64,7 @@ class MirrorHomeTest {
 
     private static final class FixedDispatcher extends DispatcherService {
         FixedDispatcher() {
-            super(null, null);
+            super(null);
         }
 
         @Override
