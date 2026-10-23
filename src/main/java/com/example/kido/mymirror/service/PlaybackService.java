@@ -21,12 +21,16 @@ public class PlaybackService {
         this.tokenManager = tokenManager;
     }
 
-    public String resolveStream(String cookie) {
-        return repo.resolveStream(dispatcherService.resolveActiveBaseUrl(), tokenManager.getHash(cookie), cookie);
+    public String heartbeat(String cookie) {
+        return repo.heartbeat(dispatcherService.resolveActiveBaseUrl(), tokenManager.getHash(cookie), cookie);
     }
 
     public String altVideo(String cookie) {
         return repo.altVideo(dispatcherService.resolveActiveBaseUrl(), tokenManager.getHash(cookie), cookie);
+    }
+
+    public String streamtape(String cookie) {
+        return repo.streamtape(dispatcherService.resolveActiveBaseUrl(), cookie);
     }
 
     public String playlist(String id, String title, String cookie) {

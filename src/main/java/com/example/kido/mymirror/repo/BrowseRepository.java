@@ -28,6 +28,11 @@ public class BrowseRepository {
         return get(UpstreamUrl.of(baseUrl, "/mobile/episodes.php", "s", id, "series", series, "t", t, "page", "1"), cookie);
     }
 
+    // Trailer sources for a title. Lives at the site root, not under /mobile.
+    public String trailer(String baseUrl, String id, String cookie) {
+        return get(UpstreamUrl.of(baseUrl, "/trailer.php", "id", id), cookie);
+    }
+
     // The mirror's own home page, as the app user's session sees it.
     public String home(String baseUrl, String cookie) {
         return get(UpstreamUrl.of(baseUrl, "/mobile/home", "app", "1"), cookie);

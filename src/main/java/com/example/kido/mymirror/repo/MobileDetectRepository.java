@@ -8,6 +8,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Repository;
@@ -21,14 +22,34 @@ public class MobileDetectRepository {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
+    /**
+     * The backend's rotating domains, tried in order. The upstream advertised net77.cc alongside
+     * net52.cc (seen 2026-10-23), so a block on one host should fail over to the next rather than
+     * taking the home feed down.
+     */
+    private static final List<String> HOSTS = List.of("https://net52.cc", "https://net77.cc");
+
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(TIMEOUT)
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
     public String fetchHomePage(String appParam, ClientHeaders client) {
-        URI uri = URI.create("https://net52.cc/mobile/home?app="
-                + URLEncoder.encode(appParam, StandardCharsets.UTF_8));
+        String app = URLEncoder.encode(appParam, StandardCharsets.UTF_8);
+        RuntimeException last = null;
+        for (String host : HOSTS) {
+            try {
+                return fetchHomePage(host, app, client);
+            } catch (ApiException ex) {
+                last = ex; // this host is blocked/unreachable — try the next one
+            }
+        }
+        throw last != null ? last
+                : new ApiException(HttpStatus.BAD_GATEWAY, "No upstream host configured");
+    }
+
+    private String fetchHomePage(String host, String app, ClientHeaders client) {
+        URI uri = URI.create(host + "/mobile/home?app=" + app);
 
         HttpRequest request = HttpRequest.newBuilder(uri)
                 .timeout(TIMEOUT)

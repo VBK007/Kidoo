@@ -22,8 +22,9 @@ public class PlaybackRepository {
         this.restTemplate = restTemplate;
     }
 
-    // Resolve stream via POST /mobile/p.php
-    public String resolveStream(String baseUrl, String hash, String cookie) {
+    // Playback keep-alive via POST /mobile/p.php. Returns {r:n}=ok, {r:y}=reload; it does NOT
+    // resolve a stream (playlist.php is the stream source).
+    public String heartbeat(String baseUrl, String hash, String cookie) {
         HttpHeaders headers = mirrorHeaders(baseUrl, cookie);
         headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
@@ -34,9 +35,14 @@ public class PlaybackRepository {
         return restTemplate.postForObject(UpstreamUrl.of(baseUrl, "/mobile/p.php"), request, String.class);
     }
 
-    // Alternate video endpoint GET /mobile/v.php
+    // Alternate video endpoint GET /v.php. Lives at the site root, not under /mobile.
     public String altVideo(String baseUrl, String hash, String cookie) {
-        return get(UpstreamUrl.of(baseUrl, "/mobile/v.php", "dp1", hash, "a", "2"), mirrorHeaders(baseUrl, cookie));
+        return get(UpstreamUrl.of(baseUrl, "/v.php", "dp1", hash, "a", "2"), mirrorHeaders(baseUrl, cookie));
+    }
+
+    // Streamtape resolver (alternate source) GET /streamtape.php, at the site root.
+    public String streamtape(String baseUrl, String cookie) {
+        return get(UpstreamUrl.of(baseUrl, "/streamtape.php"), mirrorHeaders(baseUrl, cookie));
     }
 
     // Playlist for a title GET /mobile/playlist.php

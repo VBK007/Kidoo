@@ -28,4 +28,8 @@ public class BrowseService {
     public String episodes(String id, String series, String cookie) {
         return repo.episodes(dispatcherService.resolveActiveBaseUrl(), id, series, tokenManager.getT(cookie), cookie);
     }
+
+    public String trailer(String id, String cookie) {
+        return repo.trailer(dispatcherService.resolveActiveBaseUrl(), id, cookie);
+    }
 }

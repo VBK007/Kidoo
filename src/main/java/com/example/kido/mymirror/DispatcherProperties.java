@@ -31,9 +31,12 @@ public class DispatcherProperties {
     /**
      * The mirror pool, tried in order. The first one that returns a usable {@code /check.php} body
      * wins, so order is a priority list: put the most reliable hosts first. These 23 are the pool
-     * observed in the shipped app bundle.
+     * observed in the shipped app bundle. {@code mobiledetect.app} is listed first because a live
+     * re-verify (2026-10-23) found it was the only host still answering {@code /check.php}; the rest
+     * returned 403/404 but are kept as fallbacks in case the upstream rotates again.
      */
     private List<String> mirrors = List.of(
+            "https://mobiledetect.app",
             "https://mobidetect.art",
             "https://mobidetect.cc",
             "https://mobidetect.click",
@@ -55,8 +58,7 @@ public class DispatcherProperties {
             "https://mobidetects.pro",
             "https://mobidetects.store",
             "https://mobidetects.top",
-            "https://mobidetects.xyz",
-            "https://mobiledetect.app");
+            "https://mobidetects.xyz");
 
     /** The discovery path on every mirror. Joined to each base URL as-is. */
     private String checkPath = "/check.php";

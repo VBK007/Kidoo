@@ -20,14 +20,20 @@ public class PlaybackController {
     private final PlaybackService service;
     public PlaybackController(PlaybackService service) { this.service = service; }
 
-    @PostMapping("/resolve")
-    public ResponseEntity<String> resolve(@MirrorCookie String cookie) {
-        return ResponseEntity.ok(service.resolveStream(cookie));
+    // Playback keep-alive (p.php). Not a stream resolver — /playlist is the stream source.
+    @PostMapping("/heartbeat")
+    public ResponseEntity<String> heartbeat(@MirrorCookie String cookie) {
+        return ResponseEntity.ok(service.heartbeat(cookie));
     }
 
     @GetMapping("/alt")
     public ResponseEntity<String> alt(@MirrorCookie String cookie) {
         return ResponseEntity.ok(service.altVideo(cookie));
+    }
+
+    @GetMapping("/streamtape")
+    public ResponseEntity<String> streamtape(@MirrorCookie String cookie) {
+        return ResponseEntity.ok(service.streamtape(cookie));
     }
 
     @GetMapping("/playlist")
