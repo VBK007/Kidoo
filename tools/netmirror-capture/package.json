@@ -5,10 +5,13 @@
   "type": "module",
   "description": "Local, isolated CDP analysis tooling. NOT part of the Kidoo app; never imported or shipped. Observes an unlicensed source for one-off study only.",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "capture": "node run-capture.mjs",
-    "patch-collection": "node update_collection.mjs"
+    "patch-collection": "node update_collection.mjs",
+    "selfcheck": "node run-discovery.mjs --selfcheck",
+    "discover": "node run-discovery.mjs",
+    "discover:watch": "node run-discovery.mjs --watch 1500"
   }
 }

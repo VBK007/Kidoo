@@ -1,11 +1,7 @@
 package com.example.kido;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.net.URI;
@@ -13,7 +9,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -27,7 +22,8 @@ import com.example.kido.media.dto.HomeDtos.MirrorRailDto;
 import com.example.kido.media.dto.HomeDtos.MirrorTileDto;
 import com.example.kido.mymirror.service.MirrorHomeService;
 
-/** /api/media/home carries the mirror rail for a parent who sends a mirror session, and only then. */
+/** /api/media/home carries the mirror rail for any signed-in account, filled from the caller's own
+ *  mirror session when it sends one or the server's global session otherwise. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class MirrorHomeEndpointIntegrationTest {
 
@@ -44,20 +40,20 @@ class MirrorHomeEndpointIntegrationTest {
 
     @Test
     void aParentWithAMirrorSessionGetsBothTheLibraryAndTheMirror() throws Exception {
-        when(mirrorHome.rail("sess=1")).thenReturn(Optional.of(RAIL));
+        when(mirrorHome.rail("sess=1", null)).thenReturn(List.of(RAIL));
         String[] account = account("PARENT");
 
         HttpResponse<String> home = home(account, "sess=1");
 
         assertEquals(200, home.statusCode(), home.body());
         assertTrue(home.body().contains("\"rails\""), home.body());
-        assertTrue(home.body().contains("\"mirror\":{\"key\":\"mirror\""), home.body());
+        assertTrue(home.body().contains("\"mirror\":[{\"key\":\"mirror\""), home.body());
         assertTrue(home.body().contains("\"id\":\"111\""), home.body());
     }
 
     @Test
     void withoutAMirrorSessionTheHomeScreenIsUnchanged() throws Exception {
-        when(mirrorHome.rail(null)).thenReturn(Optional.empty());
+        when(mirrorHome.rail(null, null)).thenReturn(List.of());
 
         HttpResponse<String> home = home(account("PARENT"), null);
 
@@ -66,14 +62,15 @@ class MirrorHomeEndpointIntegrationTest {
     }
 
     @Test
-    void aChildAccountNeverSeesTheMirror() throws Exception {
-        when(mirrorHome.rail(any())).thenReturn(Optional.of(RAIL));
+    void aChildAccountAlsoSeesTheMirror() throws Exception {
+        // The mirror catalogue has no age filtering; this build composes the rail for children too
+        // (a deliberate choice recorded on HomeController#home), so the gate is signed-in, not parent.
+        when(mirrorHome.rail("sess=1", null)).thenReturn(List.of(RAIL));
 
         HttpResponse<String> home = home(account("CHILD"), "sess=1");
 
         assertEquals(200, home.statusCode(), home.body());
-        assertFalse(home.body().contains("\"id\":\"111\""), home.body());
-        verify(mirrorHome, never()).rail(any());
+        assertTrue(home.body().contains("\"id\":\"111\""), home.body());
     }
 
     // ---- helpers ----

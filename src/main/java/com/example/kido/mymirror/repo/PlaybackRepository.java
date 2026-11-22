@@ -2,6 +2,7 @@ package com.example.kido.mymirror.repo;
 
 import java.net.URI;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -12,14 +13,18 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
 import com.example.kido.mymirror.ClientHeaderSupport;
+import com.example.kido.mymirror.MirrorOtt;
 import com.example.kido.mymirror.UpstreamUrl;
 
 @Repository
 public class PlaybackRepository {
     private final RestTemplate restTemplate;
+    private final RestTemplate cdnRestTemplate;
 
-    public PlaybackRepository(RestTemplate restTemplate) {
+    public PlaybackRepository(RestTemplate restTemplate,
+                              @Qualifier("cdnRestTemplate") RestTemplate cdnRestTemplate) {
         this.restTemplate = restTemplate;
+        this.cdnRestTemplate = cdnRestTemplate;
     }
 
     // Playback keep-alive via POST /mobile/p.php. Returns {r:n}=ok, {r:y}=reload; it does NOT
@@ -46,20 +51,33 @@ public class PlaybackRepository {
     }
 
     // Playlist for a title GET /mobile/playlist.php
+    // Prime Video titles play from /mobile/pv/playlist.php; the id's shape picks the catalogue.
     public String fetchPlaylist(String baseUrl, String id, String title, String t, String cookie) {
-        URI url = UpstreamUrl.of(baseUrl, "/mobile/playlist.php", "id", id, "t", title, "tm", t);
+        String path = MirrorOtt.isPrime(id, cookie) ? "/mobile/pv/playlist.php" : "/mobile/playlist.php";
+        URI url = UpstreamUrl.of(baseUrl, path, "id", id, "t", title, "tm", t);
         return get(url, mirrorHeaders(baseUrl, cookie));
     }
 
-    /** The HLS master playlist's own URL; relative entries inside it resolve against this. */
-    public URI hlsMasterUrl(String baseUrl, String id, String t) {
-        return UpstreamUrl.of(baseUrl, "/mobile/hls/" + UpstreamUrl.segment(id) + ".m3u8",
-                "in", t, "hd", "off", "lang", "eng", "hp", "yes");
-    }
-
-    // Fetch HLS master playlist
+    // Fetch HLS master playlist. The URL (with its signed play_token) comes from the sources list
+    // playlist.php returned, resolved on the mirror's host — see PlaybackService.hlsMaster.
     public String fetchHlsMaster(String baseUrl, URI masterUrl, String cookie) {
         return get(masterUrl, mirrorHeaders(baseUrl, cookie));
+    }
+
+    // Fetch an HLS variant playlist from the mirror's segment CDN. The CDN is a third party that is
+    // not behind Cloudflare and gates the playlist on the mirror Referer alone, so this sends ONLY
+    // that Referer and a browser UA/Accept-Language — no session cookie and no cf_clearance, which
+    // would leak a mirror secret to an unrelated host. The template carries no interceptor for the
+    // same reason. The segments the playlist names are public, so they are not fetched here: the
+    // player is handed their absolute CDN URLs and streams them straight from the CDN.
+    public String fetchCdnPlaylist(URI url, String referer) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.USER_AGENT, ClientHeaderSupport.DEFAULT_USER_AGENT);
+        headers.set(HttpHeaders.ACCEPT_LANGUAGE, ClientHeaderSupport.DEFAULT_ACCEPT_LANGUAGE);
+        if (referer != null && !referer.isBlank()) {
+            headers.set("Referer", referer);
+        }
+        return cdnRestTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), String.class).getBody();
     }
 
     // Fetch subtitle file. The cookie goes only to the mirror itself, never to a third-party host.

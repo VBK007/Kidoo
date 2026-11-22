@@ -48,6 +48,15 @@ public class PlaybackController {
         return ResponseEntity.ok().contentType(HLS).body(service.hlsMaster(id, cookie));
     }
 
+    // Proxies one variant (media) playlist from the segment CDN, adding the mirror Referer the CDN
+    // requires. The u/s pair is a token this server signed when it built the master; no session
+    // cookie is involved, so none is read here. Segments are left as absolute CDN URLs the player
+    // fetches directly.
+    @GetMapping("/variant")
+    public ResponseEntity<String> variant(@RequestParam String u, @RequestParam String s) {
+        return ResponseEntity.ok().contentType(HLS).body(service.variant(u, s));
+    }
+
     @GetMapping("/subtitle")
     public ResponseEntity<String> subtitle(@RequestParam String url, @MirrorCookie String cookie) {
         return ResponseEntity.ok(service.subtitle(url, cookie));

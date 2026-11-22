@@ -47,10 +47,12 @@ public final class HomeDtos {
      * @param weights   how the ranked rail was weighted, so the app (and anyone asking
      *                  why a title placed where it did) can see the formula
      * @param generatedAt ISO-8601 instant the response was composed
-     * @param mirror    titles from the mirror's home page with their playlists; null unless
-     *                  a parent's request carried a mirror session and the mirror answered.
-     *                  Its own field rather than one of {@code rails}: its tiles are not
-     *                  library items, and a client parsing rails would choke on them
+     * @param mirror    the mirror's catalogue as one or more rails, each with its titles' playlists:
+     *                  one rail per category where the feed groups its titles (Prime's "Top 10 …"
+     *                  rows), otherwise a single "From the mirror" rail. Null unless a parent's
+     *                  request carried a mirror session and the mirror answered. Its own field rather
+     *                  than part of {@code rails}: its tiles are not library items, and a client
+     *                  parsing rails would choke on them
      */
     public record HomeDto(
             List<ContinueWatchingDto> continueWatching,
@@ -58,10 +60,10 @@ public final class HomeDtos {
             LibrarySummaryDto library,
             RankingWeightsDto weights,
             String generatedAt,
-            MirrorRailDto mirror) {
+            List<MirrorRailDto> mirror) {
 
-        public HomeDto withMirror(MirrorRailDto rail) {
-            return new HomeDto(continueWatching, rails, library, weights, generatedAt, rail);
+        public HomeDto withMirror(List<MirrorRailDto> mirrorRails) {
+            return new HomeDto(continueWatching, rails, library, weights, generatedAt, mirrorRails);
         }
     }
 
@@ -74,7 +76,11 @@ public final class HomeDtos {
      */
     public record MirrorTileDto(String id, String title, String image, JsonNode playlist) {}
 
-    /** The mirror's titles, in the order its home page lists them. */
+    /**
+     * One rail of mirror titles: a feed category (Prime's "Top 10 Movies in Prime", keyed by its
+     * slug) or, for a feed that carries no categories, the single "From the mirror" rail (key
+     * {@code mirror}). Items keep the order the mirror's home page lists them.
+     */
     public record MirrorRailDto(String key, String title, List<MirrorTileDto> items) {}
 
     /** The weights behind the blended rail. Sum to 1. */

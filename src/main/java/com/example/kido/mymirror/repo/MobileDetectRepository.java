@@ -49,7 +49,9 @@ public class MobileDetectRepository {
     }
 
     private String fetchHomePage(String host, String app, ClientHeaders client) {
-        URI uri = URI.create(host + "/mobile/home?app=" + app);
+        // /mobile/home?app=1 was retired upstream (404, seen 2026-10-23). verify2.php is the live
+        // entry page; the app context still rides along as a query param the PHP page ignores.
+        URI uri = URI.create(host + "/mobile/verify2.php?app=" + app);
 
         HttpRequest request = HttpRequest.newBuilder(uri)
                 .timeout(TIMEOUT)

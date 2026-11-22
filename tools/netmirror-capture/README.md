@@ -40,7 +40,8 @@ driving, the same way the DevTools "Network" tab does.
 | `update_collection.mjs` | **A Postman patcher.** Folds already-captured, already-sanitized bodies into a Postman collection as example responses. Pure file surgery; makes no network calls. |
 | `STEPS.md` | Human-readable method + the non-automated boundary. |
 
-Requirements: **Node 18+** (uses global `fetch`/`WebSocket`, no `npm install`) and
+Requirements: **Node 22+** (uses the global `fetch`/`WebSocket`; the global
+`WebSocket` only exists from Node 21/22 on, so Node 18/20 crash at startup) and
 desktop Chrome. Nothing is installed.
 
 ---

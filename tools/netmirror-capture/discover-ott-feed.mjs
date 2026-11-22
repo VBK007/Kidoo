@@ -198,15 +198,30 @@ async function main() {
   const saveSession = async () => {
     if (!SAVE) return;
     const jar = (await page.send('Network.getCookies', { urls: [`https://${COOKIE_HOST}/`] }).catch(() => null))?.result?.cookies || [];
-    const pick = n => jar.find(c => c.name === n)?.value || INJECT[n] || '';
-    const th = pick('t_hash_t'), cf = pick('cf_clearance'), ah = pick('addhash');
-    if (!th) { log('  (not saving session — no t_hash_t in jar)'); return; }
-    // The backend's ad-gate verify (verify2.php) POSTs verify=<addhash>; without this cookie that POST
-    // is empty and the gate answers "Waiting for your ads click." (412). addhash is the ad-click proof
-    // the human just earned — persist it so the backend can replay the SAME click, not fabricate one.
-    const line = [`t_hash_t=${th}`, cf && `cf_clearance=${cf}`, ah && `addhash=${ah}`].filter(Boolean).join('; ');
-    fs.writeFileSync(SAVE, line + '\n', { mode: 0o600 });
-    log(`  saved live session -> ${SAVE} (t_hash_t${cf ? ' + cf_clearance' : ''}${ah ? ' + addhash' : ' — NO addhash in jar'}; holds secrets, gitignored)`);
+    // Persist the WHOLE first-party net52.cc jar, not a hand-picked few. /mobile/home?app=1 is
+    // cookie-gated: with only t_hash_t (+cf_clearance+addhash) it answers "Page Not Found!" (404) and
+    // nf/dp rails come back empty, because the home-session cookies (t_hash, and the numeric skin
+    // cookies the live app carries) are dropped. The backend replays this line verbatim as the Cookie
+    // header and MirrorOtt.apply strips+re-sets `ott` per request, so carrying the full jar — `ott`
+    // included — is safe and loses nothing. Values never reach the log; only names are printed.
+    const vals = new Map();                               // name -> value, deduped (CDP jar has per-domain dupes)
+    for (const c of jar) { if (c && c.name && c.value != null) vals.set(c.name, c.value); }
+    // Fall back to injected cookies (incl. HttpOnly cf_clearance) for any name a reused/headless run
+    // did not re-observe in the jar; the jar value wins when both exist.
+    for (const [n, v] of Object.entries(INJECT)) { if (v && !vals.has(n)) vals.set(n, v); }
+    // A Cookie header is `name=value; name=value`; a name/value carrying a delimiter (`; , =` or CR/LF)
+    // would corrupt the single line (readSessionFile also rejects multiline), so drop that pair rather
+    // than emit a malformed header. `=` is legal inside a value (token padding), only illegal in a name.
+    const pairs = [];
+    for (const [n, v] of vals) {
+      if (/[;,=\s]/.test(n) || /[;,\r\n]/.test(String(v))) continue;
+      pairs.push(`${n}=${v}`);
+    }
+    // t_hash_t is the marker the backend requires (MirrorSessionProvider.readSessionFile); never write a
+    // line without it — a partial jar missing it would be rejected or replay a dead session.
+    if (!pairs.some(p => p.startsWith('t_hash_t='))) { log('  (not saving session — no t_hash_t in jar)'); return; }
+    fs.writeFileSync(SAVE, pairs.join('; ') + '\n', { mode: 0o600 });
+    log(`  saved live session -> ${SAVE} (${pairs.length} cookies: ${pairs.map(p => p.slice(0, p.indexOf('='))).join(', ')}; holds secrets, gitignored)`);
   };
 
   // ---- preflight: prove Chrome + CDP + reachability, then stop (no session, no gate) ----
@@ -303,7 +318,12 @@ async function main() {
     if (!verified) { console.log('\nGate not passed within timeout — stopping.'); return await cleanup(cdp, EXIT_SESSION_EXPIRED); }
     log('\nstep 3 — gate verified (t_hash_t cookie present)');
   }
-  // the session is now live (reused or freshly earned) — persist it for the next automatic run
+  // the session is now live (reused or freshly earned) — persist it for the next automatic run.
+  // NB: snapshotting the jar is all we do here. An earlier revision warmed /mobile/home?app=1 first,
+  // on the theory the gate did not mint the home-session cookies (t_hash + numeric skin cookies) and
+  // home would. That was EMPIRICALLY DISPROVEN (2026-11-22): the desktop gate flow only ever yields
+  // t_hash_t + addhash, home 404s precisely because the 8-cookie app-native jar is absent, and warming
+  // it minted nothing. The full-jar saveSession (above) stays; the dead home-warm was reverted.
   await saveSession();
   await sleep(4000);
   const landed = await evalIn('location.origin + location.pathname');

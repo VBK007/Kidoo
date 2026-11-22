@@ -87,6 +87,21 @@ public class SecurityConfig {
                         .hasAnyRole("CHILD", "PARENT", "GUEST")
                         .requestMatchers("/api/media/transcode/**")
                         .hasAnyRole("CHILD", "PARENT", "GUEST")
+                        // The mirror surface is its own trust domain. These routes
+                        // proxy the upstream NetMirror on the mirror session, not the
+                        // account JWT. A caller may carry its own session (X-Mirror-Cookie
+                        // header or `cookie` query param); when it carries none, the
+                        // MirrorCookieResolver falls back to the backend's one global
+                        // session (MirrorSessionProvider). A guest who has only cleared the
+                        // ad gate reaches these the same way, so gating them on CHILD/PARENT
+                        // would lock out exactly the caller they are for.
+                        // /dispatcher/active and /info/app need no session at all; the rest
+                        // use the caller's or the global session, and when no global session
+                        // is held the resolver answers 503 (being acquired) while the upstream
+                        // mirror refuses a lapsed one.
+                        .requestMatchers(HttpMethod.GET, "/dispatcher/active", "/info/app").permitAll()
+                        .requestMatchers("/adgate/**", "/browse/**", "/playback/**",
+                                "/user/**", "/mobile/**").permitAll()
                         // Everything else needs an account, not merely a valid token.
                         // Every AppUser holds one of these two roles, so this is the
                         // same rule as authenticated() for real users — what it adds is

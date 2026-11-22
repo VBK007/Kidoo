@@ -46,3 +46,12 @@ logs/
 secrets/
 *firebase-adminsdk*.json
 *serviceAccount*.json
+
+# File-backed H2 for the dev (h2) profile — local data, never committed.
+/data/
+*.mv.db
+*.trace.db
+
+# Local junk — crash dumps and ad-hoc device screenshots.
+*.stackdump
+tower-device-screen.png

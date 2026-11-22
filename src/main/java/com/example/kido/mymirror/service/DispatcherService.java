@@ -72,6 +72,15 @@ public class DispatcherService {
         }
     }
 
+    /**
+     * Drops the cached base so the next {@link #resolveActiveBaseUrl()} re-walks discovery. Used
+     * after a transient upstream failure that may mean the backend rotated hosts (net52 → net77)
+     * within the cache window, so the next call targets the host that actually answers now.
+     */
+    public void invalidate() {
+        cachedUntil = 0;
+    }
+
     private String resolveFromDispatcher() {
         String body = repo.getDispatcherResponse();
         if (body == null) {
