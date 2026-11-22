@@ -1,0 +1,5 @@
+# Capture output holds LIVE cookies/tokens — never commit it.
+cdp-capture/
+*.jsonl
+authenticated-*.json
+node_modules/

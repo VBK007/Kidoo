@@ -1,0 +1,14 @@
+{
+  "name": "netmirror-capture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local, isolated CDP analysis tooling. NOT part of the Kidoo app; never imported or shipped. Observes an unlicensed source for one-off study only.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "capture": "node run-capture.mjs",
+    "patch-collection": "node update_collection.mjs"
+  }
+}
