@@ -29,4 +29,9 @@ public class BrowseController {
     public ResponseEntity<String> episodes(@RequestParam String id, @RequestParam String series, @MirrorCookie String cookie) {
         return ResponseEntity.ok(service.episodes(id, series, cookie));
     }
+
+    @GetMapping("/trailer")
+    public ResponseEntity<String> trailer(@RequestParam String id, @MirrorCookie String cookie) {
+        return ResponseEntity.ok(service.trailer(id, cookie));
+    }
 }

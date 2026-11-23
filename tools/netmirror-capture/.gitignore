@@ -1,0 +1,18 @@
+# Capture output holds LIVE cookies/tokens — never commit it.
+cdp-capture/
+*.jsonl
+authenticated-*.json
+ott-feed-discovery-*.json
+session*.txt
+node_modules/
+*.log
+
+# mitm CA material (private keys ca.key/leaf.key = credentials), decompiled
+# APK/dex binaries, and build tooling (apktool.jar, debug.jks keystore) — all
+# local bring-your-own artifacts, never committed.
+mitm-ca/
+apk-inspect/
+tooling/
+
+# Local editor backups of discovery scripts.
+*.bak-*

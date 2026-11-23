@@ -40,6 +40,30 @@ public final class UpstreamUrl {
     }
 
     /**
+     * A reference from an upstream response resolved against {@code baseUrl}, kept on the mirror's
+     * own host. The reference is the mirror's own {@code sources[].file} from playlist.php — a path
+     * like {@code /mobile/hls/<id>.m3u8?in=<play_token>&hd=off&lang=eng&hp=yes}; resolving it keeps
+     * the query, and the signing token inside it, verbatim, which {@link #of} (which re-encodes
+     * params) cannot. The fetch that follows carries the session cookie, so it must land on the
+     * mirror: a reference that resolves to any other host is refused rather than sent the cookie.
+     */
+    public static URI resolveOnMirror(String baseUrl, String reference) {
+        if (reference == null || reference.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "mirror returned no stream source");
+        }
+        URI resolved;
+        try {
+            resolved = URI.create(baseUrl).resolve(reference.trim());
+        } catch (IllegalArgumentException ex) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "mirror stream source is not a valid URL");
+        }
+        if (!sameHost(resolved, baseUrl)) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "mirror stream source points off the mirror");
+        }
+        return resolved;
+    }
+
+    /**
      * The URL, if it is http(s) on a host that resolves only to public addresses. The
      * subtitle endpoint fetches whatever URL it is handed, so without this a signed-in user
      * could make the server read its own actuator, the LAN, or a cloud metadata address.

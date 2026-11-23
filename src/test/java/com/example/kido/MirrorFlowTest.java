@@ -2,6 +2,8 @@ package com.example.kido;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.client.ExpectedCount.once;
@@ -14,7 +16,14 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import java.net.InetAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
@@ -24,15 +33,35 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
 import com.example.kido.common.ApiException;
+import com.example.kido.mymirror.DispatcherProperties;
 import com.example.kido.mymirror.HlsRewriter;
+import com.example.kido.mymirror.MirrorAccessProperties;
+import com.example.kido.mymirror.MirrorStreamSigner;
+import com.example.kido.mymirror.MirrorSessionProperties;
+import com.example.kido.mymirror.MirrorSessionProvider;
 import com.example.kido.mymirror.UpstreamUrl;
 import com.example.kido.mymirror.manager.TokenManager;
 import com.example.kido.mymirror.repo.AdGateRepository;
 import com.example.kido.mymirror.repo.DispatcherRepository;
+import com.example.kido.mymirror.repo.PlaybackRepository;
 import com.example.kido.mymirror.service.DispatcherService;
+import com.example.kido.mymirror.service.PlaybackService;
 
 /** The mirror flow end to end against a scripted upstream: dispatcher, ad-gate, tokens, HLS. */
 class MirrorFlowTest {
+
+    /**
+     * A directly-constructed session provider for unit tests. Spawning is off by default and no
+     * {@code @PostConstruct} runs here, so it holds no global session: {@code noteRejected} on the
+     * 412/502 paths is a no-op and nothing opens a browser or reads disk. It satisfies
+     * {@link TokenManager}'s dependency without changing the per-cookie behaviour under test.
+     */
+    private static MirrorSessionProvider testSessionProvider() {
+        // The keep-alive is @Scheduled, so it never fires in these plain unit tests; the ad-gate and
+        // dispatcher it is handed only need to exist to satisfy the constructor.
+        return new MirrorSessionProvider(new MirrorSessionProperties(), new MirrorAccessProperties(),
+                new AdGateRepository(new RestTemplate()), new FixedDispatcher());
+    }
 
     private static final String BASE = "https://mirror.example";
 
@@ -42,23 +71,38 @@ class MirrorFlowTest {
 
     // ---- Dispatcher ----
 
+    private static final String M1 = "https://mirror-one.example";
+    private static final String M2 = "https://mirror-two.example";
+
+    private static DispatcherProperties props(String... mirrors) {
+        DispatcherProperties p = new DispatcherProperties();
+        p.setMirrors(List.of(mirrors));
+        return p;
+    }
+
+    // The real /check.php hands back the content URL (path and query included), base64-encoded; the
+    // base the rest of the flow hangs off is its origin. The u[] entries are video-CDN hosts, not
+    // backend candidates, so they must never be mistaken for the base.
+    private static final String CHECK_PHP = "{\"token_hash\":\"" + b64("https://net52.cc/mobile/home?app=1")
+            + "\",\"stape\":\"" + b64("https://net52.cc/streamtape.php")
+            + "\",\"u\":[\"" + b64("https://streamtape.com") + "\"]}";
+
     @Test
-    void dispatcherPicksTheFirstLiveMirrorAndCachesIt() {
+    void dispatcherWalksPastABlockedMirrorDerivesTheOriginAndCachesIt() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
-        server.expect(once(), requestTo("https://mobiledetect.app/check.php"))
-                .andRespond(withSuccess("{\"token_hash\":\"" + b64("https://dead.example/") + "\",\"u\":[\""
-                        + b64("https://mirror.example/") + "\"]}", MediaType.APPLICATION_JSON));
-        server.expect(once(), requestTo("https://dead.example")).andExpect(method(HttpMethod.HEAD))
-                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
-        // A mirror redirecting to its home page is up: HEAD is not followed.
-        server.expect(once(), requestTo(BASE)).andExpect(method(HttpMethod.HEAD))
-                .andRespond(withStatus(HttpStatus.MOVED_PERMANENTLY));
+        // First mirror is blocked (403, as most are in the wild); discovery must move on to the next.
+        server.expect(once(), requestTo(M1 + "/check.php")).andRespond(withStatus(HttpStatus.FORBIDDEN));
+        server.expect(once(), requestTo(M2 + "/check.php"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("User-Agent", "okhttp/4.9.2"))
+                .andRespond(withSuccess(CHECK_PHP, MediaType.APPLICATION_JSON));
 
-        DispatcherService dispatcher = new DispatcherService(new DispatcherRepository(rest), rest);
+        DispatcherService dispatcher = new DispatcherService(new DispatcherRepository(props(M1, M2), rest));
 
-        assertEquals(BASE, dispatcher.resolveActiveBaseUrl());
-        assertEquals(BASE, dispatcher.resolveActiveBaseUrl()); // cached: no second check.php
+        // The base is the origin of token_hash: not the whole content URL, not the u[] CDN.
+        assertEquals("https://net52.cc", dispatcher.resolveActiveBaseUrl());
+        assertEquals("https://net52.cc", dispatcher.resolveActiveBaseUrl()); // cached: no second walk
         server.verify();
     }
 
@@ -66,15 +110,14 @@ class MirrorFlowTest {
     void dispatcherFailsLoudlyWhenNoMirrorAnswers() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
-        server.expect(requestTo("https://mobiledetect.app/check.php"))
-                .andRespond(withSuccess("{\"token_hash\":\"" + b64("https://dead.example") + "\",\"u\":[]}",
-                        MediaType.APPLICATION_JSON));
-        server.expect(requestTo("https://dead.example")).andRespond(withStatus(HttpStatus.BAD_GATEWAY));
+        server.expect(once(), requestTo(M1 + "/check.php")).andRespond(withStatus(HttpStatus.FORBIDDEN));
+        server.expect(once(), requestTo(M2 + "/check.php")).andRespond(withStatus(HttpStatus.BAD_GATEWAY));
 
-        DispatcherService dispatcher = new DispatcherService(new DispatcherRepository(rest), rest);
+        DispatcherService dispatcher = new DispatcherService(new DispatcherRepository(props(M1, M2), rest));
 
         ApiException ex = assertThrows(ApiException.class, dispatcher::resolveActiveBaseUrl);
         assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatus());
+        server.verify();
     }
 
     // ---- Ad-gate and tokens ----
@@ -82,7 +125,7 @@ class MirrorFlowTest {
     /** A dispatcher that always answers {@link #BASE} without any network. */
     private static final class FixedDispatcher extends DispatcherService {
         FixedDispatcher() {
-            super(null, null);
+            super(null);
         }
 
         @Override
@@ -98,12 +141,14 @@ class MirrorFlowTest {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
         for (String cookie : new String[] {"a=1", "b=2"}) {
-            server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(header("Cookie", cookie))
+            server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
+                    .andExpect(header("Cookie", cookie))
                     .andRespond(withSuccess("{\"statusup\":\"OK\"}", MediaType.APPLICATION_JSON));
-            server.expect(once(), requestTo(BASE + "/mobile/home?app=1")).andExpect(header("Cookie", cookie))
+            server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.GET))
+                    .andExpect(header("Cookie", cookie))
                     .andRespond(withSuccess(HOME, MediaType.TEXT_HTML));
         }
-        TokenManager tokens = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest));
+        TokenManager tokens = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider());
 
         assertEquals("T1", tokens.getT("a=1"));
         assertEquals("H1", tokens.getHash("a=1")); // same session: served from cache
@@ -118,7 +163,7 @@ class MirrorFlowTest {
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
         server.expect(requestTo(BASE + "/mobile/verify2.php"))
                 .andRespond(withSuccess("{\"statusup\":\"NO\"}", MediaType.APPLICATION_JSON));
-        TokenManager tokens = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest));
+        TokenManager tokens = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider());
 
         ApiException ex = assertThrows(ApiException.class, () -> tokens.getT("a=1"));
         assertEquals(HttpStatus.PRECONDITION_FAILED, ex.getStatus());
@@ -129,14 +174,42 @@ class MirrorFlowTest {
     void aHomePageWithoutTokensIsABadGateway() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
-        server.expect(requestTo(BASE + "/mobile/verify2.php"))
+        server.expect(requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
                 .andRespond(withSuccess("{\"statusup\":\"OK\"}", MediaType.APPLICATION_JSON));
-        server.expect(requestTo(BASE + "/mobile/home?app=1"))
+        server.expect(requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.GET))
                 .andRespond(withSuccess("<html><body></body></html>", MediaType.TEXT_HTML));
-        TokenManager tokens = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest));
+        TokenManager tokens = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider());
 
         ApiException ex = assertThrows(ApiException.class, () -> tokens.getHash("a=1"));
         assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatus());
+    }
+
+    // What the live mirror does today: the entry page hands out no hash and t rides in the
+    // verified cookie. (And if even the entry page is briefly 404, t still comes from the cookie.)
+    @Test
+    void tIsTakenFromTheVerifiedCookieWhenTheHomePageIsGone() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        String cookie = "addhash=X%3A%3Ani; t_hash_t=abc123%3A%3Adef456%3A%3Am";
+        server.expect(requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"c\":\"y\"}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND));
+        TokenManager tokens = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider());
+
+        assertEquals("abc123", tokens.getT(cookie));
+        // No page handed out a hash, so only the hash-dependent calls fail, and say why.
+        ApiException ex = assertThrows(ApiException.class, () -> tokens.getHash(cookie));
+        assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatus());
+        server.verify();
+    }
+
+    @Test
+    void sessionTokenIsTheFirstSegmentOfTHashT() {
+        assertEquals("abc", TokenManager.sessionTokenFromCookie("t_hash_t=abc::m"));
+        assertEquals("abc", TokenManager.sessionTokenFromCookie("x=1; t_hash_t=abc%3A%3Am; y=2"));
+        assertEquals("", TokenManager.sessionTokenFromCookie("addhash=abc::ni"));
+        assertEquals("", TokenManager.sessionTokenFromCookie("not_t_hash_t=abc::m"));
     }
 
     // ---- HLS ----
@@ -163,6 +236,218 @@ class MirrorFlowTest {
                 #EXT-X-STREAM-INF:BANDWIDTH=400000
                 https://cdn.example/480/index.m3u8
                 """, out);
+    }
+
+    @Test
+    void theHlsMasterIsFetchedAtThePlaylistsSignedSourceNotTheSessionToken() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        String cookie = "t_hash_t=SESS%3A%3Am"; // session token "SESS"
+        // No verify2.php: hlsMaster reads the session token from the cookie via playbackT and never
+        // runs the per-play ad-gate (see PlaybackService#hlsMaster). playlist.php is the first call.
+        // playlist.php is asked with the session token as tm= and a blank title; it answers signed
+        // sources whose in= is the SEPARATE play_token. "Auto" is the multi-variant master; the
+        // q=720p "default" entry is a single rendition and must not be the one chosen.
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        [{"sources":[
+                          {"file":"/mobile/hls/42.m3u8?in=PLAYTOKEN&hd=off&lang=eng&hp=yes","label":"Auto"},
+                          {"file":"/mobile/hls/42.m3u8?q=720p&in=PLAYTOKEN","label":"Mid HD","default":"true"}
+                        ]}]""", MediaType.APPLICATION_JSON));
+        // The master is fetched at the signed Auto URL — in=PLAYTOKEN, never in=SESS.
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PLAYTOKEN&hd=off&lang=eng&hp=yes"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        #EXTM3U
+                        #EXT-X-STREAM-INF:BANDWIDTH=800000
+                        720/720.m3u8
+                        """, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+
+        PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest), new FixedDispatcher(),
+                new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider()),
+                new MirrorStreamSigner());
+
+        String master = playback.hlsMaster("42", cookie);
+
+        // The variant is not emitted as a bare CDN URL: the segment CDN gates each variant playlist on
+        // the mirror Referer, so the master routes every variant through this server's signed
+        // /playback/variant proxy (see PlaybackService#variantProxyPath). The absolute URL — made
+        // absolute against the signed master URL — rides inside the proxy token (u= is plain URL-safe
+        // base64 of "<baseUrl>\n<upstreamUrl>"), so decode it and confirm the resolved variant URL.
+        String marker = "/playback/variant?u=";
+        int u = master.indexOf(marker);
+        assertTrue(u >= 0, "the variant must be routed through the signed /playback/variant proxy");
+        int tokenStart = u + marker.length();
+        int tokenEnd = master.indexOf("&s=", tokenStart);
+        assertTrue(tokenEnd > tokenStart, "the proxied variant must carry a signature");
+        String payload = new String(Base64.getUrlDecoder().decode(master.substring(tokenStart, tokenEnd)),
+                StandardCharsets.UTF_8);
+        assertTrue(payload.contains("https://mirror.example/mobile/hls/720/720.m3u8"),
+                "the proxied variant must carry the URL made absolute against the signed master URL");
+        // The session token never leaks into the stream URL — the stream is authorized by the signed
+        // play_token (in=PLAYTOKEN) fetched at playlist.php, not by the session token, which this route
+        // uses only as playlist.php's tm= display param (asserted on the playlist.php request above).
+        assertFalse(payload.contains("SESS"), "the session token must never appear in the stream URL");
+        server.verify();
+    }
+
+    @Test
+    void aRateLimitPenaltyMasterIsSurfacedHonestlyAndNotPlayedOrRetried() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        String cookie = "t_hash_t=SESS%3A%3Am";
+        // When the shared upstream session is rate-limited, net52.cc returns a 200 master whose
+        // rendition is the "STOP ABUSE — too many requests" penalty clip, marked in=unknown (no real
+        // play_token). It is a valid m3u8 on an allowed CDN host, so without detection the player would
+        // stream the notice as if it were the title.
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        [{"sources":[{"file":"/mobile/hls/42.m3u8?in=PENALTY","label":"Auto"}]}]""",
+                        MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PENALTY")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        #EXTM3U
+                        #EXT-X-STREAM-INF:BANDWIDTH=1200000
+                        https://s0022.freecdn4.top/s21.freecdn4.top/files/220884/720p/720p.m3u8?in=unknown::ni::m
+                        """, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+
+        PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest), new FixedDispatcher(),
+                new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider()),
+                new MirrorStreamSigner());
+
+        ApiException ex = assertThrows(ApiException.class, () -> playback.hlsMaster("42", cookie));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatus());
+        // once() on both expectations: a retry would hit playlist.php a second time and fail the mock,
+        // proving the penalty short-circuits the warm-up loop rather than amplifying the load that
+        // tripped the cap.
+        server.verify();
+    }
+
+    // ---- HLS: single-flight + short success cache (see PlaybackService#hlsMaster) ----
+
+    private static PlaybackService newPlayback(RestTemplate rest) {
+        return new PlaybackService(new PlaybackRepository(rest, rest), new FixedDispatcher(),
+                new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider()),
+                new MirrorStreamSigner());
+    }
+
+    // A normal (non-penalty) play of id 42: the playlist.php body and the master it resolves to.
+    private static final String PLAYLIST_42 =
+            "[{\"sources\":[{\"file\":\"/mobile/hls/42.m3u8?in=PLAYTOKEN\",\"label\":\"Auto\"}]}]";
+    private static final String MASTER_42 = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=800000
+            720/720.m3u8
+            """;
+    // The rate-limited variant: playlist.php still signs a source, but the master it resolves to is the
+    // in=unknown "STOP ABUSE" penalty clip, which PlaybackService surfaces as a 503 (see penalty test).
+    private static final String PLAYLIST_42_PENALTY =
+            "[{\"sources\":[{\"file\":\"/mobile/hls/42.m3u8?in=PENALTY\",\"label\":\"Auto\"}]}]";
+    private static final String PENALTY_MASTER = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=1200000
+            https://s0022.freecdn4.top/s21.freecdn4.top/files/220884/720p/720p.m3u8?in=unknown::ni::m
+            """;
+
+    @Test
+    void aFreshlyResolvedMasterIsReusedWithinItsTtlWithoutReHittingUpstream() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        String cookie = "t_hash_t=SESS%3A%3Am";
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(PLAYLIST_42, MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PLAYTOKEN")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(MASTER_42, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+
+        PlaybackService playback = newPlayback(rest);
+        String first = playback.hlsMaster("42", cookie);
+        String second = playback.hlsMaster("42", cookie); // a re-open/manifest refresh within the 8s TTL
+
+        // once() on both upstream calls: a second resolution would hit playlist.php again and fail the
+        // mock. The second call returns the very object the first cached, not a re-resolved copy.
+        assertSame(first, second);
+        server.verify();
+    }
+
+    @Test
+    void concurrentPlaysOfOneTitleCoalesceToASingleUpstreamResolution() throws Exception {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        String cookie = "t_hash_t=SESS%3A%3Am";
+
+        // Hold the owner's playlist.php response open so the other callers provably arrive while its
+        // resolution is still in flight — the single-flight path, which the TTL cache alone would also
+        // absorb if they arrived after. Only the owning thread ever reaches the mock; the rest park on
+        // the shared future, so the mock stays single-threaded exactly when coalescing works.
+        CountDownLatch ownerInFlight = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
+                .andRespond(request -> {
+                    ownerInFlight.countDown();
+                    try {
+                        assertTrue(release.await(5, TimeUnit.SECONDS), "owner resolution should be released");
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return withSuccess(PLAYLIST_42, MediaType.APPLICATION_JSON).createResponse(request);
+                });
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PLAYTOKEN")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(MASTER_42, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+
+        PlaybackService playback = newPlayback(rest);
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        try {
+            Future<String> owner = pool.submit(() -> playback.hlsMaster("42", cookie));
+            assertTrue(ownerInFlight.await(5, TimeUnit.SECONDS), "owner should reach upstream");
+
+            List<Future<String>> joiners = new ArrayList<>();
+            for (int i = 0; i < 7; i++) {
+                joiners.add(pool.submit(() -> playback.hlsMaster("42", cookie)));
+            }
+            release.countDown();
+
+            String expected = owner.get(5, TimeUnit.SECONDS);
+            assertNotNull(expected);
+            for (Future<String> joiner : joiners) {
+                assertSame(expected, joiner.get(5, TimeUnit.SECONDS), "every caller shares the one resolution");
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        // once() on both upstream calls: if any of the eight callers resolved independently it would have
+        // issued a second playlist.php and failed the mock. Single-flight funnels them to one resolution.
+        server.verify();
+    }
+
+    @Test
+    void aFailedResolutionIsNotCachedSoTheNextPlayReHitsUpstream() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        String cookie = "t_hash_t=SESS%3A%3Am";
+
+        // First play: the shared session is rate-limited, so the master is the in=unknown penalty → 503.
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(PLAYLIST_42_PENALTY, MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PENALTY")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(PENALTY_MASTER, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+        // Second play, still inside the 8s success-cache window: because the failure was evicted rather
+        // than cached, this must resolve again upstream — now the cap has cooled and a real master lands.
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(PLAYLIST_42, MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PLAYTOKEN")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(MASTER_42, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+
+        PlaybackService playback = newPlayback(rest);
+
+        ApiException ex = assertThrows(ApiException.class, () -> playback.hlsMaster("42", cookie));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatus());
+
+        String recovered = playback.hlsMaster("42", cookie);
+        assertNotNull(recovered);
+        assertTrue(recovered.contains("/playback/variant?u="), "the retry resolves a real, proxied master");
+        // All four upstream expectations consumed (two full resolutions) proves the 503 was not cached:
+        // a pinned failure would have skipped the second playlist.php and left expectations unmet.
+        server.verify();
     }
 
     // ---- URLs ----

@@ -2,6 +2,7 @@ package com.example.kido.mymirror.repo;
 
 import java.net.URI;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -12,18 +13,23 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
 import com.example.kido.mymirror.ClientHeaderSupport;
+import com.example.kido.mymirror.MirrorOtt;
 import com.example.kido.mymirror.UpstreamUrl;
 
 @Repository
 public class PlaybackRepository {
     private final RestTemplate restTemplate;
+    private final RestTemplate cdnRestTemplate;
 
-    public PlaybackRepository(RestTemplate restTemplate) {
+    public PlaybackRepository(RestTemplate restTemplate,
+                              @Qualifier("cdnRestTemplate") RestTemplate cdnRestTemplate) {
         this.restTemplate = restTemplate;
+        this.cdnRestTemplate = cdnRestTemplate;
     }
 
-    // Resolve stream via POST /mobile/p.php
-    public String resolveStream(String baseUrl, String hash, String cookie) {
+    // Playback keep-alive via POST /mobile/p.php. Returns {r:n}=ok, {r:y}=reload; it does NOT
+    // resolve a stream (playlist.php is the stream source).
+    public String heartbeat(String baseUrl, String hash, String cookie) {
         HttpHeaders headers = mirrorHeaders(baseUrl, cookie);
         headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
@@ -34,26 +40,66 @@ public class PlaybackRepository {
         return restTemplate.postForObject(UpstreamUrl.of(baseUrl, "/mobile/p.php"), request, String.class);
     }
 
-    // Alternate video endpoint GET /mobile/v.php
+    // Alternate video endpoint GET /v.php. Lives at the site root, not under /mobile.
     public String altVideo(String baseUrl, String hash, String cookie) {
-        return get(UpstreamUrl.of(baseUrl, "/mobile/v.php", "dp1", hash, "a", "2"), mirrorHeaders(baseUrl, cookie));
+        return get(UpstreamUrl.of(baseUrl, "/v.php", "dp1", hash, "a", "2"), mirrorHeaders(baseUrl, cookie));
+    }
+
+    // Streamtape resolver (alternate source) GET /streamtape.php, at the site root.
+    public String streamtape(String baseUrl, String cookie) {
+        return get(UpstreamUrl.of(baseUrl, "/streamtape.php"), mirrorHeaders(baseUrl, cookie));
     }
 
     // Playlist for a title GET /mobile/playlist.php
+    // Prime Video titles play from /mobile/pv/playlist.php; Hotstar titles from /mobile/hs/playlist.php
+    // (its sources resolve under /mobile/hs/hls/<id>.m3u8, the canonical Hotstar master namespace —
+    // the shared /mobile/playlist.php returns a Netflix-shaped master for the same id). The id's shape
+    // and the ott cookie pick the catalogue. Verified live 2026-11-23.
     public String fetchPlaylist(String baseUrl, String id, String title, String t, String cookie) {
-        URI url = UpstreamUrl.of(baseUrl, "/mobile/playlist.php", "id", id, "t", title, "tm", t);
+        String path;
+        if (MirrorOtt.isPrime(id, cookie)) path = "/mobile/pv/playlist.php";
+        else if (MirrorOtt.isHotstar(id, cookie)) path = "/mobile/hs/playlist.php";
+        else path = "/mobile/playlist.php";
+        URI url = UpstreamUrl.of(baseUrl, path, "id", id, "t", title, "tm", t);
         return get(url, mirrorHeaders(baseUrl, cookie));
     }
 
-    /** The HLS master playlist's own URL; relative entries inside it resolve against this. */
-    public URI hlsMasterUrl(String baseUrl, String id, String t) {
-        return UpstreamUrl.of(baseUrl, "/mobile/hls/" + UpstreamUrl.segment(id) + ".m3u8",
-                "in", t, "hd", "off", "lang", "eng", "hp", "yes");
+    // "Open this title" with the mirror: GET /mobile/post.php?id=&t=. The real NetMirror app makes
+    // this call on every play, immediately before playlist.php (captured live) — it is the title's
+    // detail endpoint, and it is what registers the title-open with net52 so net52 resolves a CDN
+    // node for the title's HLS master. Without it, playlist.php's master comes back with a blank
+    // variant authority (https:///files/<id>/…) — no node mapped — which cannot be played. Prime
+    // titles open at /pv/post.php, Hotstar titles at /mobile/hs/post.php (as in
+    // BrowseRepository#getDetail); the id's shape and the ott cookie pick the catalogue. Sends the
+    // same app-context headers (Referer /mobile/home?app=1) as the play path.
+    public String openTitle(String baseUrl, String id, String t, String cookie) {
+        String path;
+        if (MirrorOtt.isPrime(id, cookie)) path = "/pv/post.php";
+        else if (MirrorOtt.isHotstar(id, cookie)) path = "/mobile/hs/post.php";
+        else path = "/mobile/post.php";
+        return get(UpstreamUrl.of(baseUrl, path, "id", id, "t", t), mirrorHeaders(baseUrl, cookie));
     }
 
-    // Fetch HLS master playlist
+    // Fetch HLS master playlist. The URL (with its signed play_token) comes from the sources list
+    // playlist.php returned, resolved on the mirror's host — see PlaybackService.hlsMaster.
     public String fetchHlsMaster(String baseUrl, URI masterUrl, String cookie) {
         return get(masterUrl, mirrorHeaders(baseUrl, cookie));
+    }
+
+    // Fetch an HLS variant playlist from the mirror's segment CDN. The CDN is a third party that is
+    // not behind Cloudflare and gates the playlist on the mirror Referer alone, so this sends ONLY
+    // that Referer and a browser UA/Accept-Language — no session cookie and no cf_clearance, which
+    // would leak a mirror secret to an unrelated host. The template carries no interceptor for the
+    // same reason. The segments the playlist names are public, so they are not fetched here: the
+    // player is handed their absolute CDN URLs and streams them straight from the CDN.
+    public String fetchCdnPlaylist(URI url, String referer) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.USER_AGENT, ClientHeaderSupport.DEFAULT_USER_AGENT);
+        headers.set(HttpHeaders.ACCEPT_LANGUAGE, ClientHeaderSupport.DEFAULT_ACCEPT_LANGUAGE);
+        if (referer != null && !referer.isBlank()) {
+            headers.set("Referer", referer);
+        }
+        return cdnRestTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), String.class).getBody();
     }
 
     // Fetch subtitle file. The cookie goes only to the mirror itself, never to a third-party host.

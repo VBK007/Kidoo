@@ -1,18 +1,22 @@
 package com.example.kido.mymirror.service;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.time.Duration;
 import java.util.Base64;
-import java.util.List;
 
-import org.springframework.http.HttpMethod;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.HttpStatusCode;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.HttpStatusCodeException;
-import org.springframework.web.client.RestTemplate;
 
 import com.example.kido.common.ApiException;
+import com.example.kido.mymirror.ClientHeaderSupport;
+import com.example.kido.mymirror.MirrorAccessProperties;
 import com.example.kido.mymirror.repo.DispatcherRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -20,26 +24,42 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
+/**
+ * Resolves the backend base URL the rest of the mirror flow calls.
+ *
+ * <p>Discovery works like the app's: a mirror's {@code /check.php} hands back a base64 {@code
+ * token_hash} that decodes to the content URL the app loads, e.g.
+ * {@code https://net52.cc/mobile/home?app=1}. The base every other endpoint hangs off is the
+ * <em>origin</em> of that URL ({@code https://net52.cc}) — not the whole string, and not one of the
+ * {@code u[]} entries, which are video-CDN hosts, not API hosts.
+ *
+ * <p>The result is cached briefly: a mirror that answered a few minutes ago is almost certainly still
+ * good, and re-walking the pool on every request would be slow and rude to the upstream.
+ */
 @Slf4j
 @Service
 public class DispatcherService {
-    // Every mirror call needs the base URL, and finding it costs a check.php call plus a HEAD
-    // per mirror; a mirror that was up a few minutes ago is almost always still up.
     private static final long CACHE_MILLIS = 5 * 60 * 1000;
 
     private final DispatcherRepository repo;
-    private final RestTemplate restTemplate;
+    private final MirrorAccessProperties access;
     private final ObjectMapper mapper = JsonMapper.builder().build();
 
     private volatile String cachedUrl;
     private volatile long cachedUntil;
 
-    public DispatcherService(DispatcherRepository repo, RestTemplate restTemplate) {
-        this.repo = repo;
-        this.restTemplate = restTemplate;
+    /** Discovery only, with redirect-following off (the historical behaviour). */
+    public DispatcherService(DispatcherRepository repo) {
+        this(repo, null);
     }
 
-    /** The first reachable mirror, without a trailing slash. Throws 502 when none answers. */
+    @Autowired
+    public DispatcherService(DispatcherRepository repo, @Nullable MirrorAccessProperties access) {
+        this.repo = repo;
+        this.access = access;
+    }
+
+    /** The backend origin, without a trailing slash (e.g. {@code https://net52.cc}). 502 when discovery fails. */
     public String resolveActiveBaseUrl() {
         String url = cachedUrl;
         if (url != null && System.currentTimeMillis() < cachedUntil) return url;
@@ -52,46 +72,100 @@ public class DispatcherService {
         }
     }
 
+    /**
+     * Drops the cached base so the next {@link #resolveActiveBaseUrl()} re-walks discovery. Used
+     * after a transient upstream failure that may mean the backend rotated hosts (net52 → net77)
+     * within the cache window, so the next call targets the host that actually answers now.
+     */
+    public void invalidate() {
+        cachedUntil = 0;
+    }
+
     private String resolveFromDispatcher() {
-        List<String> candidates = new ArrayList<>();
+        String body = repo.getDispatcherResponse();
+        if (body == null) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "No mirror is reachable right now");
+        }
+        String tokenHash;
         try {
-            JsonNode node = mapper.readTree(repo.getDispatcherResponse());
-            String tokenHash = node.path("token_hash").asString(null);
-            if (tokenHash != null) candidates.add(decode(tokenHash));
-            for (JsonNode u : node.path("u")) candidates.add(decode(u.asString()));
+            JsonNode node = mapper.readTree(body);
+            tokenHash = node.path("token_hash").asString(null);
         } catch (RuntimeException e) {
             log.warn("Dispatcher response unreadable: {}", e.getMessage());
             throw new ApiException(HttpStatus.BAD_GATEWAY, "The mirror dispatcher did not answer properly");
         }
-        for (String candidate : candidates) {
-            String base = stripTrailingSlash(candidate);
-            if (isUrlActive(base)) return base;
+        String contentUrl = decode(tokenHash);
+        String base = originOf(contentUrl);
+        if (base == null) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "The mirror dispatcher did not hand out a backend URL");
         }
-        throw new ApiException(HttpStatus.BAD_GATEWAY, "No mirror is reachable right now");
+        // The decoded origin can be stale: the backend 301s (e.g. net52.cc → net77.cc) to the host that
+        // actually serves content behind Cloudflare. When asked to, follow it and hang the flow off the
+        // landed origin instead of the stale one.
+        if (access != null && access.isFollowRedirects()) {
+            String landed = landedOrigin(contentUrl);
+            if (landed != null && !landed.equals(base)) {
+                log.info("Backend redirected {} -> {}", base, landed);
+                base = landed;
+            }
+        }
+        log.debug("Backend base resolved to {}", base);
+        return base;
     }
 
-    private static String decode(String encoded) {
-        return new String(Base64.getDecoder().decode(encoded.trim()), StandardCharsets.UTF_8).trim();
-    }
-
-    private static String stripTrailingSlash(String url) {
-        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
-    }
-
-    private boolean isUrlActive(String url) {
-        if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
+    /** The decoded content URL, or {@code null} if the token is missing or not valid base64. */
+    private static String decode(String encodedTokenHash) {
+        if (encodedTokenHash == null || encodedTokenHash.isBlank()) return null;
         try {
-            return alive(restTemplate.exchange(url, HttpMethod.HEAD, null, String.class).getStatusCode());
-        } catch (HttpStatusCodeException e) {
-            return alive(e.getStatusCode());
-        } catch (Exception e) {
-            return false;
+            return new String(Base64.getDecoder().decode(encodedTokenHash.trim()), StandardCharsets.UTF_8).trim();
+        } catch (IllegalArgumentException e) {
+            return null;
         }
     }
 
-    // HEAD is not redirected by the client, so a mirror answering 301 to its home page is up;
-    // so is one that answers 405 because it will not do HEAD at all.
-    private static boolean alive(HttpStatusCode status) {
-        return status.is2xxSuccessful() || status.is3xxRedirection() || status.value() == 405;
+    /** The {@code scheme://host[:port]} of a URL string, or {@code null} if unusable. */
+    private static String originOf(String url) {
+        if (url == null || url.isBlank()) return null;
+        try {
+            URI uri = URI.create(url);
+            if (uri.getScheme() == null || uri.getHost() == null) return null;
+            String origin = uri.getScheme() + "://" + uri.getHost();
+            return uri.getPort() == -1 ? origin : origin + ":" + uri.getPort();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Follows the content URL's redirects and returns the origin it lands on. Even when the landing is
+     * Cloudflare's challenge (a 403), the response still comes from the rotated host, so its origin is
+     * what the rest of the flow should target. Returns {@code null} on any failure, so discovery falls
+     * back to the decoded origin rather than breaking.
+     */
+    @Nullable
+    private String landedOrigin(String contentUrl) {
+        if (contentUrl == null) return null;
+        try {
+            HttpClient client = HttpClient.newBuilder()
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .build();
+            HttpRequest request = HttpRequest.newBuilder(URI.create(contentUrl))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", userAgent())
+                    .GET()
+                    .build();
+            HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
+            return originOf(response.uri().toString());
+        } catch (IOException | InterruptedException | RuntimeException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            log.warn("Could not follow backend redirect, using the decoded origin: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private String userAgent() {
+        String ua = access == null ? null : access.getBrowserUserAgent();
+        return ua == null || ua.isBlank() ? ClientHeaderSupport.DEFAULT_USER_AGENT : ua.trim();
     }
 }
