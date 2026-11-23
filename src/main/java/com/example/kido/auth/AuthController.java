@@ -6,6 +6,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -30,8 +31,10 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(request));
+    public ResponseEntity<AuthResponse> register(
+            @Valid @RequestBody RegisterRequest request,
+            @RequestHeader(value = "X-Admin-Key", required = false) String adminKey) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(request, adminKey));
     }
 
     @PostMapping("/login")
@@ -49,8 +52,9 @@ public class AuthController {
      */
     @PostMapping("/firebase")
     public ResponseEntity<AuthResponse> firebase(
-            @Valid @RequestBody FirebaseLoginRequest request) {
-        return ResponseEntity.ok(authService.loginWithFirebase(request));
+            @Valid @RequestBody FirebaseLoginRequest request,
+            @RequestHeader(value = "X-Admin-Key", required = false) String adminKey) {
+        return ResponseEntity.ok(authService.loginWithFirebase(request, adminKey));
     }
 
     /**

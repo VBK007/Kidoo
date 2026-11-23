@@ -1,5 +1,6 @@
 package com.example.kido.auth;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -31,17 +32,43 @@ public class AuthService {
     private final JwtService jwtService;
     private final FirebaseVerifier firebase;
     private final RefreshTokenService refreshTokens;
+    private final String adminKey;
 
     public AuthService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
                        JwtService jwtService,
                        FirebaseVerifier firebase,
-                       RefreshTokenService refreshTokens) {
+                       RefreshTokenService refreshTokens,
+                       @Value("${app.admin.api-key}") String adminKey) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.firebase = firebase;
         this.refreshTokens = refreshTokens;
+        this.adminKey = adminKey;
+    }
+
+    /**
+     * What a signup is allowed to make itself, absent the one thing that proves
+     * the caller is the server's owner.
+     *
+     * <p>{@code PARENT} is an admin account here — it passes {@link
+     * com.example.kido.admin.AdminAccess} the same as the dashboard does. A public
+     * endpoint that honoured a client-supplied role with no further check would let
+     * anyone who can reach {@code /api/auth/register} mint themselves one; this is
+     * the same key/role pairing {@code AdminAccess} requires, applied at the one
+     * other place a role is ever set rather than merely read.
+     *
+     * <p>Silent downgrade rather than a rejected request: a wrong or missing key
+     * still produces a normal {@code CHILD} account, so the response can't be used
+     * to confirm or deny a guessed key the way an error naming the reason would.
+     */
+    private Role resolveRole(Role requested, String providedAdminKey) {
+        if (requested == Role.PARENT
+                && adminKey != null && !adminKey.isBlank() && adminKey.equals(providedAdminKey)) {
+            return Role.PARENT;
+        }
+        return Role.CHILD;
     }
 
     /**
@@ -54,7 +81,7 @@ public class AuthService {
      * account: the column is non-null, and leaving it blank or predictable would turn
      * the password login into a way in without a password.
      */
-    public AuthResponse loginWithFirebase(FirebaseLoginRequest req) {
+    public AuthResponse loginWithFirebase(FirebaseLoginRequest req, String providedAdminKey) {
         FirebaseToken token = firebase.verify(req.idToken())
                 .orElseThrow(() -> new ApiException(
                         HttpStatus.NOT_IMPLEMENTED,
@@ -77,7 +104,7 @@ public class AuthService {
                     .email(key)
                     .passwordHash(passwordEncoder.encode(UUID.randomUUID().toString()))
                     .displayName(displayName)
-                    .role(req.role() != null ? req.role() : Role.CHILD)
+                    .role(resolveRole(req.role(), providedAdminKey))
                     .progress(new Progress())
                     .build();
 
@@ -105,7 +132,7 @@ public class AuthService {
         return candidate;
     }
 
-    public AuthResponse register(RegisterRequest req) {
+    public AuthResponse register(RegisterRequest req, String providedAdminKey) {
         String username = req.username().trim().toLowerCase();
         String email = req.email().trim().toLowerCase();
         log.info("Registration attempt for username='{}'", username);
@@ -124,7 +151,7 @@ public class AuthService {
                 .email(email)
                 .passwordHash(passwordEncoder.encode(req.password()))
                 .displayName(req.displayName().trim())
-                .role(req.role() != null ? req.role() : Role.CHILD)
+                .role(resolveRole(req.role(), providedAdminKey))
                 .progress(new Progress())
                 .build();
 
