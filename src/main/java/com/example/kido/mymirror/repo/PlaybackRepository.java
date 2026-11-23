@@ -51,11 +51,33 @@ public class PlaybackRepository {
     }
 
     // Playlist for a title GET /mobile/playlist.php
-    // Prime Video titles play from /mobile/pv/playlist.php; the id's shape picks the catalogue.
+    // Prime Video titles play from /mobile/pv/playlist.php; Hotstar titles from /mobile/hs/playlist.php
+    // (its sources resolve under /mobile/hs/hls/<id>.m3u8, the canonical Hotstar master namespace —
+    // the shared /mobile/playlist.php returns a Netflix-shaped master for the same id). The id's shape
+    // and the ott cookie pick the catalogue. Verified live 2026-11-23.
     public String fetchPlaylist(String baseUrl, String id, String title, String t, String cookie) {
-        String path = MirrorOtt.isPrime(id, cookie) ? "/mobile/pv/playlist.php" : "/mobile/playlist.php";
+        String path;
+        if (MirrorOtt.isPrime(id, cookie)) path = "/mobile/pv/playlist.php";
+        else if (MirrorOtt.isHotstar(id, cookie)) path = "/mobile/hs/playlist.php";
+        else path = "/mobile/playlist.php";
         URI url = UpstreamUrl.of(baseUrl, path, "id", id, "t", title, "tm", t);
         return get(url, mirrorHeaders(baseUrl, cookie));
+    }
+
+    // "Open this title" with the mirror: GET /mobile/post.php?id=&t=. The real NetMirror app makes
+    // this call on every play, immediately before playlist.php (captured live) — it is the title's
+    // detail endpoint, and it is what registers the title-open with net52 so net52 resolves a CDN
+    // node for the title's HLS master. Without it, playlist.php's master comes back with a blank
+    // variant authority (https:///files/<id>/…) — no node mapped — which cannot be played. Prime
+    // titles open at /pv/post.php, Hotstar titles at /mobile/hs/post.php (as in
+    // BrowseRepository#getDetail); the id's shape and the ott cookie pick the catalogue. Sends the
+    // same app-context headers (Referer /mobile/home?app=1) as the play path.
+    public String openTitle(String baseUrl, String id, String t, String cookie) {
+        String path;
+        if (MirrorOtt.isPrime(id, cookie)) path = "/pv/post.php";
+        else if (MirrorOtt.isHotstar(id, cookie)) path = "/mobile/hs/post.php";
+        else path = "/mobile/post.php";
+        return get(UpstreamUrl.of(baseUrl, path, "id", id, "t", t), mirrorHeaders(baseUrl, cookie));
     }
 
     // Fetch HLS master playlist. The URL (with its signed play_token) comes from the sources list

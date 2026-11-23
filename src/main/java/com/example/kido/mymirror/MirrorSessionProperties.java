@@ -91,23 +91,36 @@ public class MirrorSessionProperties {
 
     /**
      * Rotate the ad-gate session <em>before</em> it dies, rather than waiting for it to be rejected.
-     * The {@code t_hash_t} session has a hard ~15–16 minute lifetime from the moment it is minted that
-     * the keep-alive poll does <b>not</b> extend: {@code verify2.php} reports the gate's cleared/uncleared
-     * <em>status</em> but never renews the TTL, so a session dies on schedule even under a steady
-     * "gate still cleared" poll. The old reactive path only noticed at death — it nulled the session and
-     * re-earned, leaving a ~2-minute window where the rail returned empty and the app showed "Mirror not
-     * connected." This rotates ahead of the deadline while the current session still serves, so the
-     * re-earn swaps in atomically (see {@link MirrorSessionProvider} {@code runCapture}, which sets the
-     * fresh cookie only on success and never nulls first) with no empty-rail gap. On by default, but like
-     * every re-earn it is a no-op unless {@link #spawnEnabled} is on and a human is present to clear the gate.
+     * <b>Off by default</b>, because the "hard ~15–16 minute {@code t_hash_t} TTL" this was built to
+     * stay ahead of does not exist. The real NetMirror app shows its ad exactly once and then rides the
+     * earned session indefinitely on nothing but the {@code verify2.php} keep-alive poll — which is why
+     * a user sees "the ad is showing only one time" while "auto refreshing" keeps working. Direct
+     * measurement confirmed it here: a session earned with a single ad-view, with this rotation
+     * disabled, kept serving fully-playable gated content at age ~25 minutes — well past the assumed
+     * deadline — while the keep-alive poll read the gate's normal {@code c:n} resting state and
+     * {@link MirrorSessionProvider#keepSessionWarm} kept it. No re-earn ever fired, and nothing was
+     * rejected upstream.
+     *
+     * <p>With this on, {@link MirrorSessionProvider#rotateBeforeExpiry} forced a fresh <em>human
+     * ad-view</em> every {@link #sessionMaxAge} on that false premise — turning a one-ad session into a
+     * new ad every ~12 minutes, the exact opposite of the app's behaviour. Leaving it off means the
+     * earned session rides until something genuinely kills it, at which point the reactive path still
+     * recovers with one honest re-earn: {@link MirrorSessionProvider#noteRejected} drops a cookie the
+     * mirror actually rejected and earns a fresh one, and a Cloudflare challenge re-mints
+     * {@code cf_clearance} on the live gate without a human. A real future TTL would surface as that
+     * genuine rejection and be handled there — not pre-empted by re-charging the user an ad on a clock.
+     * Flip back on only if upstream is shown to enforce a fixed mint-to-death lifetime the keep-alive
+     * cannot hold; the {@link #sessionMaxAge} knob below then sets the rotation age.
      */
-    private boolean proactiveRefreshEnabled = true;
+    private boolean proactiveRefreshEnabled = false;
 
     /**
-     * How old the held session may get before proactive rotation re-earns it. Set safely under the
-     * observed ~15–16 minute hard {@code t_hash_t} TTL so the fresh session is in hand before the old
-     * one dies, with headroom for the ~2-minute earn itself. Tunable: lower it if upstream shortens the
-     * lifetime, raise it toward (but never to) the hard TTL to re-earn less often.
+     * How old the held session may get before proactive rotation re-earns it — used only when
+     * {@link #proactiveRefreshEnabled} is turned back on. It is <b>not</b> a measured upstream TTL:
+     * the earned session was observed serving playable content well past this age with rotation off (see
+     * that field). Left here as the rotation knob for the hypothetical case where a real fixed lifetime
+     * is later proven; set it under whatever that measured lifetime turns out to be, with headroom for
+     * the ~2-minute earn.
      */
     private Duration sessionMaxAge = Duration.ofMinutes(12);
 

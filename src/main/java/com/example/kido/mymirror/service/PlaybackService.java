@@ -27,31 +27,48 @@ import tools.jackson.databind.json.JsonMapper;
 public class PlaybackService {
     private static final Logger log = LoggerFactory.getLogger(PlaybackService.class);
 
-    // The mirror intermittently answers playlist.php with a master whose only variant has an empty
-    // host (https:///files/<id>/…), a transient state while its CDN node mapping for the title warms
-    // up. The first requests for a cold title trigger that resolution and then it serves a resolved,
-    // real-host master consistently (measured: a cold miss, then 20/20 resolved within seconds). So
-    // re-request a fresh master a few times, with a short pause between tries, letting the request
-    // itself ride out the warm-up rather than handing the player a 502 to retry. A warm title
-    // resolves on the first try and never pauses; a title still cold after the whole span fails with
-    // a clear "retry shortly" rather than emitting a broken master.
-    private static final int MASTER_FETCH_ATTEMPTS = 6;
-    private static final long MASTER_RETRY_BACKOFF_MS = 400;
+    // The mirror intermittently answers playlist.php with a master whose only video variant has an
+    // empty authority (https:///files/<id>/…) — unplayable, with no CDN node to derive. The cause was
+    // isolated directly against the live mirror and is NOT per-title, NOT request-rate, NOT the ad-gate,
+    // NOT the p.php/post.php lead-in, and NOT the title id: net52's CDN-node resolver is a GLOBAL backend
+    // service that flips UP and DOWN in roughly 1–2 minute windows entirely on their side. In an UP
+    // window every title fills on the FIRST request (no retry needed); in a DOWN window every request —
+    // at any rate, any sequence, any title — returns the empty placeholder. (Disproven hypotheses, each
+    // tested live: spaced-retry recovery — a title stayed empty across 10 tries/50s while another filled
+    // on try 1 in the same minute; ad-gate causation — the gate read "Waiting for your ads click" c:n
+    // throughout while the master both filled and emptied; and rate shedding — 45s rest + one request
+    // per 20s still returned empty for 100s then flipped to filled.)
+    //
+    // The real NetMirror app masks this the only way a client can: it keeps the viewer on a forced
+    // "Waiting for your ads click" wait and buffers/retries, so a play that begins in a DOWN window
+    // simply waits out the flip to UP and then starts. We replicate that here: resolve is not a short
+    // burst but a PATIENT poll that samples the resolver across a full down-phase and serves the first
+    // UP sample. The total time is bounded so it returns inside the player's mirror-manifest read
+    // timeout (Tower sets that to 80s on the /playback/hls route precisely so ExoPlayer waits through
+    // this on its buffering spinner instead of timing out) — so one play press rides out the down
+    // window and starts, with no error dialog, exactly like the real app. Gaps are even (~8s), the
+    // budget crosses a 1–2 min window in ~8 samples, and a title still empty after the whole budget
+    // fails with a clear "retry shortly" rather than emitting a broken master.
+    private static final long MASTER_RESOLVE_BUDGET_MS = 66_000;
+    private static final long MASTER_RETRY_GAP_MS = 8_000;
 
-    // Single-flight + short success cache for resolved masters. Resolving a master is the heaviest
-    // upstream call on the playback path — it hits playlist.php (which mints the play_token) and then
-    // fetches the master — and doing it repeatedly on one title in a short window is exactly what trips
-    // net52's per-client cap on the shared upstream session, after which every title 502/503s. Two
-    // things pile those redundant resolutions on: the player retrying a failed manifest load, and
-    // several viewers opening the same title at once. Both collapse here. A resolution in flight for an
-    // id is shared by every caller that arrives while it runs (single-flight), and a resolved master is
-    // reused for a few seconds after (cache) so a re-open or a manifest refresh does not re-hit
-    // upstream. The window is deliberately far shorter than the play_token's lifetime, so a served
-    // master always carries a token the CDN still honours. Because the upstream session is shared, the
-    // master a resolution yields does not depend on which caller triggered it, so the id alone keys the
-    // cache. Failures are never cached: a transient 502/503 must be retryable at once (and the client no
-    // longer storms it), so a failed resolution is evicted immediately and the next caller retries fresh.
-    private static final long MASTER_CACHE_TTL_MS = 8_000;
+    // Single-flight + success cache for resolved masters. Resolving a master is the heaviest upstream
+    // call on the playback path — it hits playlist.php (which mints the play_token) and then fetches the
+    // master — and, because net52's CDN resolver flips UP/DOWN globally in 1–2 min windows (see
+    // MASTER_RESOLVE_BUDGET_MS), a single resolve can now patiently block for up to a minute to catch an
+    // UP sample. Caching that hard-won success is what keeps the cost off the next play: once one
+    // resolution catches an UP window, every re-open, manifest refresh, or concurrent viewer of that id
+    // reuses it instead of gambling on a fresh down-window poll. A resolution in flight is shared by
+    // every caller that arrives while it runs (single-flight); a caught success is then reused for the
+    // cache window. That window is held just under the play_token's lifetime (minted inside playlist.php
+    // with ~180s to live) so a served master always carries a token the CDN still honours — 150s leaves
+    // a safe margin even against the create-time stamp, and the CDN segment fetches that follow play are
+    // not in=-gated, so a movie keeps playing past it. Because the upstream session is shared, the master
+    // a resolution yields does not depend on which caller triggered it, so the id alone keys the cache.
+    // Failures are never cached: a title that was DOWN for the whole budget must be retryable at once (a
+    // flip to UP can come seconds later), so a failed resolution is evicted immediately and the next play
+    // polls fresh.
+    private static final long MASTER_CACHE_TTL_MS = 150_000;
     private static final int MASTER_CACHE_MAX = 256;
     private final ConcurrentHashMap<String, CachedMaster> masterCache = new ConcurrentHashMap<>();
 
@@ -181,46 +198,79 @@ public class PlaybackService {
             log.debug("play presence heartbeat failed (ignored): {}", ex.toString());
         }
 
+        // After p.php, open the title with net52 before fetching its playlist/master. The real
+        // NetMirror app GETs /mobile/post.php?id=&t= (the title-detail call) immediately before
+        // playlist.php on every play — captured live as p.php → post.php → playlist.php → hls master —
+        // so we mirror that leading call to look like the real client. (It was once suspected to be what
+        // makes net52 resolve the CDN node; that was disproven — the empty-host master appears with or
+        // without post.php, and the real cause is net52's globally intermittent CDN resolver, see the
+        // resolve loop below — but the call is harmless, matches the real app, and costs one request, so
+        // it stays.) Best-effort and once
+        // per resolution (outside the retry loop, so it adds no per-client request pressure): a failed
+        // open must never fail the play, which is authorized by the signed play_token playlist.php mints,
+        // not by post.php. Uses playbackT (the session token without the ad-gate round-trip), the same
+        // token BrowseService#detail passes to post.php.
+        try {
+            repo.openTitle(baseUrl, id, playbackT, cookie);
+        } catch (RuntimeException ex) {
+            log.debug("play title-open (post.php) failed (ignored): {}", ex.toString());
+        }
+
         // The mirror sometimes returns a placeholder master whose only variant has an empty host —
-        // unplayable, and with no way to derive the real CDN node from it. It is a transient warm-up
-        // state, so re-request a fresh master until one resolves to a real host (see
-        // MASTER_FETCH_ATTEMPTS); keep the first usable one.
+        // unplayable, with no CDN node to derive — because net52's CDN resolver is DOWN in one of its
+        // global 1–2 min windows (see MASTER_RESOLVE_BUDGET_MS). The client cannot force a flip, only
+        // wait it out, so this is a patient time-bounded poll rather than a short burst: re-request a
+        // fresh master every ~8s until one comes back filled or the budget runs out, and keep the first
+        // usable one. Because the resolver is global, every sample in a down window is empty and the
+        // first sample after the flip is filled — so this reliably crosses a down phase that began just
+        // before the play, and returns inside the player's mirror read timeout so the viewer waits on the
+        // buffering spinner (like the real app's ad-click wait) instead of seeing an error.
         URI masterUrl = null;
         String master = null;
-        for (int attempt = 1; attempt <= MASTER_FETCH_ATTEMPTS; attempt++) {
+        long deadline = System.currentTimeMillis() + MASTER_RESOLVE_BUDGET_MS;
+        for (int attempt = 1; ; attempt++) {
             String playlist = repo.fetchPlaylist(baseUrl, id, "", playbackT, cookie);
             URI candidateUrl = UpstreamUrl.resolveOnMirror(baseUrl, masterSource(playlist));
             String candidate = repo.fetchHlsMaster(baseUrl, candidateUrl, cookie);
             // Diagnostic only (no secrets): the master URL's query param NAMES (keys, never values —
             // the in= play_token is a secret) reveal whether playlist.php handed us hd/lang/hp like it
             // does the real app; the first variant host (a public CDN host, or <empty>) reveals whether
-            // net52 resolved a CDN node for this session. This is how we tell a cookie/session gap from
-            // a param gap when the master comes back empty-host. Remove once the empty-host cause lands.
-            log.info("resolveMaster id={} attempt={}/{} masterParams=[{}] variantHost={} playable={}",
-                    id, attempt, MASTER_FETCH_ATTEMPTS, paramNames(candidateUrl),
+            // net52's resolver was UP for this sample. This is how we watch the resolver flip across the
+            // poll. Remove once the empty-host behaviour is no longer being observed.
+            log.info("resolveMaster id={} attempt={} elapsedMs={} masterParams=[{}] filled=[{}] masterHost={} variantHost={} variant1={} playable={}",
+                    id, attempt, MASTER_RESOLVE_BUDGET_MS - (deadline - System.currentTimeMillis()),
+                    paramNames(candidateUrl), paramsFilled(candidateUrl),
+                    candidateUrl == null ? "<null>" : String.valueOf(candidateUrl.getHost()),
                     firstVariantHost(candidate, candidateUrl),
+                    firstVariantRedacted(candidate),
                     HlsRewriter.hasPlayableVariant(candidate, candidateUrl));
             // A rate-limit penalty master is itself "playable" (a real CDN host, a valid m3u8), so it
             // must be caught before the playable-variant check or the player streams the "STOP ABUSE"
-            // clip as if it were the title. Do not retry: this is not a warm-up miss, and another
-            // attempt only adds to the load that tripped the cap without clearing it.
+            // clip as if it were the title. Do not keep polling: this is a per-client cap, not a resolver
+            // down window, and another request only adds to the load that tripped it without clearing it.
             if (isRateLimitPenalty(candidate)) {
                 throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
-                        "The mirror is rate-limited right now (upstream reported too many requests); "
-                                + "wait a few minutes and try again");
+                        "The streaming source has temporarily throttled this app after too many recent "
+                                + "playback requests. It lifts on its own once the app goes quiet — pause "
+                                + "playback for a little while before trying again. Retrying straight away "
+                                + "only extends the throttle.");
             }
             if (HlsRewriter.hasPlayableVariant(candidate, candidateUrl)) {
                 masterUrl = candidateUrl;
                 master = candidate;
                 break;
             }
-            if (attempt < MASTER_FETCH_ATTEMPTS) {
-                try {
-                    Thread.sleep(MASTER_RETRY_BACKOFF_MS); // give the mirror's warm-up a beat to land
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+            // Empty master: the resolver is in a down window. Sample again after a steady gap, but only
+            // if a full gap plus the next fetch still fits the budget — never sleep past the deadline and
+            // risk overrunning the player's read timeout.
+            if (System.currentTimeMillis() + MASTER_RETRY_GAP_MS >= deadline) {
+                break;
+            }
+            try {
+                Thread.sleep(MASTER_RETRY_GAP_MS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                break;
             }
         }
         if (master == null) {
@@ -348,6 +398,55 @@ public class PlaybackService {
             sb.append(eq >= 0 ? pair.substring(0, eq) : pair);
         }
         return sb.toString();
+    }
+
+    /** The query param names whose VALUE is non-empty (values themselves are never printed). */
+    private static String paramsFilled(URI url) {
+        String q = url == null ? null : url.getRawQuery();
+        if (q == null || q.isEmpty()) {
+            return "none";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String pair : q.split("&")) {
+            int eq = pair.indexOf('=');
+            String key = eq >= 0 ? pair.substring(0, eq) : pair;
+            String val = eq >= 0 ? pair.substring(eq + 1) : "";
+            if (!val.isEmpty()) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append(key);
+            }
+        }
+        return sb.length() == 0 ? "none" : sb.toString();
+    }
+
+    /**
+     * The master's first variant line with every query VALUE redacted to {@code <v>} — reveals the
+     * variant's host and path shape (e.g. {@code https:///files/<id>/720p/720p.m3u8?in=<v>}) to tell a
+     * blank-authority placeholder from a resolved CDN URL, without ever printing the signed in= token.
+     */
+    private static String firstVariantRedacted(String master) {
+        if (master == null) {
+            return "<null-body>";
+        }
+        for (String line : master.split("\r?\n", -1)) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                continue;
+            }
+            int q = trimmed.indexOf('?');
+            if (q < 0) {
+                return trimmed;
+            }
+            StringBuilder sb = new StringBuilder(trimmed.substring(0, q + 1));
+            String[] pairs = trimmed.substring(q + 1).split("&");
+            for (int i = 0; i < pairs.length; i++) {
+                int eq = pairs[i].indexOf('=');
+                if (i > 0) sb.append('&');
+                sb.append(eq >= 0 ? pairs[i].substring(0, eq) + "=<v>" : pairs[i]);
+            }
+            return sb.toString();
+        }
+        return "<no-variant>";
     }
 
     /** The host of a master's first variant URL (a public CDN host), or a marker if it has none. */

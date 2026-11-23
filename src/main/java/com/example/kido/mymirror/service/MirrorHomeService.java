@@ -1,6 +1,7 @@
 package com.example.kido.mymirror.service;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -63,9 +64,19 @@ public class MirrorHomeService {
     // A whole-grid safety cap, far above any real feed (~28 categories x ~14 tiles = ~380), so a
     // runaway feed cannot allocate without bound. Not the per-screen limit the old flat cap was.
     public static final int MAX_GRID_TILES = 500;
-    // How many tiles get their playlist pre-fetched on the home load. The rest are sent without one
-    // and the client fetches it on tap, so a long grid is not a flood of playlist.php.
-    public static final int EAGER_PLAYLISTS = 12;
+    // How many tiles get their playlist pre-fetched on the home load. ZERO on purpose: net52
+    // rate-limits this app's address on the streaming path (playlist.php/playback), and it does so
+    // aggressively enough that pre-warming a dozen playlists on every home build — which recurs on the
+    // cache TTL and so fires 60+ streaming-path calls across a browsing session — trips the limit
+    // within minutes. Once tripped, EVERY subsequent play is answered with net52's placeholder
+    // ("STOP ABUSE" asset 220884 / in=unknown) instead of a real CDN source, so a latency shortcut on
+    // the home screen was silently breaking playback for the whole app. Proven with a single title
+    // (82095535): a real fill right after an overnight-cleared limit, then the same id penalised ~35min
+    // later once the home-load fan-out had re-tripped it. The playlist is only ever needed on an
+    // explicit tap, and the client already fetches it then, so the home now touches net52's streaming
+    // path zero times — it costs one playlist round-trip on first tap, which is a fraction of a second
+    // and far cheaper than rate-limiting the app into total playback failure.
+    public static final int EAGER_PLAYLISTS = 0;
     private static final long BUDGET_MILLIS = 4000;
     // Composing the Netflix home (see composeNetflixFeed): how many trending titles seed a "More Like
     // <title>" rail from their post.php suggest graph, and how long to wait on those seed fetches
@@ -104,6 +115,25 @@ public class MirrorHomeService {
             "Naruto", "One Piece", "Demon Slayer", "Jujutsu Kaisen", "Dragon Ball", "Attack on Titan",
             "Death Note", "My Hero Academia", "Bleach", "Spy x Family", "Solo Leveling", "Pokemon",
             "Chhota Bheem", "Doraemon", "Motu Patlu", "Shinchan", "Little Singham", "Ben 10");
+    // Hotstar (dp) has NO home or trending route upstream (every /mobile/hs home candidate 404s —
+    // confirmed live 2026-11-23), so its catalogue is entered entirely through these curated title
+    // searches, the one feed that reaches it. Unlike SEED_QUERIES (which only tops up Netflix's
+    // anime/cartoon rails on top of a live trending feed), this IS the Hotstar home's content source,
+    // so it spans the catalogue's verticals — Hollywood/Disney/Marvel, Indian blockbusters across
+    // languages, Hotstar Specials, and kids — roughly popularity-ordered so the lead hits seed the
+    // "Popular on Hotstar" rail. Each search names its hits inline; genres and suggest graphs are then
+    // read from each title's hs/post.php detail, exactly as the Netflix compose does. Run once per
+    // process (hsSeedsSearched); the discovered ids/names/genres persist in hsSeedPool/nameCache/
+    // genreCache, so every later compose is free.
+    private static final List<String> HS_SEED_QUERIES = List.of(
+            "Avatar", "Avengers", "Spider-Man", "Deadpool", "Star Wars", "The Lion King", "Frozen",
+            "Moana", "Toy Story", "Salaar", "Pushpa", "Jawan", "Pathaan", "Animal", "Kalki", "Leo",
+            "RRR", "Bahubali", "Stree", "Kantara", "Aarya", "Special Ops", "The Night Manager",
+            "Criminal Justice", "Rana Naidu", "Shogun", "Doraemon", "Shinchan");
+    // How many seed titles get their hs/post.php detail (genre + suggest graph) fetched on a compose,
+    // mirroring the ~20 trending details the Netflix compose fetches. The rest of hsSeedPool still
+    // buckets into the genre rails as its genre fills over loads (the warm loop tops up leftover seeds).
+    private static final int HS_PRIMARY_SEEDS = 20;
     // A build that named every tile holds for the full window; one that ran out of budget with tiles
     // still unnamed holds only briefly, so once the background pre-warm (prewarmNames) has filled the
     // name cache the next poll rebuilds a full grid instead of serving the thin one for the whole window.
@@ -151,6 +181,12 @@ public class MirrorHomeService {
     // load or two the same way the suggest warm-up does.
     private final Set<String> seedPool = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean seedsSearched = new AtomicBoolean(false);
+    // The Hotstar catalogue entry point: ids discovered by the one-time HS_SEED_QUERIES searches, in
+    // discovery order (so the lead ids seed the "Popular on Hotstar" rail). Insertion-ordered and
+    // synchronized because, unlike seedPool's genre-only use, the order is read back for the Popular
+    // rail; hsSeedsSearched gates the one-time search so discovery runs once and then persists.
+    private final Set<String> hsSeedPool = Collections.synchronizedSet(new LinkedHashSet<>());
+    private final AtomicBoolean hsSeedsSearched = new AtomicBoolean(false);
 
     // Netflix's post.php `genre` taxonomy folded into a handful of display rails. The order is
     // ASSIGNMENT PRIORITY, not display order: a title joins the FIRST bucket whose genre string
@@ -167,6 +203,11 @@ public class MirrorHomeService {
             // the live catalogue (anime/cartoon search probe, 2026-11-22).
             new GenreBucket("Anime", List.of("anime")),
             new GenreBucket("Cartoons", List.of("cartoon")),
+            // Hotstar tags its Disney/Pixar/animated catalogue "Animation" (not Netflix's "anime"/
+            // "cartoon"), so without this bucket every Hotstar animated title falls through to a
+            // catch-all. Placed after Anime/Cartoons so a title tagged both still prefers those. Harmless
+            // for Netflix (its taxonomy rarely uses the bare word "animation"); seen live 2026-11-23.
+            new GenreBucket("Animation", List.of("animation")),
             new GenreBucket("Horror", List.of("horror")),
             new GenreBucket("Documentaries", List.of("documentar", "docuseries", "docudrama")),
             new GenreBucket("Stand-Up & Talk", List.of("stand-up", "talk show", "variety")),
@@ -335,7 +376,16 @@ public class MirrorHomeService {
                 resolved = true; // the lookup ran and failed — treat as nameless, do not retry
             }
             if (!resolved) {
+                // Budget ran out before this name came back. Hiding the tile is what
+                // collapsed a cold Prime rail to the two or three names that beat the
+                // deadline. Instead ship it id-only (null name): the client rebuilds
+                // its poster from the id and plays it from the id alone — playback
+                // never needs the name — and the real name fills in on the next poll,
+                // once the background pre-warm below has cached it. Still queued for
+                // that pre-warm and the build reported partial so the poll happens.
                 deferred.add(title);
+                tiles.add(new MirrorTileDto(title.id(), null, title.image(), null));
+                categories.add(title.category());
                 complete = false;
                 continue;
             }
@@ -498,18 +548,23 @@ public class MirrorHomeService {
         String ott = MirrorOtt.of(cookie);
         // Netflix's categorised home (/mobile/home?app=1) was retired upstream — it answers a bare
         // router 404 now — so the Netflix (and default, catalogue-less) home is composed from the two
-        // endpoints that stayed live: trending (search.php) and the post.php suggest graph. Prime keeps
-        // its JSON homepage, and Hotstar (dp) stays on the shared /mobile/home path (its own concern) —
-        // trending is the Netflix catalogue whatever the ott cookie says, so it must not feed dp.
+        // endpoints that stayed live: trending (search.php) and the post.php suggest graph. Hotstar (dp)
+        // has no home or trending route of its own either (every /mobile/hs home candidate 404s), so its
+        // home is likewise COMPOSED — from curated hs/search.php seeds + the hs/post.php suggest graph.
+        // Only Prime keeps a real homepage (/pv/homepage.php, parsed from homeFeed below).
         if (isNetflixCatalogue(ott)) {
             return composeNetflixFeed(baseUrl, cookie, t);
+        }
+        if (MirrorOtt.HOTSTAR.equals(ott)) {
+            return composeHotstarFeed(baseUrl, cookie, t);
         }
         String body = browseRepository.homeFeed(baseUrl, cookie);
         return MirrorHomeParser.parseHome(body, ott);
     }
 
     // The Netflix catalogue: its own "nf" token, or no token at all (the default home load names no
-    // catalogue and upstream answers Netflix). Prime ("pv") and Hotstar ("dp") are not composed here.
+    // catalogue and upstream answers Netflix). Prime ("pv") is parsed from its own homepage; Hotstar
+    // ("dp") is composed by composeHotstarFeed — neither is composed here.
     private static boolean isNetflixCatalogue(String ott) {
         return ott == null || ott.isBlank() || "nf".equals(ott);
     }
@@ -751,6 +806,197 @@ public class MirrorHomeService {
             if (!rail.isEmpty()) {
                 out.addAll(rail);
                 seeds++;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The Hotstar ({@code dp}) home, composed the same way as the Netflix home but without a trending
+     * feed to seed from — upstream exposes no Hotstar home or trending route (every {@code /mobile/hs}
+     * home candidate 404s, verified live 2026-11-23), so the catalogue is entered through a curated set
+     * of {@code hs/search.php} title searches ({@link #HS_SEED_QUERIES}), run once per process and
+     * persisted in {@link #hsSeedPool}. Each search names its hits inline; each seed title's
+     * {@code hs/post.php} detail then yields its {@code genre} (bucketed into the shared
+     * {@link #GENRE_BUCKETS} rails) and its {@code suggest} graph (the "More Like &lt;title&gt;" rails),
+     * exactly as {@link #composeNetflixFeed} does.
+     *
+     * <p>Rail order: "Popular on Hotstar" (the lead seeds, named inline), then the genre rails
+     * fullest-first (shown only once they clear {@link #MIN_GENRE_TILES}), then the More Like rails
+     * (deduped against everything already placed). On a cold cache the genre rails draw from the seed
+     * details alone and richen over loads as the suggest/leftover-seed genres fill the cache — never
+     * padded. An empty seed pool (every search missed) yields no rails rather than throwing.
+     */
+    private List<Title> composeHotstarFeed(String baseUrl, String cookie, String t) {
+        ClientHeaders client = ClientHeaderSupport.current();
+
+        // One-time seed discovery: run the curated Hotstar searches in parallel, naming hits inline.
+        // This is the Hotstar catalogue's only entry point, so unlike the Netflix anime/cartoon seed it
+        // is not optional — a failure clears the gate so a later load retries it.
+        if (hsSeedsSearched.compareAndSet(false, true)) {
+            try {
+                List<Future<JsonNode>> searchFutures = new ArrayList<>();
+                for (String q : HS_SEED_QUERIES) {
+                    searchFutures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                        try {
+                            return mapper.readTree(browseRepository.search(baseUrl, q, t, cookie));
+                        } catch (RuntimeException e) {
+                            log.debug("Hotstar seed search '{}' failed: {}", q, e.getMessage());
+                            return null;
+                        }
+                    })));
+                }
+                // Seeds resolve once per process and then persist, so the cold seed load is allowed a
+                // wider budget than a normal compose — the one-time price of a full Hotstar home.
+                long searchDeadline = System.currentTimeMillis() + 3 * COMPOSE_BUDGET_MILLIS;
+                for (int i = 0; i < HS_SEED_QUERIES.size(); i++) {
+                    JsonNode res = await(searchFutures.get(i), searchDeadline, "hs-seed:" + HS_SEED_QUERIES.get(i));
+                    if (res == null) continue;
+                    int taken = 0;
+                    for (JsonNode item : res.path("searchResult")) {
+                        if (hsSeedPool.size() >= SEED_POOL_MAX || taken >= SEED_HITS_PER_QUERY) break;
+                        String id = item.path("id").asString("").trim();
+                        if (id.isEmpty()) continue;
+                        String name = item.path("t").asString("").trim();
+                        if (!name.isEmpty() && nameCache.size() < NAME_CACHE_MAX) nameCache.putIfAbsent(id, name);
+                        if (hsSeedPool.add(id)) taken++;
+                    }
+                }
+            } catch (RuntimeException e) {
+                log.debug("Hotstar seed discovery failed: {}", e.getMessage());
+                hsSeedsSearched.set(false); // let a later load retry the discovery
+            }
+        }
+
+        // Snapshot the seed pool in discovery order, each with its inline name.
+        List<Title> seeds = new ArrayList<>();
+        LinkedHashSet<String> seedIds = new LinkedHashSet<>();
+        synchronized (hsSeedPool) {
+            for (String id : hsSeedPool) {
+                if (!seedIds.add(id)) continue;
+                seeds.add(new Title(id, nameCache.get(id), MirrorHomeParser.poster("dp", id), null));
+            }
+        }
+        if (seeds.isEmpty()) return List.of();
+
+        // One detail fetch per lead seed (name + genre + suggest graph), in parallel within the budget.
+        int primary = Math.min(HS_PRIMARY_SEEDS, seeds.size());
+        List<Title> head = new ArrayList<>(seeds.subList(0, primary));
+        List<Future<JsonNode>> futures = new ArrayList<>();
+        for (Title s : head) {
+            futures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                try {
+                    return mapper.readTree(browseRepository.getDetail(baseUrl, s.id(), t, cookie));
+                } catch (RuntimeException e) {
+                    log.debug("No detail for Hotstar title {}: {}", s.id(), e.getMessage());
+                    return null;
+                }
+            })));
+        }
+        long deadline = System.currentTimeMillis() + COMPOSE_BUDGET_MILLIS;
+        List<JsonNode> details = new ArrayList<>();
+        for (int i = 0; i < head.size(); i++) {
+            JsonNode detail = await(futures.get(i), deadline, head.get(i).id());
+            details.add(detail);
+            if (detail != null) cacheGenre(head.get(i).id(), detail);
+        }
+
+        // Widen the genre pool: warm the genre (and name) of uncached suggested ids, plus any seed ids
+        // beyond the lead slice whose genre is not cached yet, within one budget — so the genre rails
+        // surface on the first load and the whole seed pool eventually buckets. Deduped against the
+        // cache, so a warm catalogue skips this almost entirely.
+        LinkedHashSet<String> toWarm = new LinkedHashSet<>();
+        for (JsonNode detail : details) {
+            if (detail == null) continue;
+            for (JsonNode s : detail.path("suggest")) {
+                if (toWarm.size() >= GENRE_POOL_FETCH_MAX) break;
+                String id = s.path("id").asString("").trim();
+                if (!id.isEmpty() && !seedIds.contains(id) && !genreCache.containsKey(id)) toWarm.add(id);
+            }
+        }
+        for (int i = primary; i < seeds.size() && toWarm.size() < GENRE_POOL_FETCH_MAX; i++) {
+            String id = seeds.get(i).id();
+            if (!genreCache.containsKey(id)) toWarm.add(id);
+        }
+        if (!toWarm.isEmpty()) {
+            List<String> warmIds = new ArrayList<>(toWarm);
+            List<Future<JsonNode>> genreFutures = new ArrayList<>();
+            for (String id : warmIds) {
+                genreFutures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                    try {
+                        return mapper.readTree(browseRepository.getDetail(baseUrl, id, t, cookie));
+                    } catch (RuntimeException e) {
+                        log.debug("No detail for Hotstar suggestion {}: {}", id, e.getMessage());
+                        return null;
+                    }
+                })));
+            }
+            long genreDeadline = System.currentTimeMillis() + COMPOSE_BUDGET_MILLIS;
+            for (int i = 0; i < warmIds.size(); i++) {
+                JsonNode detail = await(genreFutures.get(i), genreDeadline, warmIds.get(i));
+                if (detail == null) continue;
+                cacheGenre(warmIds.get(i), detail);
+                String name = detail.path("title").asString("").trim();
+                if (!name.isEmpty() && nameCache.size() < NAME_CACHE_MAX) {
+                    nameCache.putIfAbsent(warmIds.get(i), name);
+                }
+            }
+        }
+
+        List<Title> out = new ArrayList<>();
+
+        // [1] Popular on Hotstar — the curated seed order, named inline, so the build's phase-1 skips a
+        // lookup for these.
+        int top = Math.min(10, seeds.size());
+        for (int i = 0; i < top; i++) {
+            Title s = seeds.get(i);
+            out.add(new Title(s.id(), s.title(), s.image(), "Popular on Hotstar"));
+        }
+
+        // [2] Genre rails. The pool is the seed ids plus any suggested ids whose genre the cache already
+        // holds; each pooled title joins its single best bucket once, and buckets that clear
+        // MIN_GENRE_TILES are emitted fullest-first.
+        LinkedHashSet<String> genrePool = new LinkedHashSet<>(seedIds);
+        for (JsonNode detail : details) {
+            if (detail == null) continue;
+            for (JsonNode s : detail.path("suggest")) {
+                String id = s.path("id").asString("").trim();
+                if (!id.isEmpty() && genreCache.containsKey(id)) genrePool.add(id);
+            }
+        }
+        LinkedHashMap<String, List<Title>> byBucket = new LinkedHashMap<>();
+        Set<String> inGenre = new HashSet<>();
+        for (String id : genrePool) {
+            String bucket = bestBucket(genreCache.get(id));
+            if (bucket == null || !inGenre.add(id)) continue;
+            String name = nameCache.get(id); // null -> build phase-1 names it
+            byBucket.computeIfAbsent(bucket, k -> new ArrayList<>())
+                    .add(new Title(id, name, MirrorHomeParser.poster("dp", id), bucket));
+        }
+        byBucket.values().stream()
+                .filter(rail -> rail.size() >= MIN_GENRE_TILES)
+                .sorted((a, b) -> Integer.compare(b.size(), a.size()))
+                .forEach(out::addAll);
+
+        // [3] More Like <title> — discovery from the suggest graph of the first few named seeds, for
+        // tiles not already placed, so these rails only add fresh titles.
+        Set<String> placed = new HashSet<>(seedIds);
+        placed.addAll(inGenre);
+        int used = 0;
+        for (int i = 0; i < head.size() && used < RELATED_SEEDS; i++) {
+            JsonNode detail = details.get(i);
+            Title s = head.get(i);
+            if (detail == null || s.title() == null) continue;
+            String category = "More Like " + s.title();
+            List<Title> rail = new ArrayList<>();
+            for (JsonNode sg : detail.path("suggest")) {
+                String id = sg.path("id").asString("").trim();
+                if (id.isEmpty() || !placed.add(id)) continue;
+                rail.add(new Title(id, nameCache.get(id), MirrorHomeParser.poster("dp", id), category));
+            }
+            if (!rail.isEmpty()) {
+                out.addAll(rail);
+                used++;
             }
         }
         return out;

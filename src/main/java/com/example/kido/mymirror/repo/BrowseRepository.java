@@ -18,8 +18,11 @@ public class BrowseRepository {
     public BrowseRepository(RestTemplate restTemplate) { this.restTemplate = restTemplate; }
 
     // Prime Video detail answers only at /pv/post.php; /mobile/pv/post.php says "Invalid User".
+    // Hotstar detail answers at /mobile/hs/post.php (the shared /mobile/post.php returns the wrong
+    // catalogue for a Hotstar id). Verified live 2026-11-23.
     public String getDetail(String baseUrl, String id, String t, String cookie) {
-        String path = MirrorOtt.isPrime(id, cookie) ? "/pv/post.php" : "/mobile/post.php";
+        if (MirrorOtt.isPrime(id, cookie)) return get(UpstreamUrl.of(baseUrl, "/pv/post.php", "id", id, "t", t), cookie);
+        String path = MirrorOtt.isHotstar(id, cookie) ? "/mobile/hs/post.php" : "/mobile/post.php";
         return get(UpstreamUrl.of(baseUrl, path, "id", id, "t", t), cookie);
     }
 
@@ -27,12 +30,20 @@ public class BrowseRepository {
         if (MirrorOtt.isPrime(null, cookie)) {
             return get(UpstreamUrl.of(baseUrl, "/mobile/pv/search.php", "s", query, "t", t), cookie);
         }
+        if (MirrorOtt.isHotstar(null, cookie)) {
+            return get(UpstreamUrl.of(baseUrl, "/mobile/hs/search.php", "s", query, "t", t), cookie);
+        }
         return get(UpstreamUrl.of(baseUrl, "/mobile/search.php", "s", query, "t", t, "ADSearch", "false"), cookie);
     }
 
-    // id is the season's id, series the title's; the title decides the catalogue.
+    // id is the season's id, series the title's; the title decides the catalogue. Hotstar episodes
+    // answer at /mobile/hs/episodes.php — the shared /mobile/episodes.php returns only a pagination
+    // stub for a Hotstar id (wrong catalogue). Verified live 2026-11-23.
     public String episodes(String baseUrl, String id, String series, String t, String cookie) {
-        String path = MirrorOtt.isPrime(series, cookie) ? "/mobile/pv/episodes.php" : "/mobile/episodes.php";
+        if (MirrorOtt.isPrime(series, cookie)) {
+            return get(UpstreamUrl.of(baseUrl, "/mobile/pv/episodes.php", "s", id, "series", series, "t", t, "page", "1"), cookie);
+        }
+        String path = MirrorOtt.isHotstar(series, cookie) ? "/mobile/hs/episodes.php" : "/mobile/episodes.php";
         return get(UpstreamUrl.of(baseUrl, path, "s", id, "series", series, "t", t, "page", "1"), cookie);
     }
 
@@ -45,10 +56,11 @@ public class BrowseRepository {
     // /pv/homepage.php: {"slider":[{id,...}],"post":[{"ids":"a,b,..","cate":".."}]}. Netflix's old
     // server-rendered /mobile/home?app=1 was RETIRED upstream (it now answers a 24-byte router 404
     // under every variant, even after a /mobile/setting.php ott POST — confirmed on the live mirror
-    // 2026-11-22), so the Netflix home is COMPOSED by MirrorHomeService from trending() + post.php
-    // suggest graphs and never reaches here; this path now serves only Prime (and Hotstar/dp, which
-    // still rides the shared /mobile/home route). No t is needed. MirrorHomeParser.parseHome sniffs
-    // the HTML vs JSON shape for whatever this returns.
+    // 2026-11-22). Hotstar/dp has no home or trending route at all (every /mobile/hs home candidate
+    // 404s — confirmed 2026-11-23). So Netflix AND Hotstar homes are both COMPOSED by MirrorHomeService
+    // (from trending()/seed searches + post.php suggest graphs) and never reach here; this path now
+    // serves only Prime. No t is needed. MirrorHomeParser.parseHome sniffs the HTML vs JSON shape for
+    // whatever this returns.
     public String homeFeed(String baseUrl, String cookie) {
         if (MirrorOtt.isPrime(null, cookie)) return get(UpstreamUrl.of(baseUrl, "/pv/homepage.php"), cookie);
         return get(UpstreamUrl.of(baseUrl, "/mobile/home", "app", "1"), cookie);
