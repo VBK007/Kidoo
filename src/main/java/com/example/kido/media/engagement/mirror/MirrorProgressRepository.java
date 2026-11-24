@@ -1,5 +1,7 @@
 package com.example.kido.media.engagement.mirror;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.domain.Page;
@@ -25,4 +27,13 @@ public interface MirrorProgressRepository extends JpaRepository<MirrorProgress, 
      */
     Page<MirrorProgress> findByProfileIdAndFinishedFalseOrderByUpdatedAtDescIdDesc(
             String profileId, Pageable pageable);
+
+    /**
+     * Every title watched (position written) since {@code cutoff}, across all profiles — the
+     * strongest trending signal, since a resume is intent acted on rather than a bookmark,
+     * and the freshest snapshot, since it is rewritten each heartbeat. The "Trending on
+     * OTTVault" aggregate reads these whether or not they are finished: a title watched to
+     * the end is as much a signal of what is hot as one left half-done.
+     */
+    List<MirrorProgress> findByUpdatedAtAfter(Instant cutoff);
 }

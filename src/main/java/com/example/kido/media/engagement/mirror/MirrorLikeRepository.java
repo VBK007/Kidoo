@@ -1,5 +1,6 @@
 package com.example.kido.media.engagement.mirror;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 
@@ -37,4 +38,13 @@ public interface MirrorLikeRepository extends JpaRepository<MirrorLike, String> 
             """)
     List<String> findLikedMirrorIds(@Param("profileId") String profileId,
                                     @Param("mirrorIds") Collection<String> mirrorIds);
+
+    /**
+     * Every like laid down since {@code cutoff}, across all profiles — the raw signal the
+     * "Trending on OTTVault" aggregate decays and tallies per title. A like carries no
+     * snapshot, so it can only lift a title that a save or a resume already named; that is
+     * by design, and why the trending service reads all three tables rather than this one
+     * alone.
+     */
+    List<MirrorLike> findByCreatedAtAfter(Instant cutoff);
 }

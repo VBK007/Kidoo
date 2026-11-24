@@ -1,5 +1,6 @@
 package com.example.kido.media.engagement.mirror;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 
@@ -38,4 +39,12 @@ public interface MirrorSavedRepository extends JpaRepository<MirrorSavedItem, St
             """)
     List<String> findSavedMirrorIds(@Param("profileId") String profileId,
                                     @Param("mirrorIds") Collection<String> mirrorIds);
+
+    /**
+     * Every save laid down since {@code cutoff}, across all profiles — a trending signal
+     * that, unlike a like, carries the title snapshot the rail draws from. The "Trending on
+     * OTTVault" aggregate reads these for both the score they add and the name and poster
+     * they name a title with.
+     */
+    List<MirrorSavedItem> findByCreatedAtAfter(Instant cutoff);
 }
