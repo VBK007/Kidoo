@@ -4,11 +4,13 @@ import {
   fetchActivity,
   fetchDashboard,
   fetchEngagement,
+  fetchRecentlyPlayed,
   fetchRecentSignups,
   fetchSiteTraffic,
   type Credentials,
   type Dashboard as DashboardData,
   type LiveScreen,
+  type RecentPlay,
   type RecentSignup,
   type SiteTraffic,
 } from '../api'
@@ -17,6 +19,7 @@ import { Applications } from './Applications'
 import { BarList, type Bar } from './BarList'
 import { LiveActivity } from './LiveActivity'
 import { Records } from './Records'
+import { RecentlyPlayed } from './RecentlyPlayed'
 import { RecentSignups } from './RecentSignups'
 import { Card, Hero, Tile } from './Tiles'
 
@@ -37,6 +40,7 @@ export function Dashboard({
   const [siteTraffic, setSiteTraffic] = useState<SiteTraffic | null>(null)
   const [recentSignups, setRecentSignups] = useState<RecentSignup[]>([])
   const [activity, setActivity] = useState<LiveScreen[]>([])
+  const [recentPlays, setRecentPlays] = useState<RecentPlay[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [live, setLive] = useState(true)
@@ -61,11 +65,18 @@ export function Dashboard({
   )
 
   const received = useCallback(
-    (next: DashboardData, traffic: SiteTraffic, signups: RecentSignup[], live: LiveScreen[]) => {
+    (
+      next: DashboardData,
+      traffic: SiteTraffic,
+      signups: RecentSignup[],
+      live: LiveScreen[],
+      plays: RecentPlay[],
+    ) => {
       setData(next)
       setSiteTraffic(traffic)
       setRecentSignups(signups)
       setActivity(live)
+      setRecentPlays(plays)
       setError(null)
       setLastLoadedAt(new Date().toISOString())
     },
@@ -78,14 +89,15 @@ export function Dashboard({
     let current = true
     void (async () => {
       try {
-        const [next, traffic, signups, live] = await Promise.all([
+        const [next, traffic, signups, live, plays] = await Promise.all([
           fetchDashboard(credentials),
           fetchSiteTraffic(credentials),
           fetchRecentSignups(credentials),
           fetchActivity(credentials),
+          fetchRecentlyPlayed(credentials),
         ])
         if (current) {
-          received(next, traffic, signups, live)
+          received(next, traffic, signups, live, plays)
         }
       } catch (failure) {
         if (current) {
@@ -106,13 +118,14 @@ export function Dashboard({
   async function refresh() {
     setLoading(true)
     try {
-      const [next, traffic, signups, live] = await Promise.all([
+      const [next, traffic, signups, live, plays] = await Promise.all([
         fetchDashboard(credentials),
         fetchSiteTraffic(credentials),
         fetchRecentSignups(credentials),
         fetchActivity(credentials),
+        fetchRecentlyPlayed(credentials),
       ])
-      received(next, traffic, signups, live)
+      received(next, traffic, signups, live, plays)
     } catch (failure) {
       report(failure)
     } finally {
@@ -135,12 +148,14 @@ export function Dashboard({
     }
     const timer = window.setInterval(async () => {
       try {
-        const [engagement, liveScreens] = await Promise.all([
+        const [engagement, liveScreens, plays] = await Promise.all([
           fetchEngagement(credentials),
           fetchActivity(credentials),
+          fetchRecentlyPlayed(credentials),
         ])
         setData((current) => (current ? { ...current, engagement } : current))
         setActivity(liveScreens)
+        setRecentPlays(plays)
         setLastLoadedAt(new Date().toISOString())
       } catch (failure) {
         report(failure)
@@ -273,6 +288,14 @@ export function Dashboard({
         <p className="meta" style={{ marginTop: 10 }}>
           Logged by the app on every screen change — a stale row just means nobody is
           on that screen anymore, not that anything is wrong.
+        </p>
+        <div style={{ marginTop: 'var(--gap)' }}>
+          <RecentlyPlayed plays={recentPlays} />
+        </div>
+        <p className="meta" style={{ marginTop: 10 }}>
+          One row per profile and title — the latest state of each play, not a line per
+          minute watched, so this is the audit trail of what each household actually
+          watched and how far they got.
         </p>
       </section>
 

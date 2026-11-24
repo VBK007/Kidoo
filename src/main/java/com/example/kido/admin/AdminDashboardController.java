@@ -6,9 +6,11 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.admin.dto.ActivityDtos.LiveScreenDto;
+import com.example.kido.admin.dto.ActivityDtos.RecentPlayDto;
 import com.example.kido.admin.dto.ActivityDtos.RecentSignupDto;
 import com.example.kido.admin.dto.DashboardDtos.ApplicationStatsDto;
 import com.example.kido.admin.dto.DashboardDtos.CatalogStatsDto;
@@ -130,5 +132,22 @@ public class AdminDashboardController {
                                                @RequestHeader(value = "X-Admin-Key", required = false) String key) {
         access.require(user, key);
         return activity.recentSignups();
+    }
+
+    /**
+     * What each account has recently played, newest first — the audit feed.
+     *
+     * <p>Distinct from {@code /activity}, which is where accounts are <em>now</em>: this
+     * is a durable history of what was actually watched, one row per distinct play, so a
+     * reviewer can answer "which profile watched this, and how far did they get". The
+     * {@code limit} is a hint the service clamps.
+     */
+    @GetMapping("/recently-played")
+    public List<RecentPlayDto> recentlyPlayed(
+            @AuthenticationPrincipal AppUser user,
+            @RequestHeader(value = "X-Admin-Key", required = false) String key,
+            @RequestParam(value = "limit", defaultValue = "50") int limit) {
+        access.require(user, key);
+        return activity.recentlyPlayed(limit);
     }
 }

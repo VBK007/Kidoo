@@ -138,6 +138,26 @@ export type LiveScreen = {
   at: string
 }
 
+/**
+ * One title a profile recently played — the "recently played" audit feed.
+ *
+ * Distinct from {@link LiveScreen}, which is where an account is *now*: this is a
+ * durable history of what was watched, naming the profile as well as the account so a
+ * household's plays can be told apart. `percentComplete` is null when the file's
+ * duration was never known; `watched` is the finished flag.
+ */
+export type RecentPlay = {
+  userId: string | null
+  accountLabel: string
+  profileId: string
+  profileName: string | null
+  itemId: string
+  itemTitle: string | null
+  percentComplete: number | null
+  watched: boolean
+  at: string
+}
+
 export type Account = {
   id: string
   username: string
@@ -287,6 +307,10 @@ export const fetchRecentSignups = (credentials: Credentials) =>
 /** Each account currently on a screen, newest first. */
 export const fetchActivity = (credentials: Credentials) =>
   fetchJson<LiveScreen[]>('/activity', credentials)
+
+/** What each account has recently played, newest first — the audit feed. */
+export const fetchRecentlyPlayed = (credentials: Credentials, limit = 50) =>
+  fetchJson<RecentPlay[]>(`/recently-played?limit=${limit}`, credentials)
 
 // --- the database browser ---
 

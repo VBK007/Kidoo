@@ -26,6 +26,19 @@ public interface PlaybackProgressRepository extends JpaRepository<PlaybackProgre
 
     void deleteByProfileIdAndMediaItemId(String profileId, String mediaItemId);
 
+    /**
+     * The most recently touched rows across every profile, newest first — the raw
+     * material for the admin "recently played" audit.
+     *
+     * <p>Because this table is an upsert on {@code (profile, item)}, one row is the
+     * latest state of one profile watching one title, not a log line per ping. A page
+     * of these is therefore a page of distinct plays, so the feed never fills with the
+     * same film reported forty times while it was playing. Reduced to account labels
+     * and titles in Java rather than with a join, for the H2/PostgreSQL portability
+     * reason the rest of the admin read models keep to.
+     */
+    List<PlaybackProgress> findByOrderByUpdatedAtDesc(Pageable pageable);
+
     /** Every profile's progress on an item, e.g. when the item itself is being purged. */
     void deleteByMediaItemId(String mediaItemId);
 
