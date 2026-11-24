@@ -108,6 +108,16 @@ public class WatchPartyService {
     /** This server's own public address, or blank to leave sharing code-only. */
     private final String publicBaseUrl;
 
+    /**
+     * A party whose media id carries this prefix is an OTTVault (mirror) title, not a
+     * catalogue one. Mirror titles are not {@link MediaItem} rows — they live in the
+     * parallel mirror engagement tables — so a party on one is keyed on the opaque
+     * {@code mirror:<id>} string and never looked up in the catalogue. The prefix is set
+     * by the client (TowerNav.MIRROR_PARTY_PREFIX) and echoed back untouched, so both the
+     * host and a guest joining by code can tell it is a mirror party from the id alone.
+     */
+    private static final String MIRROR_PREFIX = "mirror:";
+
     public WatchPartyService(WatchPartyRepository parties,
                              WatchPartyMemberRepository members,
                              CatalogService catalog,
@@ -167,7 +177,12 @@ public class WatchPartyService {
      */
     @Transactional
     public PartyDto create(AppUser user, Profile profile, CreatePartyRequest request) {
-        MediaItem item = catalog.require(request.mediaItemId());
+        // An OTTVault title is not a catalogue row, so it is not required to exist there;
+        // its id is stored verbatim. A catalogue title is still required — a party on a
+        // file that is not on this server would reach a dead player.
+        boolean mirror = request.mediaItemId().startsWith(MIRROR_PREFIX);
+        MediaItem item = mirror ? null : catalog.require(request.mediaItemId());
+        String mediaItemId = mirror ? request.mediaItemId() : item.getId();
 
         parties.findByHostAccountIdAndEndedAtIsNullOrderByCreatedAtDesc(user.getId())
                 .forEach(existing -> close(existing, "replaced by a new party"));
@@ -176,7 +191,7 @@ public class WatchPartyService {
                 .joinCode(mintCode())
                 .hostAccountId(user.getId())
                 .hostProfileId(profile.getId())
-                .mediaItemId(item.getId())
+                .mediaItemId(mediaItemId)
                 .maxMembers(request.maxMembers() == null
                         ? defaultMaxMembers
                         : request.maxMembers())
@@ -197,7 +212,8 @@ public class WatchPartyService {
                 .build());
 
         log.info("Watch party {} opened by '{}' for '{}'",
-                party.getJoinCode(), profile.getName(), item.getTitle());
+                party.getJoinCode(), profile.getName(),
+                item == null ? mediaItemId : item.getTitle());
         return view(party, item, user);
     }
 
@@ -524,6 +540,22 @@ public class WatchPartyService {
         return items.findById(party.getMediaItemId()).orElse(null);
     }
 
+    /**
+     * The label the lobby shows.
+     *
+     * <p>A mirror party has no catalogue row to read a title from, and the create request
+     * carries no title field, so it shows a generic label rather than the real name — the
+     * party's value is the rendezvous (code, chat, who's in), and everyone opens the title
+     * from the OTTVault screen they started on. A catalogue party with a null item is a
+     * different case — the row exists but its file is unreachable — and keeps its old label.
+     */
+    private String titleFor(WatchParty party, MediaItem item) {
+        if (item != null) {
+            return item.getTitle();
+        }
+        return party.getMediaItemId().startsWith(MIRROR_PREFIX) ? "OTTVault title" : "Unknown title";
+    }
+
     private PartyDto view(WatchParty party, MediaItem item, AppUser viewer) {
         boolean host = party.getHostAccountId().equals(viewer.getId());
 
@@ -547,7 +579,7 @@ public class WatchPartyService {
                 party.getId(),
                 party.getJoinCode(),
                 party.getMediaItemId(),
-                item == null ? "Unknown title" : item.getTitle(),
+                titleFor(party, item),
                 party.isLive(),
                 party.getMaxMembers(),
                 host,
