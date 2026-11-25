@@ -33,10 +33,17 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             filterChain.doFilter(request, response);
         } finally {
             long took = System.currentTimeMillis() - start;
-            String query = request.getQueryString() == null ? ""
-                    : "?" + SECRET_PARAM.matcher(request.getQueryString()).replaceAll("$1$2=***");
+            String query = queryForLogging(request.getServletPath(), request.getQueryString());
             log.info("{} {} {}{} -> {} ({} ms)",
                     ClientAddress.resolve(request), request.getMethod(), request.getRequestURI(), query, response.getStatus(), took);
         }
+    }
+    static String queryForLogging(String path, String query) {
+        if (query == null || path.startsWith("/playback/") || path.startsWith("/browse/")
+                || path.startsWith("/adgate/") || path.startsWith("/user/") || path.startsWith("/mobile/")
+                || path.startsWith("/info/") || path.startsWith("/dispatcher/")) {
+            return "";
+        }
+        return "?" + SECRET_PARAM.matcher(query).replaceAll("$1$2=***");
     }
 }

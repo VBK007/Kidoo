@@ -40,7 +40,7 @@ class MirrorHomeEndpointIntegrationTest {
 
     @Test
     void aParentWithAMirrorSessionGetsBothTheLibraryAndTheMirror() throws Exception {
-        when(mirrorHome.rail("sess=1", null)).thenReturn(List.of(RAIL));
+        when(mirrorHome.railWithStatus("sess=1", null)).thenReturn(new MirrorHomeService.RailResult(List.of(RAIL), "available"));
         String[] account = account("PARENT");
 
         HttpResponse<String> home = home(account, "sess=1");
@@ -53,7 +53,7 @@ class MirrorHomeEndpointIntegrationTest {
 
     @Test
     void withoutAMirrorSessionTheHomeScreenIsUnchanged() throws Exception {
-        when(mirrorHome.rail(null, null)).thenReturn(List.of());
+        when(mirrorHome.railWithStatus(null, null)).thenReturn(new MirrorHomeService.RailResult(List.of(), "missing"));
 
         HttpResponse<String> home = home(account("PARENT"), null);
 
@@ -65,7 +65,7 @@ class MirrorHomeEndpointIntegrationTest {
     void aChildAccountAlsoSeesTheMirror() throws Exception {
         // The mirror catalogue has no age filtering; this build composes the rail for children too
         // (a deliberate choice recorded on HomeController#home), so the gate is signed-in, not parent.
-        when(mirrorHome.rail("sess=1", null)).thenReturn(List.of(RAIL));
+        when(mirrorHome.railWithStatus("sess=1", null)).thenReturn(new MirrorHomeService.RailResult(List.of(RAIL), "available"));
 
         HttpResponse<String> home = home(account("CHILD"), "sess=1");
 

@@ -33,6 +33,7 @@ class MobileDetectServiceTest {
         int calls;
 
         StubRepository(String html) {
+            super(new org.springframework.web.client.RestTemplate());
             this.html = html;
         }
 

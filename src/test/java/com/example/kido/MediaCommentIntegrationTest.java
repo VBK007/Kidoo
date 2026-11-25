@@ -69,6 +69,11 @@ class MediaCommentIntegrationTest {
 
     private HttpResponse<String> send(String method, String path, String json,
                                       String bearer, String profile) throws Exception {
+        return send(method, path, json, bearer, profile, null);
+    }
+
+    private HttpResponse<String> send(String method, String path, String json,
+                                     String bearer, String profile, String adminKey) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(base() + path));
         if (json != null) {
             builder.header("Content-Type", "application/json");
@@ -78,6 +83,9 @@ class MediaCommentIntegrationTest {
         }
         if (profile != null) {
             builder.header("X-Profile-Id", profile);
+        }
+        if (adminKey != null) {
+            builder.header("X-Admin-Key", adminKey);
         }
         builder.method(method, json == null
                 ? HttpRequest.BodyPublishers.noBody()
@@ -106,8 +114,9 @@ class MediaCommentIntegrationTest {
         HttpResponse<String> registered = send("POST", "/api/auth/register", """
                 {"username":"%s_%s","email":"%s_%s@example.com",
                  "password":"pw123456","displayName":"Comment Tester","role":"%s"}
-                """.formatted(prefix, unique, prefix, unique, role), null, null);
+                """.formatted(prefix, unique, prefix, unique, role), null, null, "PARENT".equals(role) ? "test-admin-key" : null);
         assertEquals(201, registered.statusCode(), registered.body());
+        assertTrue(registered.body().contains("\"role\":\"" + role + "\""));
         return str(registered.body(), "token");
     }
 

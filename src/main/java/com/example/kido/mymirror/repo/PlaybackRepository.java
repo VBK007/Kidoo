@@ -20,11 +20,14 @@ import com.example.kido.mymirror.UpstreamUrl;
 public class PlaybackRepository {
     private final RestTemplate restTemplate;
     private final RestTemplate cdnRestTemplate;
+    private final RestTemplate subtitleRestTemplate;
 
     public PlaybackRepository(RestTemplate restTemplate,
-                              @Qualifier("cdnRestTemplate") RestTemplate cdnRestTemplate) {
+                              @Qualifier("cdnRestTemplate") RestTemplate cdnRestTemplate,
+                              @Qualifier("subtitleRestTemplate") RestTemplate subtitleRestTemplate) {
         this.restTemplate = restTemplate;
         this.cdnRestTemplate = cdnRestTemplate;
+        this.subtitleRestTemplate = subtitleRestTemplate;
     }
 
     // Playback keep-alive via POST /mobile/p.php. Returns {r:n}=ok, {r:y}=reload; it does NOT
@@ -64,14 +67,6 @@ public class PlaybackRepository {
         return get(url, mirrorHeaders(baseUrl, cookie));
     }
 
-    // "Open this title" with the mirror: GET /mobile/post.php?id=&t=. The real NetMirror app makes
-    // this call on every play, immediately before playlist.php (captured live) — it is the title's
-    // detail endpoint, and it is what registers the title-open with net52 so net52 resolves a CDN
-    // node for the title's HLS master. Without it, playlist.php's master comes back with a blank
-    // variant authority (https:///files/<id>/…) — no node mapped — which cannot be played. Prime
-    // titles open at /pv/post.php, Hotstar titles at /mobile/hs/post.php (as in
-    // BrowseRepository#getDetail); the id's shape and the ott cookie pick the catalogue. Sends the
-    // same app-context headers (Referer /mobile/home?app=1) as the play path.
     public String openTitle(String baseUrl, String id, String t, String cookie) {
         String path;
         if (MirrorOtt.isPrime(id, cookie)) path = "/pv/post.php";
@@ -89,8 +84,7 @@ public class PlaybackRepository {
     // Fetch an HLS variant playlist from the mirror's segment CDN. The CDN is a third party that is
     // not behind Cloudflare and gates the playlist on the mirror Referer alone, so this sends ONLY
     // that Referer and a browser UA/Accept-Language — no session cookie and no cf_clearance, which
-    // would leak a mirror secret to an unrelated host. The template carries no interceptor for the
-    // same reason. The segments the playlist names are public, so they are not fetched here: the
+    // would leak a mirror secret to an unrelated host. The template omits the clearance interceptor. The segments the playlist names are public, so they are not fetched here: the
     // player is handed their absolute CDN URLs and streams them straight from the CDN.
     public String fetchCdnPlaylist(URI url, String referer) {
         HttpHeaders headers = new HttpHeaders();
@@ -107,8 +101,11 @@ public class PlaybackRepository {
         HttpHeaders headers = new HttpHeaders();
         ClientHeaderSupport.apply(headers, ClientHeaderSupport.current());
         headers.set("X-Requested-With", "XMLHttpRequest");
-        if (UpstreamUrl.sameHost(subtitleUrl, baseUrl)) headers.set("Cookie", cookie);
-        return get(subtitleUrl, headers);
+        if (UpstreamUrl.sameOrigin(subtitleUrl, baseUrl)) {
+            headers.set("Cookie", cookie);
+            return get(subtitleUrl, headers);
+        }
+        return subtitleRestTemplate.exchange(subtitleUrl, HttpMethod.GET, new HttpEntity<>(headers), String.class).getBody();
     }
 
     private static HttpHeaders mirrorHeaders(String baseUrl, String cookie) {

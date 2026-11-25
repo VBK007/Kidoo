@@ -17,10 +17,8 @@ import org.springframework.web.client.HttpStatusCodeException;
  * header. The ad-gate session ({@code t_hash_t}) is untouched by this; only the Cloudflare layer
  * needs renewing, which a real browser does by solving the challenge afresh.
  *
- * <p>The distinction matters: a challenge must trigger a {@code cf_clearance} re-mint while keeping
- * the still-valid {@code t_hash_t}, whereas a dead gate ({@code 412}) must drop the session and
- * re-earn it at a human ad-view. Misreading one for the other either throws away a good session or
- * loops on a session the backend keeps rejecting.
+ * <p>A challenge signals an upstream access denial. Keep the held session and leave access
+ * recovery to the operator through the provider's approved flow.
  */
 public final class MirrorCloudflare {
 

@@ -100,8 +100,9 @@ class MediaAdminSessionIntegrationTest {
         HttpResponse<String> registered = send("POST", "/api/auth/register", """
                 {"username":"sess_%s","email":"sess_%s@example.com","password":"pw123456",
                  "displayName":"Session Owner","role":"PARENT"}
-                """.formatted(unique, unique), null, null);
+                """.formatted(unique, unique), null, ADMIN_KEY);
         assertEquals(201, registered.statusCode(), registered.body());
+        assertTrue(registered.body().contains("\"role\":\"PARENT\""));
         token = extract(registered.body(), "token");
         assertNotNull(token);
 

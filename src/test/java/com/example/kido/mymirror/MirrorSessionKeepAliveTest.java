@@ -58,7 +58,7 @@ class MirrorSessionKeepAliveTest {
         MirrorSessionProperties props = new MirrorSessionProperties();
         props.setSessionFile(file.toString());
         MirrorSessionProvider provider = new MirrorSessionProvider(
-                props, new MirrorAccessProperties(), new AdGateRepository(rest), new FixedDispatcher());
+                props, new AdGateRepository(rest), new FixedDispatcher());
         provider.load(); // @PostConstruct in production; called directly to seed the held session
         return provider;
     }
@@ -115,5 +115,46 @@ class MirrorSessionKeepAliveTest {
 
         assertEquals(SESSION, provider.currentCookie(), "a blip must not throw away a good session");
         server.verify();
+    }
+    @Test
+    void reloadsOperatorReplacementWithoutRestoringRejectedCookie(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("session.txt");
+        MirrorSessionProvider provider = providerHolding(new RestTemplate(), file);
+        provider.noteRejected(MirrorOtt.apply(SESSION, MirrorOtt.PRIME));
+        provider.load();
+        org.junit.jupiter.api.Assertions.assertNull(provider.currentCookie());
+
+        String replacement = "t_hash_t=replacement";
+        Files.writeString(file, replacement, StandardCharsets.UTF_8);
+        provider.load();
+        assertEquals(replacement, provider.currentCookie());
+    }
+    @Test
+    void scheduledMaintenanceDoesNotRetryAnAccessChallenge(@TempDir Path dir) throws IOException {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php"))
+                .andRespond(withStatus(HttpStatus.FORBIDDEN).header("cf-mitigated", "challenge"));
+
+        MirrorSessionProvider provider = providerHolding(rest, dir.resolve("session.txt"));
+        provider.keepSessionWarm();
+        provider.keepSessionWarm();
+        assertEquals(SESSION, provider.currentCookie());
+        server.verify();
+    }
+    @Test
+    void revocationAndReplacementRejectWritesFromTheOldGeneration(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("session.txt");
+        MirrorSessionProvider provider = providerHolding(new RestTemplate(), file);
+        long generation = provider.generation(SESSION);
+        provider.noteRejected(MirrorOtt.apply(SESSION, MirrorOtt.PRIME));
+        assertEquals(MirrorSessionProvider.State.REVOKED, provider.state());
+        org.junit.jupiter.api.Assertions.assertThrows(MirrorSessionProvider.Revoked.class,
+                () -> provider.ifCurrent(SESSION, generation, () -> org.junit.jupiter.api.Assertions.fail()));
+        Files.writeString(file, "t_hash_t=authorized-replacement", StandardCharsets.UTF_8);
+        provider.load();
+        assertEquals(MirrorSessionProvider.State.UNKNOWN, provider.state());
+        org.junit.jupiter.api.Assertions.assertThrows(MirrorSessionProvider.Revoked.class,
+                () -> provider.generation(SESSION));
     }
 }

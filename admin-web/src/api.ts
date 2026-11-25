@@ -435,3 +435,26 @@ export const fetchRow = (credentials: Credentials, table: string, id: string) =>
     `/db/tables/${encodeURIComponent(table)}/rows/${encodeURIComponent(id)}`,
     credentials,
   )
+
+type MirrorLane = { active: number; queued: number; rejected: number; expired: number }
+
+export type MirrorOperations = {
+  sessionState: string
+  observedAvailability: string
+  recovery: { state: string; incidentId: string | null; lastSuccessAt: string | null; outcome: string | null }
+  activePlaybackRequests: number
+  upstreamInFlight: number
+  cooldownSeconds: number
+  executors: Record<string, MirrorLane>
+  masterCache: Record<string, number>
+  homeCache: Record<string, number>
+  tokenRefresh: Record<string, number>
+  playbackRequests: number
+  playbackErrors: number
+  playbackErrorPercent: number
+  playbackErrorsByStatus: Record<string, number>
+  recoveryOutcomes: Record<string, number>
+}
+
+export const fetchMirrorOperations = (credentials: Credentials) =>
+  fetchJson<MirrorOperations>('/mirror/recovery/overview', credentials)

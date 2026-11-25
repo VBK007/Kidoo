@@ -11,8 +11,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Callable;
+import java.time.Duration;
+import com.example.kido.mymirror.MirrorRequestContext;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -29,7 +35,9 @@ import com.example.kido.media.dto.HomeDtos.MirrorTileDto;
 import com.example.kido.mymirror.ClientHeaderSupport;
 import com.example.kido.mymirror.MirrorHomeParser;
 import com.example.kido.mymirror.MirrorHomeParser.Title;
+import com.example.kido.mymirror.MirrorCloudflare;
 import com.example.kido.mymirror.MirrorOtt;
+import com.example.kido.mymirror.MirrorRequestLimit;
 import com.example.kido.mymirror.MirrorSessionProvider;
 import com.example.kido.mymirror.manager.TokenManager;
 import com.example.kido.mymirror.model.ClientHeaders;
@@ -152,41 +160,51 @@ public class MirrorHomeService {
     private final ObjectMapper mapper = JsonMapper.builder().build();
     // A few at a time: a burst of simultaneous calls per home screen would look like a flood
     // upstream, so every name and playlist lookup goes through this bounded pool.
-    private final ExecutorService pool = Executors.newFixedThreadPool(4, r -> {
-        Thread t = new Thread(r, "mirror-home");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ThreadPoolExecutor pool = new ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(32), Thread.ofPlatform().daemon().name("mirror-catalogue-", 0).factory());
 
+    private record HomeKey(String cookie, long generation) {}
     private record Cached(List<MirrorRailDto> rails, long until) {}
-    private final ConcurrentHashMap<String, Cached> byCookie = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<HomeKey, Cached> byCookie = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<HomeKey, CompletableFuture<List<MirrorRailDto>>> builds = new ConcurrentHashMap<>();
+
+    private <T> Future<T> submit(Callable<T> task) {
+        long deadline = MirrorRequestContext.deadlineWithin(Duration.ofSeconds(8));
+        try {
+            return pool.submit(() -> {
+                if (System.nanoTime() >= deadline) return null;
+                return MirrorRequestContext.withinDeadline(deadline, () -> MirrorRequestContext.optional(task));
+            });
+        } catch (RejectedExecutionException ex) {
+            io.micrometer.core.instrument.Metrics.counter("mirror.catalogue.rejected").increment();
+            return CompletableFuture.completedFuture(null);
+        }
+    }
 
     // The rails plus whether the build named every selected tile within the budget; a partial build is
     // cached only briefly (see PARTIAL_CACHE_MILLIS) so it is rebuilt once the pre-warm has caught up.
     private record Build(List<MirrorRailDto> rails, boolean complete) {}
 
-    // id -> title; see NAME_CACHE_MAX. Shared across cookies/OTTs since a title is a property of the id.
-    private final ConcurrentHashMap<String, String> nameCache = new ConcurrentHashMap<>();
-    // id -> raw post.php `genre` string (Netflix's own taxonomy, e.g. "Crime TV Shows, Thrillers").
-    // Populated for free alongside nameCache every time a tile's post.php detail is read (see nameOf
-    // and composeNetflixFeed), so the genre rails richen across rebuilds without any extra upstream
-    // call. Immutable per id like a name, so never invalidated; bounded by the same NAME_CACHE_MAX.
-    private final ConcurrentHashMap<String, String> genreCache = new ConcurrentHashMap<>();
-    // One background name pre-warm at a time, so a slow feed cannot stack walkers on the shared pool.
-    private final AtomicBoolean prewarming = new AtomicBoolean(false);
-    // Ids discovered by the one-time franchise-search seed (SEED_QUERIES) — the anime and cartoon titles
-    // the trending/suggest graph never reaches. Process-global like genreCache: once a title is here its
-    // genre is (or soon will be) cached, and every compose folds these into the genre pool. seedsSearched
-    // gates only the search phase so the costly discovery runs once; genre resolution then fills over a
-    // load or two the same way the suggest warm-up does.
-    private final Set<String> seedPool = ConcurrentHashMap.newKeySet();
-    private final AtomicBoolean seedsSearched = new AtomicBoolean(false);
-    // The Hotstar catalogue entry point: ids discovered by the one-time HS_SEED_QUERIES searches, in
-    // discovery order (so the lead ids seed the "Popular on Hotstar" rail). Insertion-ordered and
-    // synchronized because, unlike seedPool's genre-only use, the order is read back for the Popular
-    // rail; hsSeedsSearched gates the one-time search so discovery runs once and then persists.
-    private final Set<String> hsSeedPool = Collections.synchronizedSet(new LinkedHashSet<>());
-    private final AtomicBoolean hsSeedsSearched = new AtomicBoolean(false);
+    private static final class CatalogueData {
+        private final ConcurrentHashMap<String, String> nameCache = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, String> genreCache = new ConcurrentHashMap<>();
+        private final Set<String> seedPool = ConcurrentHashMap.newKeySet();
+        private final AtomicBoolean seedsSearched = new AtomicBoolean(false);
+        private final Set<String> hsSeedPool = Collections.synchronizedSet(new LinkedHashSet<>());
+        private final AtomicBoolean hsSeedsSearched = new AtomicBoolean(false);
+    }
+
+    private final LinkedHashMap<HomeKey, CatalogueData> catalogues = new LinkedHashMap<>(16, .75f, true);
+
+    private synchronized CatalogueData catalogueData(HomeKey key) {
+        CatalogueData data = catalogues.get(key);
+        if (data == null) {
+            if (catalogues.size() >= 32) catalogues.pollFirstEntry();
+            data = new CatalogueData();
+            catalogues.put(key, data);
+        }
+        return data;
+    }
 
     // Netflix's post.php `genre` taxonomy folded into a handful of display rails. The order is
     // ASSIGNMENT PRIORITY, not display order: a title joins the FIRST bucket whose genre string
@@ -236,9 +254,9 @@ public class MirrorHomeService {
 
     // Cache a title's genre from its post.php detail, mirroring nameCache's bound. putIfAbsent so a
     // concurrent reader never clobbers an entry, and the size guard keeps it from growing without limit.
-    private void cacheGenre(String id, JsonNode detail) {
+    private void cacheGenre(CatalogueData data, String id, JsonNode detail) {
         String genre = detail.path("genre").asString("").trim();
-        if (!genre.isEmpty() && genreCache.size() < NAME_CACHE_MAX) genreCache.putIfAbsent(id, genre);
+        if (!genre.isEmpty() && data.genreCache.size() < NAME_CACHE_MAX) data.genreCache.putIfAbsent(id, genre);
     }
 
     public MirrorHomeService(BrowseRepository browseRepository, PlaybackService playbackService,
@@ -261,43 +279,76 @@ public class MirrorHomeService {
      * nothing to show. The catalogue is folded into the cookie, so the cache below keys each apart.
      */
     public List<MirrorRailDto> rail(String cookie, String ott) {
-        // Model B: the caller's own cookie wins when it sent one; otherwise fall back to the
-        // backend's one global session, exactly as the gated routes do through the cookie resolver.
-        // ensureSession() returns the held session or null (and, only when spawning is enabled, kicks
-        // off an acquisition) — it never blocks and never fakes a session, so a missing one just
-        // leaves the rails off the home screen.
-        String effective = (cookie != null && !cookie.isBlank()) ? cookie : sessionProvider.ensureSession();
-        if (effective == null || effective.isBlank()) return List.of();
-        effective = MirrorOtt.apply(effective, ott);
-        long now = System.currentTimeMillis();
-        Cached cached = byCookie.get(effective);
-        if (cached != null && now < cached.until()) return cached.rails();
+        return railWithStatus(cookie, ott).rails();
+    }
+
+    public record RailResult(List<MirrorRailDto> rails, String state) {}
+
+    public RailResult railWithStatus(String cookie, String ott) {
+        String effective = MirrorOtt.apply((cookie != null && !cookie.isBlank())
+                ? cookie : sessionProvider.currentCookie(), ott);
+        if (effective == null || effective.isBlank()) {
+            return new RailResult(List.of(), sessionProvider.state() == MirrorSessionProvider.State.MISSING
+                    ? "missing" : "unavailable");
+        }
         try {
-            Build built = build(effective);
-            if (built.rails().isEmpty()) return List.of();
-            // A full grid holds for the whole window; a partial one (budget spent before every tile
-            // was named) holds only briefly, so the next poll rebuilds once the pre-warm has caught up.
-            long ttl = built.complete() ? CACHE_MILLIS : PARTIAL_CACHE_MILLIS;
-            byCookie.values().removeIf(c -> c.until() <= now);
-            byCookie.put(effective, new Cached(built.rails(), now + ttl));
-            return built.rails();
-        } catch (ApiException e) {
-            // A cleared ad-gate is the one thing no server fetch can supply: surface it apart from
-            // a real fault so an operator (or a later client signal) can tell "send the user through
-            // the gate" from "the mirror is down", rather than seeing one undifferentiated warning.
-            if (e.getStatus() == HttpStatus.PRECONDITION_FAILED) {
-                log.info("Mirror rails omitted: the ad-gate is not cleared for this session");
-            } else {
-                log.warn("Mirror rails left off the home screen: {}", e.getMessage());
-            }
-            return List.of();
-        } catch (RuntimeException e) {
-            log.warn("Mirror rails left off the home screen: {}", e.getMessage());
-            return List.of();
+            List<MirrorRailDto> rails = loadRail(effective);
+            return new RailResult(rails, rails.isEmpty() ? "empty" : "available");
+        } catch (RuntimeException ex) {
+            log.debug("Mirror catalogue unavailable: {}", ex.getClass().getSimpleName());
+            return new RailResult(List.of(), "unavailable");
         }
     }
 
-    private Build build(String cookie) {
+    private List<MirrorRailDto> loadRail(String effective) {
+        HomeKey key = new HomeKey(effective, sessionProvider.generation(effective));
+        long now = System.currentTimeMillis();
+        Cached cached = byCookie.get(key);
+        if (cached != null && now < cached.until()) {
+            io.micrometer.core.instrument.Metrics.counter("mirror.home.cache", "outcome", "hit").increment();
+            return cached.rails();
+        }
+        io.micrometer.core.instrument.Metrics.counter("mirror.home.cache", "outcome", "miss").increment();
+        var owned = new CompletableFuture<List<MirrorRailDto>>();
+        var running = builds.putIfAbsent(key, owned);
+        if (running != null) {
+            try {
+                long remaining = MirrorRequestContext.deadlineWithin(Duration.ofSeconds(8)) - System.nanoTime();
+                var rails = running.get(Math.max(0, remaining), TimeUnit.NANOSECONDS);
+                sessionProvider.ifCurrent(effective, key.generation(), () -> {});
+                return rails;
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new MirrorRequestLimit.Busy();
+            } catch (ExecutionException | TimeoutException ex) {
+                throw new MirrorRequestLimit.Busy();
+            }
+        }
+        try {
+            cached = byCookie.get(key);
+            if (cached != null && now < cached.until()) {
+                owned.complete(cached.rails());
+                return cached.rails();
+            }
+            Build built = build(effective, catalogueData(key));
+            long ttl = built.complete() ? CACHE_MILLIS : PARTIAL_CACHE_MILLIS;
+            sessionProvider.ifCurrent(effective, key.generation(), () -> {
+                byCookie.values().removeIf(c -> c.until() <= now);
+                if (!built.rails().isEmpty() && byCookie.size() < 1024) {
+                    byCookie.put(key, new Cached(built.rails(), now + ttl));
+                }
+                owned.complete(built.rails());
+            });
+            return built.rails();
+        } catch (RuntimeException | Error ex) {
+            owned.completeExceptionally(ex);
+            throw ex;
+        } finally {
+            builds.remove(key, owned);
+        }
+    }
+
+    private Build build(String cookie, CatalogueData data) {
         // The t token for the tile-name lookups below, read straight from the session cookie via
         // playbackT — exactly as BrowseService does for detail/search/episodes. The home feed and
         // the post.php name lookups are catalog metadata, authorized by the session cookie, not by
@@ -309,7 +360,7 @@ public class MirrorHomeService {
         // accepts empty anyway (see TokenManager.playbackT).
         String t = tokenManager.playbackT(cookie);
 
-        List<Title> parsed = feedTitles(cookie, t);
+        List<Title> parsed = feedTitles(data, cookie, t);
 
         // Group the feed into its categories in first-seen order. Prime's homepage.php lays the feed
         // out category-by-category, so selecting tiles in feed order (as the old whole-grid cap did)
@@ -350,14 +401,13 @@ public class MirrorHomeService {
         // resolved to no name is simply dropped and not retried.
         List<Future<String>> names = new ArrayList<>();
         for (Title title : selected) {
-            names.add(pool.submit(() -> ClientHeaderSupport.callAs(client,
-                    () -> title.title() != null ? title.title() : nameOf(title.id(), t, cookie))));
+            names.add(submit(() -> ClientHeaderSupport.callAs(client,
+                    () -> title.title() != null ? title.title() : nameOf(data, title.id(), t, cookie))));
         }
         List<MirrorTileDto> tiles = new ArrayList<>();
         // The feed category of each surviving tile, kept aligned with tiles (phase 2 only replaces
         // entries in place), so grouping below reads each tile's category by index.
         List<String> categories = new ArrayList<>();
-        List<Title> deferred = new ArrayList<>();
         boolean complete = true;
         for (int i = 0; i < selected.size(); i++) {
             Title title = selected.get(i);
@@ -383,7 +433,6 @@ public class MirrorHomeService {
                 // never needs the name — and the real name fills in on the next poll,
                 // once the background pre-warm below has cached it. Still queued for
                 // that pre-warm and the build reported partial so the poll happens.
-                deferred.add(title);
                 tiles.add(new MirrorTileDto(title.id(), null, title.image(), null));
                 categories.add(title.category());
                 complete = false;
@@ -404,11 +453,11 @@ public class MirrorHomeService {
             List<Future<JsonNode>> playlists = new ArrayList<>();
             for (int i = 0; i < warm; i++) {
                 MirrorTileDto tile = tiles.get(i);
-                playlists.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                playlists.add(submit(() -> ClientHeaderSupport.callAs(client, () -> {
                     try {
                         return mapper.readTree(playbackService.playlist(tile.id(), tile.title(), cookie));
                     } catch (RuntimeException e) {
-                        log.debug("No playlist for mirror title {}: {}", tile.id(), e.getMessage());
+                        log.debug("No playlist for mirror title {}: {}", tile.id(), e.getClass().getSimpleName());
                         return null;
                     }
                 })));
@@ -422,9 +471,7 @@ public class MirrorHomeService {
             }
         }
 
-        // The budget could not name every tile this build: resolve the rest into the name cache in the
-        // background so the next rebuild shows a full grid without re-paying post.php on the request path.
-        prewarmNames(deferred, t, cookie, client);
+
 
         return new Build(group(tiles, categories), complete);
     }
@@ -464,49 +511,25 @@ public class MirrorHomeService {
         return slug.isEmpty() ? "mirror" : slug;
     }
 
-    private String nameOf(String id, String t, String cookie) {
-        String cached = nameCache.get(id);
+    private String nameOf(CatalogueData data, String id, String t, String cookie) {
+        String cached = data.nameCache.get(id);
         if (cached != null) return cached;
         try {
             JsonNode detail = mapper.readTree(
                     browseRepository.getDetail(dispatcherService.resolveActiveBaseUrl(), id, t, cookie));
             // The same detail carries the genre; cache it now so the genre rails fill from every name
             // lookup the build and its background pre-warm already make — no extra upstream call.
-            cacheGenre(id, detail);
+            cacheGenre(data, id, detail);
             String name = detail.path("title").asString("").trim();
             if (name.isEmpty()) return null;
             // A title is immutable, so the cache never needs invalidating; bound it so a long-running
             // process browsing many catalogues cannot grow it without limit.
-            if (nameCache.size() < NAME_CACHE_MAX) nameCache.putIfAbsent(id, name);
+            if (data.nameCache.size() < NAME_CACHE_MAX) data.nameCache.putIfAbsent(id, name);
             return name;
         } catch (RuntimeException e) {
-            log.debug("No name for mirror title {}: {}", id, e.getMessage());
+            log.debug("No name for mirror title {}: {}", id, e.getClass().getSimpleName());
             return null;
         }
-    }
-
-    /**
-     * Resolve the names the request-path budget could not reach into the shared name cache, on one
-     * background thread of the shared pool. The build that calls this has already shown what it could
-     * name; this fills the cache so the next rebuild returns a full grid without re-paying post.php on
-     * the request path. Deliberately sequential and one-walker-at-a-time (the {@link #prewarming}
-     * guard), so it adds a single trickle of upstream calls rather than another burst on top of the
-     * home load's own. A name that resolves to nothing stays uncached and is simply not shown.
-     */
-    private void prewarmNames(List<Title> deferred, String t, String cookie, ClientHeaders client) {
-        if (deferred.isEmpty() || !prewarming.compareAndSet(false, true)) return;
-        List<Title> todo = new ArrayList<>(deferred);
-        pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
-            try {
-                for (Title title : todo) {
-                    if (title.title() != null || nameCache.containsKey(title.id())) continue;
-                    nameOf(title.id(), t, cookie); // populates nameCache on success
-                }
-            } finally {
-                prewarming.set(false);
-            }
-            return null;
-        }));
     }
 
     /**
@@ -516,12 +539,13 @@ public class MirrorHomeService {
      * cache and re-resolving once recovers that case. A 4xx (a 412 from the gate, say) is not a
      * rotation and is re-thrown for {@link #rail} to classify.
      */
-    private List<Title> feedTitles(String cookie, String t) {
+    private List<Title> feedTitles(CatalogueData data, String cookie, String t) {
         try {
-            return fetchFeed(dispatcherService.resolveActiveBaseUrl(), cookie, t);
+            return fetchFeed(data, dispatcherService.resolveActiveBaseUrl(), cookie, t);
         } catch (ApiException e) {
-            if (e.getStatus().is4xxClientError()) throw e;
-            return retryOnFreshBase(cookie, t, e);
+            if (e.getStatus().is4xxClientError() || e instanceof MirrorRequestLimit.Busy
+                    || e instanceof MirrorRequestLimit.DeadlineExceeded) throw e;
+            return retryOnFreshBase(data, cookie, t, e);
         } catch (RestClientResponseException e) {
             // The host answered — just not with content: e.g. nf's /mobile/home?app=1 is 404 on the
             // current mirror host while Prime's /pv/homepage.php serves fine from the same origin. A
@@ -530,21 +554,21 @@ public class MirrorHomeService {
             // upstream call plus a full dispatcher re-walk on every home poll (a retry storm that
             // degrades the working catalogues). Surface it for rail() to log once and leave the rail
             // off; only a connection error or 5xx (below) is treated as a rotation worth re-resolving.
-            if (e.getStatusCode().is4xxClientError()) throw e;
-            return retryOnFreshBase(cookie, t, e);
+            if (e.getStatusCode().is4xxClientError() || MirrorCloudflare.isChallenge(e)) throw e;
+            return retryOnFreshBase(data, cookie, t, e);
         } catch (RuntimeException e) {
-            return retryOnFreshBase(cookie, t, e);
+            return retryOnFreshBase(data, cookie, t, e);
         }
     }
 
-    private List<Title> retryOnFreshBase(String cookie, String t, RuntimeException first) {
+    private List<Title> retryOnFreshBase(CatalogueData data, String cookie, String t, RuntimeException first) {
         log.info("Mirror feed failed on the cached backend ({}); retrying on a freshly resolved host",
-                first.getMessage());
+                first.getClass().getSimpleName());
         dispatcherService.invalidate();
-        return fetchFeed(dispatcherService.resolveActiveBaseUrl(), cookie, t);
+        return fetchFeed(data, dispatcherService.resolveActiveBaseUrl(), cookie, t);
     }
 
-    private List<Title> fetchFeed(String baseUrl, String cookie, String t) {
+    private List<Title> fetchFeed(CatalogueData data, String baseUrl, String cookie, String t) {
         String ott = MirrorOtt.of(cookie);
         // Netflix's categorised home (/mobile/home?app=1) was retired upstream — it answers a bare
         // router 404 now — so the Netflix (and default, catalogue-less) home is composed from the two
@@ -553,10 +577,10 @@ public class MirrorHomeService {
         // home is likewise COMPOSED — from curated hs/search.php seeds + the hs/post.php suggest graph.
         // Only Prime keeps a real homepage (/pv/homepage.php, parsed from homeFeed below).
         if (isNetflixCatalogue(ott)) {
-            return composeNetflixFeed(baseUrl, cookie, t);
+            return composeNetflixFeed(data, baseUrl, cookie, t);
         }
         if (MirrorOtt.HOTSTAR.equals(ott)) {
-            return composeHotstarFeed(baseUrl, cookie, t);
+            return composeHotstarFeed(data, baseUrl, cookie, t);
         }
         String body = browseRepository.homeFeed(baseUrl, cookie);
         return MirrorHomeParser.parseHome(body, ott);
@@ -578,7 +602,7 @@ public class MirrorHomeService {
      * {@code suggest} graph (the existing <b>"More Like &lt;title&gt;"</b> rails), and its name.
      *
      * <p>The genre rails bucket every pooled title whose genre we know — the trending titles plus any
-     * suggested ids the {@link #genreCache} already holds from earlier loads — into the Netflix
+     * suggested ids the the scoped cache already holds from earlier loads — into the Netflix
      * categories in {@link #GENRE_BUCKETS}, one rail per title's single best bucket, and show a rail
      * only once it clears {@link #MIN_GENRE_TILES}. So on a cold cache the rails draw from the ~20
      * trending titles alone and richen on every subsequent load as the name lookups fill the genre
@@ -590,7 +614,7 @@ public class MirrorHomeService {
      * whose names aren't cached yet carry ids only, for the build's own phase-1 lookup. An empty
      * trending list yields no rails rather than throwing.
      */
-    private List<Title> composeNetflixFeed(String baseUrl, String cookie, String t) {
+    private List<Title> composeNetflixFeed(CatalogueData data, String baseUrl, String cookie, String t) {
         JsonNode trending = mapper.readTree(browseRepository.trending(baseUrl, cookie));
 
         // The trending titles in order, each with its inline name (search.php is the only feed that
@@ -613,11 +637,11 @@ public class MirrorHomeService {
         ClientHeaders client = ClientHeaderSupport.current();
         List<Future<JsonNode>> futures = new ArrayList<>();
         for (Title tr : trend) {
-            futures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+            futures.add(submit(() -> ClientHeaderSupport.callAs(client, () -> {
                 try {
                     return mapper.readTree(browseRepository.getDetail(baseUrl, tr.id(), t, cookie));
                 } catch (RuntimeException e) {
-                    log.debug("No detail for mirror title {}: {}", tr.id(), e.getMessage());
+                    log.debug("No detail for mirror title {}: {}", tr.id(), e.getClass().getSimpleName());
                     return null;
                 }
             })));
@@ -627,7 +651,7 @@ public class MirrorHomeService {
         for (int i = 0; i < trend.size(); i++) {
             JsonNode detail = await(futures.get(i), deadline, trend.get(i).id());
             details.add(detail);
-            if (detail != null) cacheGenre(trend.get(i).id(), detail);
+            if (detail != null) cacheGenre(data, trend.get(i).id(), detail);
         }
 
         // Widen the genre pool before the rails are built. The pool the genre rails bucket from is the
@@ -646,7 +670,7 @@ public class MirrorHomeService {
             for (JsonNode s : detail.path("suggest")) {
                 if (toWarm.size() >= GENRE_POOL_FETCH_MAX) break;
                 String id = s.path("id").asString("").trim();
-                if (!id.isEmpty() && !trendIds.contains(id) && !genreCache.containsKey(id)) {
+                if (!id.isEmpty() && !trendIds.contains(id) && !data.genreCache.containsKey(id)) {
                     toWarm.add(id);
                 }
             }
@@ -655,11 +679,11 @@ public class MirrorHomeService {
             List<String> warmIds = new ArrayList<>(toWarm);
             List<Future<JsonNode>> genreFutures = new ArrayList<>();
             for (String id : warmIds) {
-                genreFutures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                genreFutures.add(submit(() -> ClientHeaderSupport.callAs(client, () -> {
                     try {
                         return mapper.readTree(browseRepository.getDetail(baseUrl, id, t, cookie));
                     } catch (RuntimeException e) {
-                        log.debug("No detail for mirror suggestion {}: {}", id, e.getMessage());
+                        log.debug("No detail for mirror suggestion {}: {}", id, e.getClass().getSimpleName());
                         return null;
                     }
                 })));
@@ -668,10 +692,10 @@ public class MirrorHomeService {
             for (int i = 0; i < warmIds.size(); i++) {
                 JsonNode detail = await(genreFutures.get(i), genreDeadline, warmIds.get(i));
                 if (detail == null) continue;
-                cacheGenre(warmIds.get(i), detail);
+                cacheGenre(data, warmIds.get(i), detail);
                 String name = detail.path("title").asString("").trim();
-                if (!name.isEmpty() && nameCache.size() < NAME_CACHE_MAX) {
-                    nameCache.putIfAbsent(warmIds.get(i), name);
+                if (!name.isEmpty() && data.nameCache.size() < NAME_CACHE_MAX) {
+                    data.nameCache.putIfAbsent(warmIds.get(i), name);
                 }
             }
         }
@@ -681,15 +705,15 @@ public class MirrorHomeService {
         // their names in one pass. Then, exactly like the suggest warm-up above, resolve the genre of a
         // bounded slice of still-uncached seeded ids this load — the rest fill on the next one. Once an
         // id's genre is cached it is admitted to the pool below and buckets into Anime/Cartoons normally.
-        if (seedsSearched.compareAndSet(false, true)) {
+        if (data.seedsSearched.compareAndSet(false, true)) {
             try {
                 List<Future<JsonNode>> searchFutures = new ArrayList<>();
                 for (String q : SEED_QUERIES) {
-                    searchFutures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                    searchFutures.add(submit(() -> ClientHeaderSupport.callAs(client, () -> {
                         try {
                             return mapper.readTree(browseRepository.search(baseUrl, q, t, cookie));
                         } catch (RuntimeException e) {
-                            log.debug("Mirror seed search '{}' failed: {}", q, e.getMessage());
+                            log.debug("Mirror seed search '{}' failed: {}", q, e.getClass().getSimpleName());
                             return null;
                         }
                     })));
@@ -700,32 +724,32 @@ public class MirrorHomeService {
                     if (res == null) continue;
                     int taken = 0;
                     for (JsonNode item : res.path("searchResult")) {
-                        if (seedPool.size() >= SEED_POOL_MAX || taken >= SEED_HITS_PER_QUERY) break;
+                        if (data.seedPool.size() >= SEED_POOL_MAX || taken >= SEED_HITS_PER_QUERY) break;
                         String id = item.path("id").asString("").trim();
                         if (id.isEmpty()) continue;
                         String name = item.path("t").asString("").trim();
-                        if (!name.isEmpty() && nameCache.size() < NAME_CACHE_MAX) nameCache.putIfAbsent(id, name);
-                        if (seedPool.add(id)) taken++;
+                        if (!name.isEmpty() && data.nameCache.size() < NAME_CACHE_MAX) data.nameCache.putIfAbsent(id, name);
+                        if (data.seedPool.add(id)) taken++;
                     }
                 }
             } catch (RuntimeException e) {
-                log.debug("Mirror seed discovery failed: {}", e.getMessage());
-                seedsSearched.set(false); // let a later load retry the discovery
+                log.debug("Mirror seed discovery failed: {}", e.getClass().getSimpleName());
+                data.seedsSearched.set(false); // let a later load retry the discovery
             }
         }
         List<String> seedToWarm = new ArrayList<>();
-        for (String id : seedPool) {
+        for (String id : data.seedPool) {
             if (seedToWarm.size() >= SEED_POOL_MAX) break;
-            if (!genreCache.containsKey(id)) seedToWarm.add(id);
+            if (!data.genreCache.containsKey(id)) seedToWarm.add(id);
         }
         if (!seedToWarm.isEmpty()) {
             List<Future<JsonNode>> seedGenreFutures = new ArrayList<>();
             for (String id : seedToWarm) {
-                seedGenreFutures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                seedGenreFutures.add(submit(() -> ClientHeaderSupport.callAs(client, () -> {
                     try {
                         return mapper.readTree(browseRepository.getDetail(baseUrl, id, t, cookie));
                     } catch (RuntimeException e) {
-                        log.debug("No detail for mirror seed {}: {}", id, e.getMessage());
+                        log.debug("No detail for mirror seed {}: {}", id, e.getClass().getSimpleName());
                         return null;
                     }
                 })));
@@ -738,10 +762,10 @@ public class MirrorHomeService {
             for (int i = 0; i < seedToWarm.size(); i++) {
                 JsonNode detail = await(seedGenreFutures.get(i), seedDeadline, seedToWarm.get(i));
                 if (detail == null) continue;
-                cacheGenre(seedToWarm.get(i), detail);
+                cacheGenre(data, seedToWarm.get(i), detail);
                 String name = detail.path("title").asString("").trim();
-                if (!name.isEmpty() && nameCache.size() < NAME_CACHE_MAX) {
-                    nameCache.putIfAbsent(seedToWarm.get(i), name);
+                if (!name.isEmpty() && data.nameCache.size() < NAME_CACHE_MAX) {
+                    data.nameCache.putIfAbsent(seedToWarm.get(i), name);
                 }
             }
         }
@@ -765,20 +789,20 @@ public class MirrorHomeService {
             if (detail == null) continue;
             for (JsonNode s : detail.path("suggest")) {
                 String id = s.path("id").asString("").trim();
-                if (!id.isEmpty() && genreCache.containsKey(id)) pool.add(id);
+                if (!id.isEmpty() && data.genreCache.containsKey(id)) pool.add(id);
             }
         }
         // The seeded anime/cartoon catalogue, admitted once its genre is cached (names are already in
         // nameCache from the inline search hits, so the bucketing below renders them without a lookup).
-        for (String id : seedPool) {
-            if (genreCache.containsKey(id)) pool.add(id);
+        for (String id : data.seedPool) {
+            if (data.genreCache.containsKey(id)) pool.add(id);
         }
         LinkedHashMap<String, List<Title>> byBucket = new LinkedHashMap<>();
         Set<String> inGenre = new HashSet<>();
         for (String id : pool) {
-            String bucket = bestBucket(genreCache.get(id));
+            String bucket = bestBucket(data.genreCache.get(id));
             if (bucket == null || !inGenre.add(id)) continue;
-            String name = trendName.getOrDefault(id, nameCache.get(id)); // null -> build phase-1 names it
+            String name = trendName.getOrDefault(id, data.nameCache.get(id)); // null -> build phase-1 names it
             byBucket.computeIfAbsent(bucket, k -> new ArrayList<>())
                     .add(new Title(id, name, MirrorHomeParser.poster("nf", id), bucket));
         }
@@ -801,7 +825,7 @@ public class MirrorHomeService {
             for (JsonNode s : detail.path("suggest")) {
                 String id = s.path("id").asString("").trim();
                 if (id.isEmpty() || !placed.add(id)) continue;
-                rail.add(new Title(id, nameCache.get(id), MirrorHomeParser.poster("nf", id), category));
+                rail.add(new Title(id, data.nameCache.get(id), MirrorHomeParser.poster("nf", id), category));
             }
             if (!rail.isEmpty()) {
                 out.addAll(rail);
@@ -816,7 +840,7 @@ public class MirrorHomeService {
      * feed to seed from — upstream exposes no Hotstar home or trending route (every {@code /mobile/hs}
      * home candidate 404s, verified live 2026-11-23), so the catalogue is entered through a curated set
      * of {@code hs/search.php} title searches ({@link #HS_SEED_QUERIES}), run once per process and
-     * persisted in {@link #hsSeedPool}. Each search names its hits inline; each seed title's
+     * persisted in the catalogue metadata cache. Each search names its hits inline; each seed title's
      * {@code hs/post.php} detail then yields its {@code genre} (bucketed into the shared
      * {@link #GENRE_BUCKETS} rails) and its {@code suggest} graph (the "More Like &lt;title&gt;" rails),
      * exactly as {@link #composeNetflixFeed} does.
@@ -827,21 +851,21 @@ public class MirrorHomeService {
      * details alone and richen over loads as the suggest/leftover-seed genres fill the cache — never
      * padded. An empty seed pool (every search missed) yields no rails rather than throwing.
      */
-    private List<Title> composeHotstarFeed(String baseUrl, String cookie, String t) {
+    private List<Title> composeHotstarFeed(CatalogueData data, String baseUrl, String cookie, String t) {
         ClientHeaders client = ClientHeaderSupport.current();
 
         // One-time seed discovery: run the curated Hotstar searches in parallel, naming hits inline.
         // This is the Hotstar catalogue's only entry point, so unlike the Netflix anime/cartoon seed it
         // is not optional — a failure clears the gate so a later load retries it.
-        if (hsSeedsSearched.compareAndSet(false, true)) {
+        if (data.hsSeedsSearched.compareAndSet(false, true)) {
             try {
                 List<Future<JsonNode>> searchFutures = new ArrayList<>();
                 for (String q : HS_SEED_QUERIES) {
-                    searchFutures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                    searchFutures.add(submit(() -> ClientHeaderSupport.callAs(client, () -> {
                         try {
                             return mapper.readTree(browseRepository.search(baseUrl, q, t, cookie));
                         } catch (RuntimeException e) {
-                            log.debug("Hotstar seed search '{}' failed: {}", q, e.getMessage());
+                            log.debug("Hotstar seed search '{}' failed: {}", q, e.getClass().getSimpleName());
                             return null;
                         }
                     })));
@@ -854,27 +878,27 @@ public class MirrorHomeService {
                     if (res == null) continue;
                     int taken = 0;
                     for (JsonNode item : res.path("searchResult")) {
-                        if (hsSeedPool.size() >= SEED_POOL_MAX || taken >= SEED_HITS_PER_QUERY) break;
+                        if (data.hsSeedPool.size() >= SEED_POOL_MAX || taken >= SEED_HITS_PER_QUERY) break;
                         String id = item.path("id").asString("").trim();
                         if (id.isEmpty()) continue;
                         String name = item.path("t").asString("").trim();
-                        if (!name.isEmpty() && nameCache.size() < NAME_CACHE_MAX) nameCache.putIfAbsent(id, name);
-                        if (hsSeedPool.add(id)) taken++;
+                        if (!name.isEmpty() && data.nameCache.size() < NAME_CACHE_MAX) data.nameCache.putIfAbsent(id, name);
+                        if (data.hsSeedPool.add(id)) taken++;
                     }
                 }
             } catch (RuntimeException e) {
-                log.debug("Hotstar seed discovery failed: {}", e.getMessage());
-                hsSeedsSearched.set(false); // let a later load retry the discovery
+                log.debug("Hotstar seed discovery failed: {}", e.getClass().getSimpleName());
+                data.hsSeedsSearched.set(false); // let a later load retry the discovery
             }
         }
 
         // Snapshot the seed pool in discovery order, each with its inline name.
         List<Title> seeds = new ArrayList<>();
         LinkedHashSet<String> seedIds = new LinkedHashSet<>();
-        synchronized (hsSeedPool) {
-            for (String id : hsSeedPool) {
+        synchronized (data.hsSeedPool) {
+            for (String id : data.hsSeedPool) {
                 if (!seedIds.add(id)) continue;
-                seeds.add(new Title(id, nameCache.get(id), MirrorHomeParser.poster("dp", id), null));
+                seeds.add(new Title(id, data.nameCache.get(id), MirrorHomeParser.poster("dp", id), null));
             }
         }
         if (seeds.isEmpty()) return List.of();
@@ -884,11 +908,11 @@ public class MirrorHomeService {
         List<Title> head = new ArrayList<>(seeds.subList(0, primary));
         List<Future<JsonNode>> futures = new ArrayList<>();
         for (Title s : head) {
-            futures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+            futures.add(submit(() -> ClientHeaderSupport.callAs(client, () -> {
                 try {
                     return mapper.readTree(browseRepository.getDetail(baseUrl, s.id(), t, cookie));
                 } catch (RuntimeException e) {
-                    log.debug("No detail for Hotstar title {}: {}", s.id(), e.getMessage());
+                    log.debug("No detail for Hotstar title {}: {}", s.id(), e.getClass().getSimpleName());
                     return null;
                 }
             })));
@@ -898,7 +922,7 @@ public class MirrorHomeService {
         for (int i = 0; i < head.size(); i++) {
             JsonNode detail = await(futures.get(i), deadline, head.get(i).id());
             details.add(detail);
-            if (detail != null) cacheGenre(head.get(i).id(), detail);
+            if (detail != null) cacheGenre(data, head.get(i).id(), detail);
         }
 
         // Widen the genre pool: warm the genre (and name) of uncached suggested ids, plus any seed ids
@@ -911,22 +935,22 @@ public class MirrorHomeService {
             for (JsonNode s : detail.path("suggest")) {
                 if (toWarm.size() >= GENRE_POOL_FETCH_MAX) break;
                 String id = s.path("id").asString("").trim();
-                if (!id.isEmpty() && !seedIds.contains(id) && !genreCache.containsKey(id)) toWarm.add(id);
+                if (!id.isEmpty() && !seedIds.contains(id) && !data.genreCache.containsKey(id)) toWarm.add(id);
             }
         }
         for (int i = primary; i < seeds.size() && toWarm.size() < GENRE_POOL_FETCH_MAX; i++) {
             String id = seeds.get(i).id();
-            if (!genreCache.containsKey(id)) toWarm.add(id);
+            if (!data.genreCache.containsKey(id)) toWarm.add(id);
         }
         if (!toWarm.isEmpty()) {
             List<String> warmIds = new ArrayList<>(toWarm);
             List<Future<JsonNode>> genreFutures = new ArrayList<>();
             for (String id : warmIds) {
-                genreFutures.add(pool.submit(() -> ClientHeaderSupport.callAs(client, () -> {
+                genreFutures.add(submit(() -> ClientHeaderSupport.callAs(client, () -> {
                     try {
                         return mapper.readTree(browseRepository.getDetail(baseUrl, id, t, cookie));
                     } catch (RuntimeException e) {
-                        log.debug("No detail for Hotstar suggestion {}: {}", id, e.getMessage());
+                        log.debug("No detail for Hotstar suggestion {}: {}", id, e.getClass().getSimpleName());
                         return null;
                     }
                 })));
@@ -935,10 +959,10 @@ public class MirrorHomeService {
             for (int i = 0; i < warmIds.size(); i++) {
                 JsonNode detail = await(genreFutures.get(i), genreDeadline, warmIds.get(i));
                 if (detail == null) continue;
-                cacheGenre(warmIds.get(i), detail);
+                cacheGenre(data, warmIds.get(i), detail);
                 String name = detail.path("title").asString("").trim();
-                if (!name.isEmpty() && nameCache.size() < NAME_CACHE_MAX) {
-                    nameCache.putIfAbsent(warmIds.get(i), name);
+                if (!name.isEmpty() && data.nameCache.size() < NAME_CACHE_MAX) {
+                    data.nameCache.putIfAbsent(warmIds.get(i), name);
                 }
             }
         }
@@ -961,15 +985,15 @@ public class MirrorHomeService {
             if (detail == null) continue;
             for (JsonNode s : detail.path("suggest")) {
                 String id = s.path("id").asString("").trim();
-                if (!id.isEmpty() && genreCache.containsKey(id)) genrePool.add(id);
+                if (!id.isEmpty() && data.genreCache.containsKey(id)) genrePool.add(id);
             }
         }
         LinkedHashMap<String, List<Title>> byBucket = new LinkedHashMap<>();
         Set<String> inGenre = new HashSet<>();
         for (String id : genrePool) {
-            String bucket = bestBucket(genreCache.get(id));
+            String bucket = bestBucket(data.genreCache.get(id));
             if (bucket == null || !inGenre.add(id)) continue;
-            String name = nameCache.get(id); // null -> build phase-1 names it
+            String name = data.nameCache.get(id); // null -> build phase-1 names it
             byBucket.computeIfAbsent(bucket, k -> new ArrayList<>())
                     .add(new Title(id, name, MirrorHomeParser.poster("dp", id), bucket));
         }
@@ -992,7 +1016,7 @@ public class MirrorHomeService {
             for (JsonNode sg : detail.path("suggest")) {
                 String id = sg.path("id").asString("").trim();
                 if (id.isEmpty() || !placed.add(id)) continue;
-                rail.add(new Title(id, nameCache.get(id), MirrorHomeParser.poster("dp", id), category));
+                rail.add(new Title(id, data.nameCache.get(id), MirrorHomeParser.poster("dp", id), category));
             }
             if (!rail.isEmpty()) {
                 out.addAll(rail);
@@ -1011,7 +1035,7 @@ public class MirrorHomeService {
             return null;
         } catch (Exception e) {
             future.cancel(true);
-            log.debug("No playlist for mirror title {}: {}", id, e.getMessage());
+            log.debug("No playlist for mirror title {}: {}", id, e.getClass().getSimpleName());
             return null;
         }
     }

@@ -35,8 +35,8 @@ import org.springframework.web.client.RestTemplate;
 import com.example.kido.common.ApiException;
 import com.example.kido.mymirror.DispatcherProperties;
 import com.example.kido.mymirror.HlsRewriter;
-import com.example.kido.mymirror.MirrorAccessProperties;
 import com.example.kido.mymirror.MirrorStreamSigner;
+import com.example.kido.mymirror.MirrorRequestLimit;
 import com.example.kido.mymirror.MirrorSessionProperties;
 import com.example.kido.mymirror.MirrorSessionProvider;
 import com.example.kido.mymirror.UpstreamUrl;
@@ -59,7 +59,7 @@ class MirrorFlowTest {
     private static MirrorSessionProvider testSessionProvider() {
         // The keep-alive is @Scheduled, so it never fires in these plain unit tests; the ad-gate and
         // dispatcher it is handed only need to exist to satisfy the constructor.
-        return new MirrorSessionProvider(new MirrorSessionProperties(), new MirrorAccessProperties(),
+        return new MirrorSessionProvider(new MirrorSessionProperties(),
                 new AdGateRepository(new RestTemplate()), new FixedDispatcher());
     }
 
@@ -243,11 +243,11 @@ class MirrorFlowTest {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
         String cookie = "t_hash_t=SESS%3A%3Am"; // session token "SESS"
-        // No verify2.php: hlsMaster reads the session token from the cookie via playbackT and never
-        // runs the per-play ad-gate (see PlaybackService#hlsMaster). playlist.php is the first call.
+        // The lead-in uses the normal heartbeat token flow before requesting a signed source.
         // playlist.php is asked with the session token as tm= and a blank title; it answers signed
         // sources whose in= is the SEPARATE play_token. "Auto" is the multi-variant master; the
         // q=720p "default" entry is a single rendition and must not be the one chosen.
+        expectStartup(server, "SESS");
         server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
                 .andRespond(withSuccess("""
                         [{"sources":[
@@ -263,9 +263,9 @@ class MirrorFlowTest {
                         720/720.m3u8
                         """, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
 
-        PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest), new FixedDispatcher(),
+        PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest, rest), new FixedDispatcher(),
                 new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider()),
-                new MirrorStreamSigner());
+                new MirrorStreamSigner(), new MirrorRequestLimit(), testSessionProvider());
 
         String master = playback.hlsMaster("42", cookie);
 
@@ -300,6 +300,7 @@ class MirrorFlowTest {
         // rendition is the "STOP ABUSE — too many requests" penalty clip, marked in=unknown (no real
         // play_token). It is a valid m3u8 on an allowed CDN host, so without detection the player would
         // stream the notice as if it were the title.
+        expectStartup(server, "SESS");
         server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
                 .andRespond(withSuccess("""
                         [{"sources":[{"file":"/mobile/hls/42.m3u8?in=PENALTY","label":"Auto"}]}]""",
@@ -311,12 +312,12 @@ class MirrorFlowTest {
                         https://s0022.freecdn4.top/s21.freecdn4.top/files/220884/720p/720p.m3u8?in=unknown::ni::m
                         """, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
 
-        PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest), new FixedDispatcher(),
+        PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest, rest), new FixedDispatcher(),
                 new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider()),
-                new MirrorStreamSigner());
+                new MirrorStreamSigner(), new MirrorRequestLimit(), testSessionProvider());
 
         ApiException ex = assertThrows(ApiException.class, () -> playback.hlsMaster("42", cookie));
-        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatus());
+        assertEquals(HttpStatus.TOO_MANY_REQUESTS, ex.getStatus());
         // once() on both expectations: a retry would hit playlist.php a second time and fail the mock,
         // proving the penalty short-circuits the warm-up loop rather than amplifying the load that
         // tripped the cap.
@@ -325,10 +326,21 @@ class MirrorFlowTest {
 
     // ---- HLS: single-flight + short success cache (see PlaybackService#hlsMaster) ----
 
+    private static void expectStartup(MockRestServiceServer server, String token) {
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"c\":\"y\"}", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("<html><body></body></html>", MediaType.TEXT_HTML));
+        server.expect(once(), requestTo(BASE + "/mobile/p.php")).andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"r\":\"n\"}", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/post.php?id=42&t=" + token))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+    }
+
     private static PlaybackService newPlayback(RestTemplate rest) {
-        return new PlaybackService(new PlaybackRepository(rest, rest), new FixedDispatcher(),
+        return new PlaybackService(new PlaybackRepository(rest, rest, rest), new FixedDispatcher(),
                 new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), testSessionProvider()),
-                new MirrorStreamSigner());
+                new MirrorStreamSigner(), new MirrorRequestLimit(), testSessionProvider());
     }
 
     // A normal (non-penalty) play of id 42: the playlist.php body and the master it resolves to.
@@ -340,7 +352,7 @@ class MirrorFlowTest {
             720/720.m3u8
             """;
     // The rate-limited variant: playlist.php still signs a source, but the master it resolves to is the
-    // in=unknown "STOP ABUSE" penalty clip, which PlaybackService surfaces as a 503 (see penalty test).
+    // in=unknown "STOP ABUSE" penalty clip, which PlaybackService surfaces as a 429.
     private static final String PLAYLIST_42_PENALTY =
             "[{\"sources\":[{\"file\":\"/mobile/hls/42.m3u8?in=PENALTY\",\"label\":\"Auto\"}]}]";
     private static final String PENALTY_MASTER = """
@@ -354,6 +366,7 @@ class MirrorFlowTest {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
         String cookie = "t_hash_t=SESS%3A%3Am";
+        expectStartup(server, "SESS");
         server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
                 .andRespond(withSuccess(PLAYLIST_42, MediaType.APPLICATION_JSON));
         server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PLAYTOKEN")).andExpect(method(HttpMethod.GET))
@@ -361,7 +374,7 @@ class MirrorFlowTest {
 
         PlaybackService playback = newPlayback(rest);
         String first = playback.hlsMaster("42", cookie);
-        String second = playback.hlsMaster("42", cookie); // a re-open/manifest refresh within the 8s TTL
+        String second = playback.hlsMaster("42", cookie); // a re-open/manifest refresh within the cache TTL
 
         // once() on both upstream calls: a second resolution would hit playlist.php again and fail the
         // mock. The second call returns the very object the first cached, not a re-resolved copy.
@@ -381,6 +394,7 @@ class MirrorFlowTest {
         // the shared future, so the mock stays single-threaded exactly when coalescing works.
         CountDownLatch ownerInFlight = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
+        expectStartup(server, "SESS");
         server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
                 .andRespond(request -> {
                     ownerInFlight.countDown();
@@ -420,33 +434,202 @@ class MirrorFlowTest {
     }
 
     @Test
-    void aFailedResolutionIsNotCachedSoTheNextPlayReHitsUpstream() {
+    void aPenaltyStopsImmediateRetriesEvenForAnotherTitle() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
         String cookie = "t_hash_t=SESS%3A%3Am";
-
-        // First play: the shared session is rate-limited, so the master is the in=unknown penalty → 503.
-        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
+        expectStartup(server, "SESS");
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS"))
                 .andRespond(withSuccess(PLAYLIST_42_PENALTY, MediaType.APPLICATION_JSON));
-        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PENALTY")).andExpect(method(HttpMethod.GET))
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PENALTY"))
                 .andRespond(withSuccess(PENALTY_MASTER, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
-        // Second play, still inside the 8s success-cache window: because the failure was evicted rather
-        // than cached, this must resolve again upstream — now the cap has cooled and a real master lands.
-        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS")).andExpect(method(HttpMethod.GET))
+        PlaybackService playback = newPlayback(rest);
+
+        for (String id : List.of("42", "42", "43")) {
+            MirrorRequestLimit.Throttled ex = assertThrows(MirrorRequestLimit.Throttled.class,
+                    () -> playback.hlsMaster(id, cookie));
+            assertTrue(ex.retryAfterSeconds() > 0);
+        }
+        server.verify();
+    }
+
+    @Test
+    void anUnusableMasterDoesNotRemintThePlaybackToken() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        expectStartup(server, "SESS");
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS"))
                 .andRespond(withSuccess(PLAYLIST_42, MediaType.APPLICATION_JSON));
-        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PLAYTOKEN")).andExpect(method(HttpMethod.GET))
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PLAYTOKEN"))
+                .andRespond(withSuccess("""
+                        #EXTM3U
+                        #EXT-X-STREAM-INF:BANDWIDTH=800000
+                        https:///files/42/720p.m3u8
+                        """, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> newPlayback(rest).hlsMaster("42", "t_hash_t=SESS%3A%3Am"));
+        assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatus());
+        server.verify();
+    }
+
+    @Test
+    void upstreamRetryAfterBlocksRequestsOnBothClients() {
+        MirrorRequestLimit limit = new MirrorRequestLimit();
+        RestTemplate mirror = new RestTemplate();
+        RestTemplate cdn = new RestTemplate();
+        mirror.getInterceptors().add(limit);
+        cdn.getInterceptors().add(limit);
+        MockRestServiceServer mirrorServer = MockRestServiceServer.bindTo(mirror).build();
+        MockRestServiceServer cdnServer = MockRestServiceServer.bindTo(cdn).build();
+        mirrorServer.expect(once(), requestTo(BASE + "/limited"))
+                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", "120"));
+
+        MirrorRequestLimit.Throttled first = assertThrows(MirrorRequestLimit.Throttled.class,
+                () -> mirror.getForObject(BASE + "/limited", String.class));
+        assertEquals(120, first.retryAfterSeconds());
+        assertThrows(MirrorRequestLimit.Throttled.class,
+                () -> cdn.getForObject(BASE + "/variant", String.class));
+        mirrorServer.verify();
+        cdnServer.verify();
+    }
+
+    @Test
+    void masterCacheDoesNotReuseAnotherSessionsResult() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        for (String token : List.of("SESS", "OTHER")) {
+            expectStartup(server, token);
+            server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=" + token))
+                    .andRespond(withSuccess(PLAYLIST_42, MediaType.APPLICATION_JSON));
+            server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=PLAYTOKEN"))
+                    .andRespond(withSuccess(MASTER_42, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+        }
+
+        PlaybackService playback = newPlayback(rest);
+        playback.hlsMaster("42", "t_hash_t=SESS%3A%3Am");
+        playback.hlsMaster("42", "t_hash_t=OTHER%3A%3Am");
+        server.verify();
+    }
+
+    @Test
+    void aChallengeDuringStartupEndsTheAttemptWithoutAnotherRequest() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE).header("cf-mitigated", "challenge"));
+
+        ApiException failure = assertThrows(ApiException.class,
+                () -> newPlayback(rest).hlsMaster("42", "t_hash_t=SESS%3A%3Am"));
+        assertEquals(HttpStatus.FORBIDDEN, failure.getStatus());
+        server.verify();
+    }
+
+    @Test
+    void cacheDoesNotReuseTheGlobalSessionResultAcrossPrincipals() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        String cookie = "t_hash_t=SESS%3A%3Am";
+        expectStartup(server, "SESS");
+        expectMovie(server, "FIRST");
+        server.expect(once(), requestTo(BASE + "/mobile/p.php"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/post.php?id=42&t=SESS"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+        expectMovie(server, "SECOND");
+
+        PlaybackService playback = newPlayback(rest);
+        assertNotNull(playback.hlsMaster("42", cookie, "principal:a"));
+        assertNotNull(playback.hlsMaster("42", cookie, "principal:b"));
+        server.verify();
+    }
+
+    private static void expectMovie(MockRestServiceServer server, String signedToken) {
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS"))
+                .andRespond(withSuccess(PLAYLIST_42.replace("PLAYTOKEN", signedToken), MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=" + signedToken))
+                .andRespond(withSuccess(MASTER_42, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+    }
+
+    @Test
+    void tokenRefreshSurvivesEvictionAndCoalescesConcurrentCallers() throws Exception {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
+                .andRespond(request -> {
+                    started.countDown();
+                    try {
+                        assertTrue(release.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(ex);
+                    }
+                    return withSuccess("{\"c\":\"y\"}", MediaType.APPLICATION_JSON).createResponse(request);
+                });
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(HOME, MediaType.TEXT_HTML));
+        TokenManager manager = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest),
+                testSessionProvider());
+        String cookie = "t_hash_t=SESS%3A%3Am";
+
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<TokenManager.Tokens> owner = workers.submit(() -> manager.tokensFor(cookie));
+            try {
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                manager.evictExpired();
+                Future<TokenManager.Tokens> follower = workers.submit(() -> manager.tokensFor(cookie));
+                release.countDown();
+                assertSame(owner.get(5, TimeUnit.SECONDS), follower.get(5, TimeUnit.SECONDS));
+            } finally {
+                release.countDown();
+            }
+        }
+        server.verify();
+    }
+
+    @Test
+    void sameContentIdFromAnotherCatalogueGetsItsOwnMaster() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        String cookie = "t_hash_t=SESS%3A%3Am";
+        expectStartup(server, "SESS");
+        expectMovie(server, "NETFLIX");
+
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"c\":\"y\"}", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(HOME, MediaType.TEXT_HTML));
+        server.expect(once(), requestTo(BASE + "/mobile/p.php"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/hs/post.php?id=42&t=SESS"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/hs/playlist.php?id=42&t=&tm=SESS"))
+                .andRespond(withSuccess(PLAYLIST_42.replace("PLAYTOKEN", "HOTSTAR"), MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/hls/42.m3u8?in=HOTSTAR"))
                 .andRespond(withSuccess(MASTER_42, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
 
         PlaybackService playback = newPlayback(rest);
+        assertNotNull(playback.hlsMaster("42", cookie + "; ott=nf"));
+        assertNotNull(playback.hlsMaster("42", cookie + "; ott=dp"));
+        server.verify();
+    }
 
-        ApiException ex = assertThrows(ApiException.class, () -> playback.hlsMaster("42", cookie));
-        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatus());
-
-        String recovered = playback.hlsMaster("42", cookie);
-        assertNotNull(recovered);
-        assertTrue(recovered.contains("/playback/variant?u="), "the retry resolves a real, proxied master");
-        // All four upstream expectations consumed (two full resolutions) proves the 503 was not cached:
-        // a pinned failure would have skipped the second playlist.php and left expectations unmet.
+    @Test
+    void sharesTransientFailureAfterRefreshCompletes() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php"))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        var manager = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest),
+                testSessionProvider());
+        String cookie = "t_hash_t=fixture";
+        var first = assertThrows(org.springframework.web.client.RestClientException.class,
+                () -> manager.tokensFor(cookie));
+        var repeated = assertThrows(org.springframework.web.client.RestClientException.class,
+                () -> manager.tokensFor(cookie));
+        assertSame(first, repeated);
         server.verify();
     }
 
@@ -477,8 +660,10 @@ class MirrorFlowTest {
 
     @Test
     void subtitleCookieGoesOnlyToTheMirrorHost() {
-        assertTrue(UpstreamUrl.sameHost(URI.create("https://MIRROR.example/s/1.vtt"), BASE));
-        assertFalse(UpstreamUrl.sameHost(URI.create("https://cdn.example/1.vtt"), BASE));
+        assertTrue(UpstreamUrl.sameOrigin(URI.create("https://MIRROR.example:443/s/1.vtt"), BASE));
+        assertFalse(UpstreamUrl.sameOrigin(URI.create("https://cdn.example/1.vtt"), BASE));
+        assertFalse(UpstreamUrl.sameOrigin(URI.create("http://mirror.example/1.vtt"), BASE));
+        assertFalse(UpstreamUrl.sameOrigin(URI.create("https://mirror.example:8443/1.vtt"), BASE));
     }
 
     private static boolean isPublic(String ip) throws Exception {

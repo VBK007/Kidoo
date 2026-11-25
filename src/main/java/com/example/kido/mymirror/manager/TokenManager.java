@@ -2,23 +2,32 @@ package com.example.kido.mymirror.manager;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.springframework.http.HttpEntity;
+import org.springframework.beans.factory.annotation.Value;
+import io.micrometer.core.instrument.Metrics;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 
 import com.example.kido.common.ApiException;
 import com.example.kido.mymirror.ClientHeaderSupport;
 import com.example.kido.mymirror.MirrorCloudflare;
+import com.example.kido.mymirror.MirrorRequestLimit;
+import com.example.kido.mymirror.MirrorRequestContext;
 import com.example.kido.mymirror.MirrorSessionProvider;
 import com.example.kido.mymirror.model.ClientHeaders;
 import com.example.kido.mymirror.repo.AdGateRepository;
@@ -49,9 +58,16 @@ public class TokenManager {
     private final AdGateRepository adGateRepository;
     private final MirrorSessionProvider sessionProvider;
 
-    private final ConcurrentHashMap<String, Tokens> byCookie = new ConcurrentHashMap<>();
-    // One lock per cookie, so a slow refresh for one user never holds up another's.
-    private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
+    private record TokenKey(String origin, String cookie, long generation) {}
+
+    private final ConcurrentHashMap<TokenKey, Tokens> byCookie = new ConcurrentHashMap<>();
+    private record Failed(RuntimeException error, long retryAt) {}
+    private final ConcurrentHashMap<TokenKey, Failed> failures = new ConcurrentHashMap<>();
+
+    @Value("${app.mymirror.token.failure-backoff:3s}")
+    private Duration failureBackoff = Duration.ofSeconds(3);
+
+    private final ConcurrentHashMap<TokenKey, CompletableFuture<Tokens>> refreshes = new ConcurrentHashMap<>();
 
     public TokenManager(RestTemplate restTemplate, DispatcherService dispatcherService,
                         AdGateRepository adGateRepository, MirrorSessionProvider sessionProvider) {
@@ -93,46 +109,94 @@ public class TokenManager {
      * and 502 when the mirror answers without tokens.
      */
     public Tokens tokensFor(String cookie) {
+        requireCookie(cookie);
+        sessionProvider.generation(cookie);
+        return tokensForOrigin(dispatcherService.resolveActiveBaseUrl(), cookie);
+    }
+
+    /** Reuse the already resolved origin when a caller's subsequent request uses the same origin. */
+    public Tokens tokensForOrigin(String baseUrl, String cookie) {
+        requireCookie(cookie);
+        long generation = sessionProvider.generation(cookie);
+        TokenKey key = new TokenKey(baseUrl, cookie, generation);
+        Tokens cached = byCookie.get(key);
+        if (cached != null && cached.liveAt(now())) return cached;
+        CompletableFuture<Tokens> owned = new CompletableFuture<>();
+        CompletableFuture<Tokens> running = refreshes.putIfAbsent(key, owned);
+        if (running != null) {
+            try {
+                long remaining = MirrorRequestContext.deadlineWithin(Duration.ofSeconds(20)) - System.nanoTime();
+                Tokens result = running.get(Math.max(0, remaining), TimeUnit.NANOSECONDS);
+                sessionProvider.ifCurrent(cookie, key.generation(), () -> {});
+                return result;
+            } catch (ExecutionException ex) {
+                if (ex.getCause() instanceof RuntimeException failure) throw failure;
+                if (ex.getCause() instanceof Error failure) throw failure;
+                throw new IllegalStateException(ex.getCause());
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Token refresh interrupted");
+            } catch (TimeoutException ex) {
+                throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Token refresh in progress");
+            }
+        }
+
+        try {
+            cached = byCookie.get(key);
+            if (cached == null || !cached.liveAt(now())) {
+                Failed previous = failures.get(key);
+                if (previous != null && System.nanoTime() < previous.retryAt()) {
+                    owned.completeExceptionally(previous.error());
+                    throw previous.error();
+                }
+                if (previous != null) failures.remove(key, previous);
+                Metrics.counter("mirror.token.refresh", "outcome", "attempt").increment();
+                try {
+                    cached = load(baseUrl, cookie, ClientHeaderSupport.current());
+                    Tokens verified = cached;
+                    sessionProvider.ifCurrent(cookie, key.generation(), () -> byCookie.put(key, verified));
+                    sessionProvider.observe(cookie, MirrorSessionProvider.State.VALID);
+                    Metrics.counter("mirror.token.refresh", "outcome", "success").increment();
+                } catch (RuntimeException failure) {
+                    Metrics.counter("mirror.token.refresh", "outcome", "failure").increment();
+                    if (!(failure instanceof MirrorRequestLimit.Throttled)
+                            && !(failure instanceof MirrorRequestLimit.AccessDenied)
+                            && !(failure instanceof MirrorSessionProvider.Revoked)
+                            && !accessDenied(failure) && failures.size() < 4096
+                            && !failureBackoff.isNegative() && !failureBackoff.isZero()) {
+                        failures.put(key, new Failed(failure, System.nanoTime() + failureBackoff.toNanos()));
+                    }
+                    throw failure;
+                }
+            }
+            Tokens result = cached;
+            sessionProvider.ifCurrent(cookie, key.generation(), () -> owned.complete(result));
+            return result;
+        } catch (RuntimeException | Error failure) {
+            RuntimeException accessDenial = accessDenied(failure) ? new MirrorRequestLimit.AccessDenied() : null;
+            if (accessDenial != null) {
+                sessionProvider.observe(cookie, MirrorSessionProvider.State.ACCESS_DENIED);
+            } else if (failure instanceof RestClientException) {
+                sessionProvider.observe(cookie, MirrorSessionProvider.State.TEMPORARILY_UNAVAILABLE);
+            }
+            owned.completeExceptionally(accessDenial == null ? failure : accessDenial);
+            if (accessDenial != null) throw accessDenial;
+            throw failure;
+        } finally {
+            refreshes.remove(key, owned);
+        }
+    }
+
+    private static void requireCookie(String cookie) {
         if (cookie == null || cookie.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "The mirror session cookie is required");
         }
-        Tokens cached = byCookie.get(cookie);
-        if (cached != null && cached.liveAt(now())) return cached;
-        synchronized (locks.computeIfAbsent(cookie, k -> new Object())) {
-            cached = byCookie.get(cookie);
-            if (cached != null && cached.liveAt(now())) return cached;
-            try {
-                Tokens fresh = load(cookie, ClientHeaderSupport.current());
-                byCookie.put(cookie, fresh);
-                return fresh;
-            } catch (ApiException e) {
-                // A 412 means the per-view ad-gate is not currently cleared — it does NOT mean the
-                // session cookie is dead. That gate is NetMirror's per-view monetization and its
-                // "Waiting for your ads click." (c:n) is its normal resting state; the cookie still
-                // authorizes content, and playback streams on it while the gate reports uncleared
-                // (confirmed live). Dropping the one shared session here would nuke a working session
-                // for every caller — browse, heartbeat, playback — over nothing but that gate state,
-                // which is exactly how a single detail/search request used to take the whole backend
-                // to 503. So only a token-less mirror answer (502) — genuine proof the session no
-                // longer works upstream — drops and re-earns it; Cloudflare challenges are handled
-                // below, and the gate's own liveness is tracked by the session keep-alive/rotation.
-                if (e.getStatus() == HttpStatus.BAD_GATEWAY) {
-                    sessionProvider.noteRejected(cookie);
-                }
-                throw e;
-            } catch (HttpStatusCodeException e) {
-                // A Cloudflare challenge (403/503/429 with a CF fingerprint) is not a dead ad-gate: the
-                // t_hash_t is still good, only the cf_clearance lapsed or Cloudflare started gating this
-                // IP. Keep the session, re-mint the clearance in the background, and answer 503 so the
-                // caller retries once the fresh clearance is in hand — rather than dropping a good gate.
-                if (MirrorCloudflare.isChallenge(e)) {
-                    sessionProvider.noteCloudflareChallenge();
-                    throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
-                            "The mirror's Cloudflare access is refreshing; retry shortly");
-                }
-                throw e;
-            }
-        }
+    }
+
+    private static boolean accessDenied(Throwable error) {
+        return error instanceof MirrorRequestLimit.AccessDenied
+                || error instanceof HttpStatusCodeException response && response.getStatusCode().value() == 403
+                || MirrorCloudflare.isChallenge(error);
     }
 
     /** How many sessions hold unexpired tokens. */
@@ -145,15 +209,16 @@ public class TokenManager {
     @Scheduled(fixedRate = LIFETIME_SECONDS * 1000)
     public void evictExpired() {
         long now = now();
-        byCookie.entrySet().removeIf(e -> {
-            boolean expired = !e.getValue().liveAt(now);
-            if (expired) locks.remove(e.getKey());
-            return expired;
-        });
+        byCookie.values().removeIf(tokens -> !tokens.liveAt(now));
+        long monotonic = System.nanoTime();
+        failures.values().removeIf(failure -> failure.retryAt() <= monotonic);
     }
 
-    private Tokens load(String cookie, ClientHeaders client) {
-        String baseUrl = dispatcherService.resolveActiveBaseUrl();
+    private Tokens load(String baseUrl, String cookie, ClientHeaders client) {
+        return MirrorRequestContext.within(Duration.ofSeconds(20), () -> verifyAndLoad(baseUrl, cookie, client));
+    }
+
+    private Tokens verifyAndLoad(String baseUrl, String cookie, ClientHeaders client) {
 
         // Step 1: Verify ad-gate
         String verifyResponse = adGateRepository.verifyAds(baseUrl, cookie, client);
@@ -175,7 +240,7 @@ public class TokenManager {
             hash = doc.body().attr("data-hash");
         }
         if (t.isBlank()) {
-            log.warn("Mirror session carried no t token (no t_hash_t cookie, no home page attributes)");
+            log.warn("Mirror session carried no token");
             throw new ApiException(HttpStatus.BAD_GATEWAY, "The mirror did not hand out playback tokens");
         }
         return new Tokens(t, hash, now() + LIFETIME_SECONDS);
@@ -204,7 +269,8 @@ public class TokenManager {
                     new HttpEntity<>(headers), String.class).getBody();
             return Jsoup.parse(html == null ? "" : html);
         } catch (RestClientException e) {
-            log.debug("Mirror home page unavailable: {}", e.getMessage());
+            if (MirrorCloudflare.isChallenge(e)) throw new MirrorRequestLimit.AccessDenied();
+            log.debug("Mirror token page unavailable: {}", e.getClass().getSimpleName());
             return null;
         }
     }

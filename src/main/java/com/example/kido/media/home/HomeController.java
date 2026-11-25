@@ -1,9 +1,12 @@
 package com.example.kido.media.home;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.context.request.async.DeferredResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -13,9 +16,9 @@ import org.springframework.web.bind.annotation.RestController;
 import com.example.kido.media.catalog.MediaType;
 import com.example.kido.media.dto.HomeDtos.HomeDto;
 import com.example.kido.media.dto.HomeDtos.HomeRailDto;
-import com.example.kido.media.dto.HomeDtos.MirrorRailDto;
 import com.example.kido.media.web.ActiveProfile;
 import com.example.kido.mymirror.MirrorCookie;
+import com.example.kido.mymirror.MirrorBulkhead;
 import com.example.kido.mymirror.MirrorOtt;
 import com.example.kido.mymirror.service.MirrorHomeService;
 import com.example.kido.profile.Profile;
@@ -28,10 +31,12 @@ public class HomeController {
 
     private final HomeService service;
     private final MirrorHomeService mirrorHome;
+    private final MirrorBulkhead bulkhead;
 
-    public HomeController(HomeService service, MirrorHomeService mirrorHome) {
+    public HomeController(HomeService service, MirrorHomeService mirrorHome, MirrorBulkhead bulkhead) {
         this.service = service;
         this.mirrorHome = mirrorHome;
+        this.bulkhead = bulkhead;
     }
 
     /**
@@ -47,18 +52,18 @@ public class HomeController {
      *                     build, not an oversight.
      */
     @GetMapping("/home")
-    public HomeDto home(@AuthenticationPrincipal AppUser user,
+    public DeferredResult<ResponseEntity<HomeDto>> home(@AuthenticationPrincipal AppUser user,
                         @ActiveProfile Profile profile,
                         @RequestParam(required = false) String types,
                         @RequestParam(defaultValue = "20") int limit,
                         @RequestHeader(value = MirrorCookie.HEADER, required = false) String mirrorCookie,
                         @RequestHeader(value = MirrorOtt.HEADER, required = false) String ott) {
         HomeDto home = service.home(user, profile, parseTypes(types), limit);
-        if (user == null) {
-            return home;
-        }
-        List<MirrorRailDto> mirrorRails = mirrorHome.rail(mirrorCookie, ott);
-        return mirrorRails.isEmpty() ? home : home.withMirror(mirrorRails);
+        return bulkhead.submitOptional(() -> {
+            var mirror = mirrorHome.railWithStatus(mirrorCookie, ott);
+            HomeDto payload = mirror.rails().isEmpty() ? home : home.withMirror(mirror.rails());
+            return ResponseEntity.ok().header("X-Mirror-Catalogue-State", mirror.state()).body(payload);
+        }, Duration.ofSeconds(8), ResponseEntity.ok().header("X-Mirror-Catalogue-State", "unavailable").body(home));
     }
 
     /**

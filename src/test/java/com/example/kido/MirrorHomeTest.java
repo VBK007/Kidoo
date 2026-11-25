@@ -22,10 +22,10 @@ import org.springframework.web.client.RestTemplate;
 
 import com.example.kido.media.dto.HomeDtos.MirrorRailDto;
 import com.example.kido.media.dto.HomeDtos.MirrorTileDto;
-import com.example.kido.mymirror.MirrorAccessProperties;
 import com.example.kido.mymirror.MirrorHomeParser;
 import com.example.kido.mymirror.MirrorHomeParser.Title;
 import com.example.kido.mymirror.MirrorStreamSigner;
+import com.example.kido.mymirror.MirrorRequestLimit;
 import com.example.kido.mymirror.MirrorSessionProperties;
 import com.example.kido.mymirror.MirrorSessionProvider;
 import com.example.kido.mymirror.manager.TokenManager;
@@ -140,106 +140,77 @@ class MirrorHomeTest {
         // never opens a browser; it only satisfies TokenManager's dependency.
         AdGateRepository adGate = new AdGateRepository(rest);
         MirrorSessionProvider sessionProvider = new MirrorSessionProvider(
-                new MirrorSessionProperties(), new MirrorAccessProperties(), adGate, dispatcher);
+                new MirrorSessionProperties(), adGate, dispatcher);
         TokenManager tokens = new TokenManager(rest, dispatcher, adGate, sessionProvider);
-        PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest), dispatcher, tokens,
-                new MirrorStreamSigner());
+        PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest, rest), dispatcher, tokens,
+                new MirrorStreamSigner(), new MirrorRequestLimit(), sessionProvider);
         return new MirrorHomeService(new BrowseRepository(rest), playback, dispatcher, tokens, sessionProvider);
     }
 
     // Netflix serves its categorised home as HTML at /mobile/home?app=1: one <h2 class="tray-title">
     // per rail, its tiles carrying only a data-post id. This golden is a single-category home.
-    private static final String HOME_URL = BASE + "/mobile/home?app=1";
-    private static final String HOME_HTML = """
-            <h2 class="tray-title">Trending Now</h2>
-            <div class="top10-posts lazyload">
-              <div class="top10-post post-data" data-post="111"></div>
-              <div class="top10-post post-data" data-post="222"></div>
-            </div>""";
+    private static final String TRENDING = BASE + "/mobile/search.php";
+    private static final String TRENDING_JSON = """
+            {"searchResult":[{"id":"111","t":"Alpha"},{"id":"222","t":"Beta"}]}
+            """;
 
-    @Test
-    void eachTitleComesBackWithItsPlaylist_andALatePlaylistIsJustLeftOff() {
-        RestTemplate rest = new RestTemplate();
-        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
-        server.expect(once(), requestTo(HOME_URL)).andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess(HOME_HTML, MediaType.TEXT_HTML));
-        // The home HTML names no title, so every tile's name comes from /mobile/post.php. The t=
-        // param is the session token read straight from the cookie (playbackT); this cookie carries
-        // no t_hash_t, so it is empty, and playlist.php's tm= (that same token) is empty too — the
-        // t= on playlist.php is the title, which the mirror uses only for display/analytics.
-        server.expect(once(), requestTo(BASE + "/mobile/post.php?id=111&t="))
-                .andRespond(withSuccess("{\"title\":\"Alpha\"}", MediaType.APPLICATION_JSON));
-        server.expect(once(), requestTo(BASE + "/mobile/post.php?id=222&t="))
-                .andRespond(withSuccess("{\"title\":\"Beta\"}", MediaType.APPLICATION_JSON));
-        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=111&t=Alpha&tm="))
-                .andRespond(withSuccess("[{\"file\":\"/hls/111.m3u8\"}]", MediaType.APPLICATION_JSON));
-        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=222&t=Beta&tm="))
-                .andRespond(withServerError());
-
-        List<MirrorRailDto> rails = service(rest).rail("sess=1");
-
-        assertEquals(1, rails.size()); // the home's single heading: one "Trending Now" rail
-        assertEquals("trending-now", rails.get(0).key());
-        List<MirrorTileDto> tiles = rails.get(0).items();
-        assertEquals(2, tiles.size());
-        assertEquals("111", tiles.get(0).id());
-        assertEquals("Alpha", tiles.get(0).title());
-        // Default load carries no X-Mirror-Ott: a null ott still reconstructs the Netflix poster
-        // from the numeric id, so the home rail is not a wall of monograms.
-        assertEquals("https://imgcdn.kim/nf/v/200/111.jpg", tiles.get(0).image());
-        assertEquals("/hls/111.m3u8", tiles.get(0).playlist().get(0).path("file").asString());
-        assertEquals("222", tiles.get(1).id());
-        assertNull(tiles.get(1).playlist()); // failed upstream: tile kept, playlist fetched on tap
+    private static void netflixDetails(MockRestServiceServer server, String details) {
+        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/post.php")))
+                .andRespond(withSuccess(details, MediaType.APPLICATION_JSON));
+        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(TRENDING + "?")))
+                .andRespond(withSuccess("{\"searchResult\":[]}", MediaType.APPLICATION_JSON));
     }
 
     @Test
-    void theNetflixHomeBecomesOneRailPerCategory() {
-        // The fix: the Netflix home used to arrive as a flat, category-less feed, so every catalogue
-        // collapsed into a single rail. /mobile/home?app=1 gives the categorised HTML — one heading
-        // per rail — so the home now becomes a rail per category, in document order.
-        String home = """
-                <h2 class="tray-title">Trending Now</h2>
-                <div class="top10-posts"><div class="top10-post post-data" data-post="111"></div></div>
-                <h2 class="tray-title">Romance Movies</h2>
-                <div class="top10-posts"><div class="top10-post post-data" data-post="222"></div></div>""";
-
+    void netflixTilesKeepInlineNamesAndDeferAllPlaylists() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
-        server.expect(once(), requestTo(HOME_URL)).andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess(home, MediaType.TEXT_HTML));
-        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/post.php")))
-                .andRespond(withSuccess("{\"title\":\"A Title\"}", MediaType.APPLICATION_JSON));
-        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/playlist.php")))
-                .andRespond(withSuccess("[{\"file\":\"/hls/x.m3u8\"}]", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(TRENDING))
+                .andRespond(withSuccess(TRENDING_JSON, MediaType.APPLICATION_JSON));
+        netflixDetails(server, "{}");
+
+        List<MirrorRailDto> rails = service(rest).rail("sess=1");
+        assertEquals(1, rails.size());
+        assertEquals("top-10-this-week", rails.get(0).key());
+        List<MirrorTileDto> tiles = rails.get(0).items();
+        assertEquals(List.of("111", "222"), tiles.stream().map(MirrorTileDto::id).toList());
+        assertEquals(List.of("Alpha", "Beta"), tiles.stream().map(MirrorTileDto::title).toList());
+        tiles.forEach(tile -> assertNull(tile.playlist()));
+        server.verify();
+    }
+
+    @Test
+    void theNetflixHomeComposesTrendingAndGenreRails() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
+        server.expect(once(), requestTo(TRENDING)).andRespond(withSuccess("""
+                {"searchResult":[{"id":"111","t":"Alpha"},{"id":"222","t":"Beta"},
+                 {"id":"333","t":"Gamma"},{"id":"444","t":"Delta"}]}
+                """, MediaType.APPLICATION_JSON));
+        netflixDetails(server, "{\"genre\":\"Action\"}");
 
         List<MirrorRailDto> rails = service(rest).rail("sess=1", "nf");
-
-        assertEquals(2, rails.size());
-        assertEquals("trending-now", rails.get(0).key());
-        assertEquals("Trending Now", rails.get(0).title());
-        assertEquals(List.of("111"), rails.get(0).items().stream().map(MirrorTileDto::id).toList());
-        assertEquals("romance-movies", rails.get(1).key());
-        assertEquals("Romance Movies", rails.get(1).title());
-        assertEquals(List.of("222"), rails.get(1).items().stream().map(MirrorTileDto::id).toList());
+        assertEquals(List.of("top-10-this-week", "action-adventure"), rails.stream().map(MirrorRailDto::key).toList());
+        for (MirrorRailDto rail : rails) {
+            assertEquals(List.of("111", "222", "333", "444"), rail.items().stream().map(MirrorTileDto::id).toList());
+        }
+        server.verify();
     }
 
     @Test
     void theNetflixCatalogueFillsPostersFromTheTileIds() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
-        server.expect(once(), requestTo(HOME_URL)).andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess(HOME_HTML, MediaType.TEXT_HTML));
-        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/post.php")))
-                .andRespond(withSuccess("{\"title\":\"A Title\"}", MediaType.APPLICATION_JSON));
-        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/playlist.php")))
-                .andRespond(withSuccess("[{\"file\":\"/hls/x.m3u8\"}]", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(TRENDING))
+                .andRespond(withSuccess(TRENDING_JSON, MediaType.APPLICATION_JSON));
+        netflixDetails(server, "{}");
 
         List<MirrorRailDto> rails = service(rest).rail("sess=1", "nf");
-
         assertEquals(1, rails.size());
         List<MirrorTileDto> tiles = rails.get(0).items();
         assertEquals("https://imgcdn.kim/nf/v/200/111.jpg", tiles.get(0).image());
         assertEquals("https://imgcdn.kim/nf/v/200/222.jpg", tiles.get(1).image());
+        server.verify();
     }
 
     @Test
@@ -260,9 +231,6 @@ class MirrorHomeTest {
         // Prime names nothing in the feed, so each tile's name comes from /pv/post.php.
         server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/pv/post.php")))
                 .andRespond(withSuccess("{\"title\":\"A Prime Title\"}", MediaType.APPLICATION_JSON));
-        // Prime titles pre-warm from /mobile/pv/playlist.php, not /mobile/playlist.php.
-        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/pv/playlist.php")))
-                .andRespond(withSuccess("[{\"file\":\"/hls/x.m3u8\"}]", MediaType.APPLICATION_JSON));
 
         List<MirrorRailDto> rails = service(rest).rail("sess=1", "pv");
 
@@ -280,41 +248,25 @@ class MirrorHomeTest {
         assertEquals("top-10-tv-in-prime", rails.get(2).key());
         assertEquals("Top 10 TV in Prime", rails.get(2).title());
         assertEquals(1, rails.get(2).items().size());
-        // The grid-wide pre-warm still fills playlists from the top of the feed (the first rail).
-        assertEquals("/hls/x.m3u8", rails.get(0).items().get(0).playlist().get(0).path("file").asString());
+        rails.forEach(rail -> rail.items().forEach(tile -> assertNull(tile.playlist())));
+        server.verify();
     }
 
     @Test
-    void theWholeFeedIsShownButOnlyTheFirstFewPlaylistsArePrewarmed() {
-        // A feed longer than EAGER_PLAYLISTS: every tile comes back (the grid is no longer capped
-        // at a first screen), but only the first EAGER_PLAYLISTS have a playlist on the home load —
-        // the rest are left for the client to fetch on tap, so the rail is not a flood of calls.
-        int count = MirrorHomeService.EAGER_PLAYLISTS + 3;
-        StringBuilder home = new StringBuilder("<h2 class=\"tray-title\">Trending Now</h2><div class=\"top10-posts\">");
-        for (int i = 0; i < count; i++) {
-            home.append("<div class=\"top10-post post-data\" data-post=\"").append(1000 + i).append("\"></div>");
-        }
-        home.append("</div>");
-
+    void homeNeverFetchesPlaybackPlaylistsEvenForTheFirstTile() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
-        server.expect(once(), requestTo(HOME_URL)).andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess(home.toString(), MediaType.TEXT_HTML));
-        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/post.php")))
-                .andRespond(withSuccess("{\"title\":\"A Title\"}", MediaType.APPLICATION_JSON));
-        server.expect(times(MirrorHomeService.EAGER_PLAYLISTS),
-                        requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/playlist.php")))
-                .andRespond(withSuccess("[{\"file\":\"/hls/x.m3u8\"}]", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/pv/homepage.php"))
+                .andRespond(withSuccess("""
+                        {"post":[{"ids":"A1,A2,A3","cate":"Drama"}]}
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(times(3), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/pv/post.php")))
+                .andRespond(withSuccess("{\"title\":\"Prime Title\"}", MediaType.APPLICATION_JSON));
 
-        List<MirrorTileDto> tiles = service(rest).rail("sess=1").get(0).items();
-
-        assertEquals(count, tiles.size()); // the whole feed, past the old flat cap of 12
-        assertEquals("/hls/x.m3u8", tiles.get(0).playlist().get(0).path("file").asString());
-        assertEquals("/hls/x.m3u8",
-                tiles.get(MirrorHomeService.EAGER_PLAYLISTS - 1).playlist().get(0).path("file").asString());
-        assertNull(tiles.get(MirrorHomeService.EAGER_PLAYLISTS).playlist()); // past the warm-up: on tap
-        assertNull(tiles.get(count - 1).playlist());
-        server.verify(); // exactly EAGER_PLAYLISTS playlist.php calls — the rest are deferred
+        var tiles = service(rest).rail("sess=1", "pv").get(0).items();
+        assertEquals(List.of("A1", "A2", "A3"), tiles.stream().map(MirrorTileDto::id).toList());
+        tiles.forEach(tile -> assertNull(tile.playlist()));
+        server.verify();
     }
 
     @Test
@@ -361,32 +313,24 @@ class MirrorHomeTest {
     void aTransientFeedFailureIsRetriedOnAFreshlyResolvedHost() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
-        server.expect(once(), requestTo(HOME_URL)).andExpect(method(HttpMethod.GET))
-                .andRespond(withServerError()); // host rotated out mid-cache-window
-        server.expect(once(), requestTo(HOME_URL)).andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess(HOME_HTML, MediaType.TEXT_HTML)); // the retry lands on a live host
-        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/post.php")))
-                .andRespond(withSuccess("{\"title\":\"A Title\"}", MediaType.APPLICATION_JSON));
-        server.expect(manyTimes(), requestTo(org.hamcrest.Matchers.startsWith(BASE + "/mobile/playlist.php")))
-                .andRespond(withSuccess("[{\"file\":\"/hls/x.m3u8\"}]", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(TRENDING)).andRespond(withServerError());
+        server.expect(once(), requestTo(TRENDING))
+                .andRespond(withSuccess(TRENDING_JSON, MediaType.APPLICATION_JSON));
+        netflixDetails(server, "{}");
 
         List<MirrorRailDto> rails = service(rest).rail("sess=1");
-
         assertEquals(1, rails.size());
-        assertEquals(2, rails.get(0).items().size());
+        assertEquals(List.of("111", "222"), rails.get(0).items().stream().map(MirrorTileDto::id).toList());
+        server.verify();
     }
 
     @Test
     void aMirrorThatIsDownMeansNoRailRatherThanABrokenHomeScreen() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
-        // "The mirror is down" is the home feed erroring. A 5xx is retried once on a freshly resolved
-        // host (see feedTitles), so both the cached and the re-resolved fetch fail here; the home
-        // screen must still come back empty rather than let the error break the whole page.
-        server.expect(manyTimes(), requestTo(HOME_URL)).andExpect(method(HttpMethod.GET))
-                .andRespond(withServerError());
-
+        server.expect(times(2), requestTo(TRENDING)).andRespond(withServerError());
         assertTrue(service(rest).rail("sess=1").isEmpty());
+        server.verify();
     }
 
     @Test

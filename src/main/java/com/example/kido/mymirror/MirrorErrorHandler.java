@@ -6,6 +6,7 @@ import java.util.Map;
 
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -25,9 +26,31 @@ import lombok.extern.slf4j.Slf4j;
 @RestControllerAdvice(basePackages = "com.example.kido.mymirror")
 public class MirrorErrorHandler {
 
+    @ExceptionHandler(MirrorRequestLimit.Throttled.class)
+    public ResponseEntity<Map<String, Object>> throttled(MirrorRequestLimit.Throttled ex) {
+        return ResponseEntity.status(ex.getStatus())
+                .header(HttpHeaders.RETRY_AFTER, ex.retryAfterHeader())
+                .body(Map.of("status", ex.getStatus().value(), "message", ex.getMessage()));
+    }
+
+    @ExceptionHandler(MirrorSessionProvider.Revoked.class)
+    public ResponseEntity<Map<String, Object>> revoked(MirrorSessionProvider.Revoked ex) {
+        return ResponseEntity.status(ex.getStatus()).body(Map.of(
+                "status", ex.getStatus().value(), "message", ex.getMessage(), "code", "MIRROR_SESSION_REVOKED"));
+    }
+
+    @ExceptionHandler(MirrorRequestLimit.Busy.class)
+    public ResponseEntity<Map<String, Object>> busy(MirrorRequestLimit.Busy ex) {
+        var response = error(ex.getStatus(), ex.getMessage());
+        return ResponseEntity.status(ex.getStatus()).header(HttpHeaders.RETRY_AFTER, "2").body(response.getBody());
+    }
+
     @ExceptionHandler(RestClientException.class)
     public ResponseEntity<Map<String, Object>> upstreamFailed(RestClientException ex) {
-        log.warn("Mirror request failed: {}", ex.getMessage());
+        if (MirrorCloudflare.isChallenge(ex)) {
+            return error(HttpStatus.FORBIDDEN, "The streaming source denied access");
+        }
+        log.warn("Mirror request failed: {}", ex.getClass().getSimpleName());
         return error(HttpStatus.BAD_GATEWAY, "The mirror did not answer properly");
     }
 

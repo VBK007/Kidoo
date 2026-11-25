@@ -31,14 +31,7 @@ public class MyMirrorConfig implements WebMvcConfigurer {
         resolvers.add(new MirrorCookieResolver(sessionProvider));
     }
 
-    /**
-     * Resolves {@link MirrorCookie} parameters. A caller that carries its own fresher session wins:
-     * header first, then the query parameter. When it carries none — the normal path now that the app
-     * no longer pastes a cookie — it falls back to the backend's one global mirror session
-     * ({@link MirrorSessionProvider}). If no global session is held, it asks the provider to earn one
-     * (which opens the ad gate for a human to clear) and answers 503 so the caller retries once the
-     * fresh session is in place.
-     */
+    /** Resolves a caller-provided cookie or the operator-provisioned global session. */
     static final class MirrorCookieResolver implements HandlerMethodArgumentResolver {
 
         private final MirrorSessionProvider sessionProvider;
@@ -61,7 +54,7 @@ public class MyMirrorConfig implements WebMvcConfigurer {
                 cookie = request.getParameter(MirrorCookie.PARAM);
             }
             if (cookie == null || cookie.isBlank()) {
-                // No caller cookie: use the backend's global session, earning one if none is held.
+                // No caller cookie: use the operator-provisioned global session.
                 cookie = sessionProvider.ensureSession();
             }
             if (cookie == null || cookie.isBlank()) {

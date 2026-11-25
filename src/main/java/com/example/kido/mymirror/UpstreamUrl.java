@@ -45,7 +45,7 @@ public final class UpstreamUrl {
      * like {@code /mobile/hls/<id>.m3u8?in=<play_token>&hd=off&lang=eng&hp=yes}; resolving it keeps
      * the query, and the signing token inside it, verbatim, which {@link #of} (which re-encodes
      * params) cannot. The fetch that follows carries the session cookie, so it must land on the
-     * mirror: a reference that resolves to any other host is refused rather than sent the cookie.
+     * same origin as the mirror.
      */
     public static URI resolveOnMirror(String baseUrl, String reference) {
         if (reference == null || reference.isBlank()) {
@@ -57,7 +57,7 @@ public final class UpstreamUrl {
         } catch (IllegalArgumentException ex) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "mirror stream source is not a valid URL");
         }
-        if (!sameHost(resolved, baseUrl)) {
+        if (!sameOrigin(resolved, baseUrl)) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "mirror stream source points off the mirror");
         }
         return resolved;
@@ -90,6 +90,21 @@ public final class UpstreamUrl {
             throw new ApiException(HttpStatus.BAD_REQUEST, "url host does not resolve");
         }
         return uri;
+    }
+
+    public static boolean sameOrigin(URI url, String baseUrl) {
+        URI base = URI.create(baseUrl);
+        String scheme = url.getScheme();
+        return ("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme))
+                && scheme.equalsIgnoreCase(base.getScheme())
+                && url.getUserInfo() == null
+                && sameHost(url, baseUrl)
+                && effectivePort(url) == effectivePort(base);
+    }
+
+    private static int effectivePort(URI url) {
+        if (url.getPort() >= 0) return url.getPort();
+        return "https".equalsIgnoreCase(url.getScheme()) ? 443 : 80;
     }
 
     /** Whether two URLs name the same host, ignoring case. */

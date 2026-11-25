@@ -353,11 +353,13 @@ class WatchPartyGuestPlaybackIntegrationTest {
     /** Parent, because the admin panel is owner-only and one test reads it. */
     private String[] registerParentWithProfile(String prefix, String profileName) throws Exception {
         String unique = UUID.randomUUID().toString().substring(0, 8);
-        HttpResponse<String> registered = send("POST", "/api/auth/register", """
+        HttpResponse<String> registered = http.send(request("POST", "/api/auth/register", """
                 {"username":"%s_%s","email":"%s_%s@example.com","password":"pw123456",
                  "displayName":"Playback Tester","role":"PARENT"}
-                """.formatted(prefix, unique, prefix, unique), null, null);
+                """.formatted(prefix, unique, prefix, unique), null, null)
+                .header("X-Admin-Key", "test-admin-key").build(), HttpResponse.BodyHandlers.ofString());
         assertEquals(201, registered.statusCode(), registered.body());
+        assertTrue(registered.body().contains("\"role\":\"PARENT\""));
         String bearer = extract(registered.body(), "token");
 
         HttpResponse<String> profile = send("POST", "/api/profiles",

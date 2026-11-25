@@ -16,6 +16,7 @@ import {
 } from '../api'
 import { bytes, clockTime, compact, hours, plain, titleCase } from '../format'
 import { Applications } from './Applications'
+import { MirrorOperationsPanel } from './MirrorOperationsPanel'
 import { BarList, type Bar } from './BarList'
 import { LiveActivity } from './LiveActivity'
 import { Records } from './Records'
@@ -333,6 +334,7 @@ export function Dashboard({
         <p className="eyebrow">Applications</p>
         <Applications apps={applications} />
       </section>
+      <MirrorOperationsPanel credentials={credentials} live={live} />
 
       <section className="section">
         <p className="eyebrow">Catalog</p>

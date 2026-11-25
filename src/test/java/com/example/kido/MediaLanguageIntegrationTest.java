@@ -82,8 +82,9 @@ class MediaLanguageIntegrationTest {
         HttpResponse<String> registered = send("POST", "/api/auth/register", """
                 {"username":"lang_%s","email":"lang_%s@example.com","password":"pw123456",
                  "displayName":"Language Tester","role":"PARENT"}
-                """.formatted(unique, unique), null, null);
+                """.formatted(unique, unique), null, ADMIN_KEY);
         assertEquals(201, registered.statusCode(), registered.body());
+        assertTrue(registered.body().contains("\"role\":\"PARENT\""));
         token = extract(registered.body(), "token");
 
         HttpResponse<String> profile = send("POST", "/api/profiles",

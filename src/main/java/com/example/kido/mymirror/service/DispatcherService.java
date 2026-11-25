@@ -1,13 +1,11 @@
 package com.example.kido.mymirror.service;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.Base64;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -15,8 +13,11 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import com.example.kido.common.ApiException;
-import com.example.kido.mymirror.ClientHeaderSupport;
 import com.example.kido.mymirror.MirrorAccessProperties;
+import com.example.kido.mymirror.MirrorRequestLimit;
+import com.example.kido.mymirror.MirrorRequestContext;
+import com.example.kido.mymirror.MirrorCloudflare;
+import org.springframework.web.client.HttpStatusCodeException;
 import com.example.kido.mymirror.repo.DispatcherRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -45,6 +46,7 @@ public class DispatcherService {
     private final MirrorAccessProperties access;
     private final ObjectMapper mapper = JsonMapper.builder().build();
 
+    private final ReentrantLock discovery = new ReentrantLock();
     private volatile String cachedUrl;
     private volatile long cachedUntil;
 
@@ -60,15 +62,35 @@ public class DispatcherService {
     }
 
     /** The backend origin, without a trailing slash (e.g. {@code https://net52.cc}). 502 when discovery fails. */
-    public String resolveActiveBaseUrl() {
+    public String cachedActiveBaseUrl() {
         String url = cachedUrl;
-        if (url != null && System.currentTimeMillis() < cachedUntil) return url;
-        synchronized (this) {
+        return url != null && System.currentTimeMillis() < cachedUntil ? url : null;
+    }
+
+    public String resolveActiveBaseUrl() {
+        String url = cachedActiveBaseUrl();
+        if (url != null) return url;
+        return MirrorRequestContext.within(Duration.ofSeconds(12), this::discoverWithinDeadline);
+    }
+
+    private String discoverWithinDeadline() {
+        long deadline = MirrorRequestContext.deadlineWithin(Duration.ofSeconds(12));
+        try {
+            if (!discovery.tryLock(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+                throw new MirrorRequestLimit.DeadlineExceeded();
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Discovery interrupted");
+        }
+        try {
             if (cachedUrl != null && System.currentTimeMillis() < cachedUntil) return cachedUrl;
             String resolved = resolveFromDispatcher();
             cachedUrl = resolved;
             cachedUntil = System.currentTimeMillis() + CACHE_MILLIS;
             return resolved;
+        } finally {
+            discovery.unlock();
         }
     }
 
@@ -91,12 +113,12 @@ public class DispatcherService {
             JsonNode node = mapper.readTree(body);
             tokenHash = node.path("token_hash").asString(null);
         } catch (RuntimeException e) {
-            log.warn("Dispatcher response unreadable: {}", e.getMessage());
+            log.warn("Dispatcher response unreadable");
             throw new ApiException(HttpStatus.BAD_GATEWAY, "The mirror dispatcher did not answer properly");
         }
         String contentUrl = decode(tokenHash);
         String base = originOf(contentUrl);
-        if (base == null) {
+        if (base == null || (access != null && !access.isApproved(URI.create(base)))) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "The mirror dispatcher did not hand out a backend URL");
         }
         // The decoded origin can be stale: the backend 301s (e.g. net52.cc → net77.cc) to the host that
@@ -136,36 +158,24 @@ public class DispatcherService {
         }
     }
 
-    /**
-     * Follows the content URL's redirects and returns the origin it lands on. Even when the landing is
-     * Cloudflare's challenge (a 403), the response still comes from the rotated host, so its origin is
-     * what the rest of the flow should target. Returns {@code null} on any failure, so discovery falls
-     * back to the decoded origin rather than breaking.
-     */
     @Nullable
     private String landedOrigin(String contentUrl) {
-        if (contentUrl == null) return null;
         try {
-            HttpClient client = HttpClient.newBuilder()
-                    .followRedirects(HttpClient.Redirect.NORMAL)
-                    .connectTimeout(Duration.ofSeconds(10))
-                    .build();
-            HttpRequest request = HttpRequest.newBuilder(URI.create(contentUrl))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("User-Agent", userAgent())
-                    .GET()
-                    .build();
-            HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
-            return originOf(response.uri().toString());
-        } catch (IOException | InterruptedException | RuntimeException e) {
-            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
-            log.warn("Could not follow backend redirect, using the decoded origin: {}", e.getMessage());
+            URI location = repo.redirectLocation(URI.create(contentUrl));
+            if (location == null) return null;
+            if (!access.isApproved(location)) {
+                throw new MirrorRequestLimit.AccessDenied();
+            }
+            return originOf(location.toString());
+        } catch (HttpStatusCodeException ex) {
+            if (MirrorCloudflare.isChallenge(ex)) throw new MirrorRequestLimit.AccessDenied();
+            return null;
+        } catch (MirrorRequestLimit.Throttled | MirrorRequestLimit.Busy | MirrorRequestLimit.AccessDenied
+                 | MirrorRequestLimit.DeadlineExceeded ex) {
+            throw ex;
+        } catch (RuntimeException ex) {
+            log.warn("Backend redirect probe failed: {}", ex.getClass().getSimpleName());
             return null;
         }
-    }
-
-    private String userAgent() {
-        String ua = access == null ? null : access.getBrowserUserAgent();
-        return ua == null || ua.isBlank() ? ClientHeaderSupport.DEFAULT_USER_AGENT : ua.trim();
     }
 }
