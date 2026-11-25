@@ -103,6 +103,21 @@ public class DispatcherService {
         cachedUntil = 0;
     }
 
+    /**
+     * Compare-and-invalidate: drops the cached base <em>only if it is still {@code base}</em> — the exact
+     * origin a caller just saw fail during playback. A plain {@link #invalidate()} would also wipe a base
+     * that a concurrent request has <em>already</em> rediscovered and replaced, turning one host rotation
+     * into a stampede of re-discoveries; pinning the drop to the host that actually failed means a late
+     * failure from a host that is no longer current is a no-op, and concurrent failures on the same dead
+     * host collapse (with the single-flight {@link #discovery} lock) to a single re-walk. Used by the
+     * playback failover path; the home feed still calls {@link #invalidate()} unconditionally.
+     */
+    public void invalidateIfCurrent(@Nullable String base) {
+        if (base != null && base.equals(cachedUrl)) {
+            cachedUntil = 0;
+        }
+    }
+
     private String resolveFromDispatcher() {
         String body = repo.getDispatcherResponse();
         if (body == null) {

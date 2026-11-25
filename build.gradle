@@ -71,7 +71,13 @@ dependencies {
 }
 
 tasks.named('test') {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        // Timing-based load benchmarks are opt-in so they never flake the regression baseline.
+        // Run them with: ./gradlew test -PrunBenchmarks --tests '*Benchmark'
+        if (!project.hasProperty('runBenchmarks')) {
+            excludeTags 'benchmark'
+        }
+    }
 }
 
 // Dev convenience: `./gradlew bootRun -Ph2 --args='--spring.profiles.active=h2'`

@@ -3,6 +3,8 @@ package com.example.kido.mymirror;
 import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -98,32 +100,76 @@ public class MirrorBulkhead {
 
     public <T> DeferredResult<T> submit(Callable<T> action) {
         upstream.checkCooldown();
-        return submit(action, timeout, null, workers, "foreground");
+        return deferred(action, timeout, null, workers, "foreground");
     }
 
     public <T> DeferredResult<T> submitOptional(Callable<T> action, Duration budget, T fallback) {
-        return submit(action, budget, fallback, optional, "home");
+        return deferred(action, budget, fallback, optional, "home");
     }
 
-    private <T> DeferredResult<T> submit(Callable<T> action, Duration budget, T fallback,
-                                         ThreadPoolExecutor executor, String lane) {
+    /** The foreground admission timeout, for callers that await {@link #submitFuture} directly. */
+    public long timeoutMillis() {
+        return timeout.toMillis();
+    }
+
+    /**
+     * Admit {@code action} to the foreground pool and return a {@link CompletableFuture} for its result —
+     * the same admission {@link #submit(Callable)} performs (cooldown check, one worker slot, queue-timeout,
+     * deadline), but exposed as a future many callers can await instead of a single HTTP {@link DeferredResult}.
+     * It completes with {@link MirrorRequestLimit.Busy} when the pool is saturated and
+     * {@link MirrorRequestLimit.DeadlineExceeded} on timeout, exactly as {@link #submit} does.
+     *
+     * <p>This lets the HLS master coalesce a cold-start burst onto a single admission: the first caller for a
+     * title admits here and the rest await this one future, so a 200-device burst on one title spends one
+     * worker slot, not two hundred. It does not widen upstream concurrency — the admitted work still passes
+     * through the same single-slot, paced upstream limiter.
+     */
+    public <T> CompletableFuture<T> submitFuture(Callable<T> action) {
+        upstream.checkCooldown();
+        return admit(action, MirrorRequestContext.deadlineWithin(timeout), null, workers, "foreground");
+    }
+
+    private <T> DeferredResult<T> deferred(Callable<T> action, Duration budget, T fallback,
+                                           ThreadPoolExecutor executor, String lane) {
         long deadline = MirrorRequestContext.deadlineWithin(budget.compareTo(timeout) < 0 ? budget : timeout);
+        long started = System.nanoTime();
+        var result = new DeferredResult<T>(Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - started)));
+        CompletableFuture<T> admitted = admit(action, deadline, fallback, executor, lane);
+        admitted.whenComplete((value, ex) -> {
+            if (result.isSetOrExpired()) return;
+            if (ex == null) result.setResult(value);
+            else result.setErrorResult(unwrap(ex));
+        });
+        // Servlet-level backstop: if the async request times out before the admitted future lands (it
+        // should not — the future completes at the same deadline), answer with the same DeadlineExceeded.
+        result.onTimeout(() -> result.setErrorResult(new MirrorRequestLimit.DeadlineExceeded()));
+        return result;
+    }
+
+    /**
+     * The shared admission core. Completes the returned future on every terminal path — success, action
+     * failure, synchronous rejection at capacity ({@link MirrorRequestLimit.Busy}), queue expiry, and
+     * deadline ({@link MirrorRequestLimit.DeadlineExceeded}) — so a {@link DeferredResult} or a direct future
+     * caller sees identical outcomes.
+     */
+    private <T> CompletableFuture<T> admit(Callable<T> action, long deadline, T fallback,
+                                           ThreadPoolExecutor executor, String lane) {
         var headers = ClientHeaderSupport.current();
         String attempt = MDC.get(MirrorRequestContext.ATTEMPT);
         long started = System.nanoTime();
-        var result = new DeferredResult<T>(Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - started)));
-        Runnable expired = () -> fail(result, fallback, new MirrorRequestLimit.DeadlineExceeded());
+        CompletableFuture<T> result = new CompletableFuture<>();
+        Runnable expired = () -> settle(result, fallback, new MirrorRequestLimit.DeadlineExceeded());
         long queueDeadline = Math.min(deadline, started + queueTimeout.toNanos());
         Runnable queueExpired = () -> {
             metrics.counter("mirror.executor.queue.expired", "lane", lane).increment();
             if (queueDeadline == deadline) expired.run();
-            else fail(result, fallback, new MirrorRequestLimit.Busy());
+            else settle(result, fallback, new MirrorRequestLimit.Busy());
         };
         var task = new AdmissionTask(() -> {
-            if (result.isSetOrExpired()) return null;
+            if (result.isDone()) return null;
             if (System.nanoTime() >= queueDeadline && queueDeadline < deadline) {
                 metrics.counter("mirror.executor.queue.expired", "lane", lane).increment();
-                fail(result, fallback, new MirrorRequestLimit.Busy());
+                settle(result, fallback, new MirrorRequestLimit.Busy());
                 return null;
             }
             if (System.nanoTime() >= deadline) {
@@ -133,35 +179,33 @@ public class MirrorBulkhead {
             try (var ignored = MDC.putCloseable(MirrorRequestContext.ATTEMPT, attempt)) {
                 var value = MirrorRequestContext.withinDeadline(deadline, () -> ClientHeaderSupport.callAs(headers,
                         () -> executor == optional ? MirrorRequestContext.optional(action) : action.call()));
-                result.setResult(value);
+                result.complete(value);
             } catch (Exception ex) {
-                fail(result, fallback, ex);
+                settle(result, fallback, ex);
             }
             return null;
         }, queueDeadline, queueExpired);
-        Runnable cancel = () -> {
-            task.cancel(true);
-            executor.remove(task);
-        };
         try {
             executor.execute(task);
         } catch (RejectedExecutionException ex) {
             metrics.counter("mirror.executor.rejected", "lane", lane).increment();
-            fail(result, fallback, new MirrorRequestLimit.Busy());
+            settle(result, fallback, new MirrorRequestLimit.Busy());
             return result;
         }
-        result.onTimeout(() -> {
-            expired.run();
-            cancel.run();
+        result.whenComplete((value, ex) -> {
+            task.cancel(false);
+            executor.remove(task);
         });
-        result.onError(ex -> cancel.run());
-        result.onCompletion(cancel);
         return result;
     }
 
-    private static <T> void fail(DeferredResult<T> result, T fallback, Exception ex) {
-        if (fallback == null) result.setErrorResult(ex);
-        else result.setResult(fallback);
+    private static <T> void settle(CompletableFuture<T> result, T fallback, Throwable ex) {
+        if (fallback == null) result.completeExceptionally(ex);
+        else result.complete(fallback);
+    }
+
+    private static Throwable unwrap(Throwable ex) {
+        return ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
     }
 
     @PreDestroy

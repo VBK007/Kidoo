@@ -16,6 +16,8 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.stereotype.Service;
 
@@ -117,6 +119,21 @@ public class PlaybackService {
         return new MasterKey(origin, id, catalogue, signer.sign(cookie), scope, generation);
     }
 
+    /**
+     * The identity under which the HLS master may be coalesced before bulkhead admission:
+     * {@code sign(cookie) + id + scope}. Same session, same title, same caller scope collapse onto one
+     * upstream resolve; distinct sessions never share, because their cookie signatures differ. It omits
+     * the origin (stable within the dispatcher cache; a mid-flight host flip is the failover path's job)
+     * and the generation (a function of cookie state, already covered by {@code sign(cookie)}), so the key
+     * is slightly coarser than {@link MasterKey} — conservative on purpose: the worst case is one extra
+     * admission, never a cross-session share. The {@code sign(cookie)} output is a secret-derived HMAC and
+     * is never logged. Only meaningful when {@code scope != null} (an identified caller); the unscoped
+     * bypass path is never coalesced.
+     */
+    public String masterCoalesceKey(String id, String cookie, String scope) {
+        return signer.sign(cookie) + '\u0000' + id + '\u0000' + scope;
+    }
+
     public String hlsMaster(String id, String cookie) {
         return hlsMaster(id, cookie, "");
     }
@@ -125,6 +142,38 @@ public class PlaybackService {
         long generation = sessions.generation(cookie);
         requestLimit.checkCooldown();
         String baseUrl = dispatcherService.resolveActiveBaseUrl();
+        try {
+            return attemptMaster(baseUrl, id, cookie, callerScope, generation);
+        } catch (RuntimeException ex) {
+            // One bounded failover. A transport failure or an upstream 5xx on the resolved host usually
+            // means the backend rotated net52<->net77 inside the 5-minute discovery cache window, so the
+            // cached origin is now dead while its sibling answers. Drop that host ONLY if it is still the
+            // cached one (compare-and-invalidate, so a late failure can't wipe a freshly rediscovered
+            // origin), re-check the cooldown (bail if one began while we were failing), rediscover through
+            // the existing single-flight, and retry the resolve ONCE on the host that answers now —
+            // recomputing the master cache key for the new origin inside attemptMaster. Never fails over
+            // for throttling/cooldown, access-denial or a Cloudflare challenge, local saturation, an
+            // exhausted deadline, the rate-limit penalty clip, or a content-shape error from a host that
+            // did answer; those propagate unchanged. This recovers a rotated host, it does not switch
+            // hosts to evade any upstream restriction.
+            if (!isHostAvailabilityFailure(ex)) throw ex;
+            dispatcherService.invalidateIfCurrent(baseUrl);
+            requestLimit.checkCooldown();
+            String failover = dispatcherService.resolveActiveBaseUrl();
+            if (failover.equals(baseUrl)) throw ex;
+            io.micrometer.core.instrument.Metrics.counter("mirror.master.failover").increment();
+            log.atInfo().addKeyValue("playbackAttemptId", MDC.get(MirrorRequestContext.ATTEMPT))
+                    .log("Mirror master failover to rediscovered host");
+            return attemptMaster(failover, id, cookie, callerScope, generation);
+        }
+    }
+
+    /**
+     * One resolve of the master against a specific origin, through the shared owner/joiner single-flight.
+     * Split out of {@link #hlsMaster} so the failover retry runs the whole flow — master cache key, token
+     * resolution and session-generation fencing — against the newly resolved origin, not the dead one.
+     */
+    private String attemptMaster(String baseUrl, String id, String cookie, String callerScope, long generation) {
         if (callerScope == null) {
             logCache("bypass");
             String master = resolveMaster(baseUrl, id, cookie);
@@ -176,6 +225,29 @@ public class PlaybackService {
         } catch (TimeoutException ex) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Playback start in progress");
         }
+    }
+
+    /**
+     * Whether a failed master resolve is an upstream host-availability failure a one-shot failover to the
+     * sibling backend host could recover: a transport failure reaching the host (connect/read timeout,
+     * connection refused, unknown host → {@link ResourceAccessException}) or an upstream 5xx, including a
+     * Cloudflare 52x "origin unreachable" ({@link HttpServerErrorException}). Everything the spec forbids
+     * failing over for is excluded first and re-raised unchanged: throttling / active cooldown
+     * ({@link MirrorRequestLimit.Throttled} — also how the rate-limit penalty clip surfaces), access-denial
+     * and Cloudflare challenges ({@link MirrorRequestLimit.AccessDenied}), local executor saturation
+     * ({@link MirrorRequestLimit.Busy}), and an exhausted request deadline
+     * ({@link MirrorRequestLimit.DeadlineExceeded}). A content-shape error from a host that <em>did</em>
+     * answer is our own {@link ApiException} (e.g. 502 "no usable rendition"), not one of the two upstream
+     * types below, so it is not eligible either — another host is not expected to fix malformed content.
+     */
+    private static boolean isHostAvailabilityFailure(Throwable ex) {
+        if (ex instanceof MirrorRequestLimit.Throttled
+                || ex instanceof MirrorRequestLimit.AccessDenied
+                || ex instanceof MirrorRequestLimit.Busy
+                || ex instanceof MirrorRequestLimit.DeadlineExceeded) {
+            return false;
+        }
+        return ex instanceof HttpServerErrorException || ex instanceof ResourceAccessException;
     }
 
     private void logCache(String outcome) {

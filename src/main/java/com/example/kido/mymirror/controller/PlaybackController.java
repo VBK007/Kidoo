@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.kido.mymirror.HlsRewriter;
 import com.example.kido.mymirror.MirrorCookie;
+import com.example.kido.mymirror.service.PlaybackCoalescer;
 import com.example.kido.mymirror.service.PlaybackService;
 
 @RestController("mirrorPlaybackController")
@@ -26,9 +27,11 @@ public class PlaybackController {
     private static final MediaType HLS = MediaType.parseMediaType(HlsRewriter.MIME_TYPE);
 
     private final PlaybackService service;
-    public PlaybackController(PlaybackService service, MirrorBulkhead bulkhead) {
+    private final PlaybackCoalescer coalescer;
+    public PlaybackController(PlaybackService service, MirrorBulkhead bulkhead, PlaybackCoalescer coalescer) {
         this.bulkhead = bulkhead;
         this.service = service;
+        this.coalescer = coalescer;
     }
 
     // Playback keep-alive (p.php). Not a stream resolver — /playlist is the stream source.
@@ -66,7 +69,16 @@ public class PlaybackController {
             result.setResult(ResponseEntity.ok().contentType(HLS).body(cached));
             return result;
         }
-        return bulkhead.submit(() -> ResponseEntity.ok().contentType(HLS).body(service.hlsMaster(id, cookie, scope)));
+        // An unscoped (anonymous) caller can't be coalesced — it has no session identity to group on, and
+        // hlsMaster takes the bypass path for a null scope — so admit it directly as before. A scoped
+        // caller coalesces: the first for this session+title+scope admits one worker slot; peers in the
+        // cold-start burst await that one resolve instead of each stampeding the admission gate.
+        if (scope == null) {
+            return bulkhead.submit(() -> ResponseEntity.ok().contentType(HLS).body(service.hlsMaster(id, cookie, scope)));
+        }
+        String key = service.masterCoalesceKey(id, cookie, scope);
+        return coalescer.master(key, bulkhead.timeoutMillis(),
+                () -> bulkhead.submitFuture(() -> ResponseEntity.ok().contentType(HLS).body(service.hlsMaster(id, cookie, scope))));
     }
 
     // Proxies one variant (media) playlist from the segment CDN, adding the mirror Referer the CDN
