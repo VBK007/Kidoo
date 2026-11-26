@@ -32,6 +32,7 @@ import org.springframework.web.client.RestClientResponseException;
 import com.example.kido.common.ApiException;
 import com.example.kido.media.dto.HomeDtos.MirrorRailDto;
 import com.example.kido.media.dto.HomeDtos.MirrorTileDto;
+import com.example.kido.mymirror.catalogue.MirrorCatalogueStore;
 import com.example.kido.mymirror.ClientHeaderSupport;
 import com.example.kido.mymirror.MirrorHomeParser;
 import com.example.kido.mymirror.MirrorHomeParser.Title;
@@ -157,6 +158,7 @@ public class MirrorHomeService {
     private final DispatcherService dispatcherService;
     private final TokenManager tokenManager;
     private final MirrorSessionProvider sessionProvider;
+    private final MirrorCatalogueStore catalogueStore;
     private final ObjectMapper mapper = JsonMapper.builder().build();
     // A few at a time: a burst of simultaneous calls per home screen would look like a flood
     // upstream, so every name and playlist lookup goes through this bounded pool.
@@ -261,12 +263,13 @@ public class MirrorHomeService {
 
     public MirrorHomeService(BrowseRepository browseRepository, PlaybackService playbackService,
                              DispatcherService dispatcherService, TokenManager tokenManager,
-                             MirrorSessionProvider sessionProvider) {
+                             MirrorSessionProvider sessionProvider, MirrorCatalogueStore catalogueStore) {
         this.browseRepository = browseRepository;
         this.playbackService = playbackService;
         this.dispatcherService = dispatcherService;
         this.tokenManager = tokenManager;
         this.sessionProvider = sessionProvider;
+        this.catalogueStore = catalogueStore;
     }
 
     public List<MirrorRailDto> rail(String cookie) {
@@ -300,6 +303,48 @@ public class MirrorHomeService {
         }
     }
 
+    /**
+     * A cache-only read of the rails for the saturation fallback: the warm catalogue with no upstream
+     * work and no exceptions. It consults L1 (the in-memory per-cookie cache) and then, only when
+     * persistence is enabled, L2 (the last-known-good snapshot). It never composes, never hits the
+     * mirror and never throws, so a Home request whose optional worker slot is unavailable can still
+     * answer with the last good catalogue instead of an empty one.
+     *
+     * <p>State reflects where the rails came from: {@code cached} (fresh L1 or L2), {@code stale}
+     * (served past the soft TTL), {@code partial} (a snapshot that was never completed), or {@code
+     * unavailable}/{@code missing} when nothing warm is on hand.
+     */
+    public RailResult warmRails(String cookie, String ott) {
+        String effective = MirrorOtt.apply((cookie != null && !cookie.isBlank())
+                ? cookie : sessionProvider.currentCookie(), ott);
+        if (effective == null || effective.isBlank()) {
+            return new RailResult(List.of(), sessionProvider.state() == MirrorSessionProvider.State.MISSING
+                    ? "missing" : "unavailable");
+        }
+        try {
+            HomeKey key = new HomeKey(effective, sessionProvider.generation(effective));
+            long now = System.currentTimeMillis();
+            Cached cached = byCookie.get(key);
+            if (cached != null && now < cached.until() && !cached.rails().isEmpty()) {
+                return new RailResult(cached.rails(), "cached");
+            }
+            if (catalogueStore.persistenceEnabled()) {
+                var view = catalogueStore.read(MirrorOtt.of(effective));
+                if (view.isPresent() && !view.get().rails().isEmpty()) {
+                    String state = switch (view.get().freshness()) {
+                        case FRESH -> "cached";
+                        case STALE -> "stale";
+                        case PARTIAL -> "partial";
+                    };
+                    return new RailResult(view.get().rails(), state);
+                }
+            }
+        } catch (RuntimeException ex) {
+            log.debug("Mirror warm read unavailable: {}", ex.getClass().getSimpleName());
+        }
+        return new RailResult(List.of(), "unavailable");
+    }
+
     private List<MirrorRailDto> loadRail(String effective) {
         HomeKey key = new HomeKey(effective, sessionProvider.generation(effective));
         long now = System.currentTimeMillis();
@@ -330,6 +375,9 @@ public class MirrorHomeService {
                 owned.complete(cached.rails());
                 return cached.rails();
             }
+            // Taken when the build starts, so a slow build that began earlier can never publish over
+            // a newer catalogue that finished first. Returns 0 (a no-op token) when persistence is off.
+            long buildSeq = catalogueStore.nextSequence();
             Build built = build(effective, catalogueData(key));
             long ttl = built.complete() ? CACHE_MILLIS : PARTIAL_CACHE_MILLIS;
             sessionProvider.ifCurrent(effective, key.generation(), () -> {
@@ -338,6 +386,16 @@ public class MirrorHomeService {
                     byCookie.put(key, new Cached(built.rails(), now + ttl));
                 }
                 owned.complete(built.rails());
+                // Persist the last-known-good snapshot, only when this build is still the current
+                // generation (we are inside ifCurrent) and persistence is enabled. Never throws into
+                // the request: a persistence hiccup must not drop a rail the client already has.
+                if (catalogueStore.persistenceEnabled() && !built.rails().isEmpty()) {
+                    try {
+                        catalogueStore.publish(MirrorOtt.of(effective), built.rails(), built.complete(), buildSeq);
+                    } catch (RuntimeException ex) {
+                        log.debug("Mirror catalogue publish skipped: {}", ex.getClass().getSimpleName());
+                    }
+                }
             });
             return built.rails();
         } catch (RuntimeException | Error ex) {

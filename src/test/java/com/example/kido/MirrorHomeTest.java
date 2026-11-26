@@ -28,6 +28,8 @@ import com.example.kido.mymirror.MirrorStreamSigner;
 import com.example.kido.mymirror.MirrorRequestLimit;
 import com.example.kido.mymirror.MirrorSessionProperties;
 import com.example.kido.mymirror.MirrorSessionProvider;
+import com.example.kido.mymirror.catalogue.MirrorCatalogueProperties;
+import com.example.kido.mymirror.catalogue.MirrorCatalogueStore;
 import com.example.kido.mymirror.manager.TokenManager;
 import com.example.kido.mymirror.repo.AdGateRepository;
 import com.example.kido.mymirror.repo.BrowseRepository;
@@ -144,7 +146,11 @@ class MirrorHomeTest {
         TokenManager tokens = new TokenManager(rest, dispatcher, adGate, sessionProvider);
         PlaybackService playback = new PlaybackService(new PlaybackRepository(rest, rest, rest), dispatcher, tokens,
                 new MirrorStreamSigner(), new MirrorRequestLimit(), sessionProvider);
-        return new MirrorHomeService(new BrowseRepository(rest), playback, dispatcher, tokens, sessionProvider);
+        // Catalogue persistence is off by default, so publish/read/nextSequence all short-circuit before
+        // touching a repository — null repos are never dereferenced in this configuration.
+        MirrorCatalogueStore catalogueStore = new MirrorCatalogueStore(null, null, null, new MirrorCatalogueProperties());
+        return new MirrorHomeService(new BrowseRepository(rest), playback, dispatcher, tokens, sessionProvider,
+                catalogueStore);
     }
 
     // Netflix serves its categorised home as HTML at /mobile/home?app=1: one <h2 class="tray-title">

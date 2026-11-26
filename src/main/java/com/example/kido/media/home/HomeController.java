@@ -20,6 +20,7 @@ import com.example.kido.media.web.ActiveProfile;
 import com.example.kido.mymirror.MirrorCookie;
 import com.example.kido.mymirror.MirrorBulkhead;
 import com.example.kido.mymirror.MirrorOtt;
+import com.example.kido.mymirror.catalogue.MirrorCatalogueProperties;
 import com.example.kido.mymirror.service.MirrorHomeService;
 import com.example.kido.profile.Profile;
 import com.example.kido.user.AppUser;
@@ -32,11 +33,14 @@ public class HomeController {
     private final HomeService service;
     private final MirrorHomeService mirrorHome;
     private final MirrorBulkhead bulkhead;
+    private final MirrorCatalogueProperties catalogueProps;
 
-    public HomeController(HomeService service, MirrorHomeService mirrorHome, MirrorBulkhead bulkhead) {
+    public HomeController(HomeService service, MirrorHomeService mirrorHome, MirrorBulkhead bulkhead,
+                          MirrorCatalogueProperties catalogueProps) {
         this.service = service;
         this.mirrorHome = mirrorHome;
         this.bulkhead = bulkhead;
+        this.catalogueProps = catalogueProps;
     }
 
     /**
@@ -59,11 +63,35 @@ public class HomeController {
                         @RequestHeader(value = MirrorCookie.HEADER, required = false) String mirrorCookie,
                         @RequestHeader(value = MirrorOtt.HEADER, required = false) String ott) {
         HomeDto home = service.home(user, profile, parseTypes(types), limit);
+        // The saturation fallback (used only when the optional mirror executor is full or times out).
+        // With cache-first on, that fallback is the warm last-known-good catalogue instead of an empty
+        // mirror, so a busy upstream degrades to cached rails rather than nothing. submitOptional takes
+        // an eager value, so this is precomputed only when the flag is on — otherwise no DB touch.
+        ResponseEntity<HomeDto> saturated = saturationFallback(home, mirrorCookie, ott);
         return bulkhead.submitOptional(() -> {
             var mirror = mirrorHome.railWithStatus(mirrorCookie, ott);
             HomeDto payload = mirror.rails().isEmpty() ? home : home.withMirror(mirror.rails());
             return ResponseEntity.ok().header("X-Mirror-Catalogue-State", mirror.state()).body(payload);
-        }, Duration.ofSeconds(8), ResponseEntity.ok().header("X-Mirror-Catalogue-State", "unavailable").body(home));
+        }, Duration.ofSeconds(8), saturated);
+    }
+
+    /**
+     * What to serve when the optional mirror enrichment can't run (executor saturated or budget spent).
+     * Default: an empty mirror, flagged {@code unavailable} — the historical behaviour. With cache-first
+     * enabled, serve the warm catalogue ({@code cached}/{@code stale}/{@code partial}) when one exists,
+     * falling back to the empty home only when nothing is cached. Never throws.
+     */
+    private ResponseEntity<HomeDto> saturationFallback(HomeDto home, String mirrorCookie, String ott) {
+        if (catalogueProps.getCacheFirst().isEnabled()) {
+            var warm = mirrorHome.warmRails(mirrorCookie, ott);
+            if (!warm.rails().isEmpty()) {
+                return ResponseEntity.ok()
+                        .header("X-Mirror-Catalogue-State", warm.state())
+                        .body(home.withMirror(warm.rails()));
+            }
+            return ResponseEntity.ok().header("X-Mirror-Catalogue-State", warm.state()).body(home);
+        }
+        return ResponseEntity.ok().header("X-Mirror-Catalogue-State", "unavailable").body(home);
     }
 
     /**
