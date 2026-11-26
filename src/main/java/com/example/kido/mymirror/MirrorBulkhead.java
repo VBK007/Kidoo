@@ -21,6 +21,8 @@ import jakarta.annotation.PreDestroy;
 
 @Component
 public class MirrorBulkhead {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(MirrorBulkhead.class);
+
     private final ThreadPoolExecutor workers;
     private final ThreadPoolExecutor optional;
     private final Duration timeout;
@@ -99,7 +101,7 @@ public class MirrorBulkhead {
     }
 
     public <T> DeferredResult<T> submit(Callable<T> action) {
-        upstream.checkCooldown();
+        checkForegroundCooldown();
         return deferred(action, timeout, null, workers, "foreground");
     }
 
@@ -125,8 +127,20 @@ public class MirrorBulkhead {
      * through the same single-slot, paced upstream limiter.
      */
     public <T> CompletableFuture<T> submitFuture(Callable<T> action) {
-        upstream.checkCooldown();
+        checkForegroundCooldown();
         return admit(action, MirrorRequestContext.deadlineWithin(timeout), null, workers, "foreground");
+    }
+
+    private void checkForegroundCooldown() {
+        try {
+            upstream.checkCooldown();
+        } catch (MirrorRequestLimit.Throttled ex) {
+            LOG.atInfo().addKeyValue("playbackAttemptId", MDC.get(MirrorRequestContext.ATTEMPT))
+                    .addKeyValue("admissionOutcome", "cooldown").addKeyValue("dispatched", false)
+                    .addKeyValue("cooldownRemainingSeconds", ex.retryAfterSeconds())
+                    .log("Mirror executor admission");
+            throw ex;
+        }
     }
 
     private <T> DeferredResult<T> deferred(Callable<T> action, Duration budget, T fallback,
@@ -162,6 +176,7 @@ public class MirrorBulkhead {
         long queueDeadline = Math.min(deadline, started + queueTimeout.toNanos());
         Runnable queueExpired = () -> {
             metrics.counter("mirror.executor.queue.expired", "lane", lane).increment();
+            logAdmission(attempt, lane, "queue_expired", started);
             if (queueDeadline == deadline) expired.run();
             else settle(result, fallback, new MirrorRequestLimit.Busy());
         };
@@ -169,6 +184,7 @@ public class MirrorBulkhead {
             if (result.isDone()) return null;
             if (System.nanoTime() >= queueDeadline && queueDeadline < deadline) {
                 metrics.counter("mirror.executor.queue.expired", "lane", lane).increment();
+                logAdmission(attempt, lane, "queue_expired", started);
                 settle(result, fallback, new MirrorRequestLimit.Busy());
                 return null;
             }
@@ -176,6 +192,7 @@ public class MirrorBulkhead {
                 expired.run();
                 return null;
             }
+            logAdmission(attempt, lane, "admitted", started);
             try (var ignored = MDC.putCloseable(MirrorRequestContext.ATTEMPT, attempt)) {
                 var value = MirrorRequestContext.withinDeadline(deadline, () -> ClientHeaderSupport.callAs(headers,
                         () -> executor == optional ? MirrorRequestContext.optional(action) : action.call()));
@@ -189,6 +206,7 @@ public class MirrorBulkhead {
             executor.execute(task);
         } catch (RejectedExecutionException ex) {
             metrics.counter("mirror.executor.rejected", "lane", lane).increment();
+            logAdmission(attempt, lane, "queue_full", started);
             settle(result, fallback, new MirrorRequestLimit.Busy());
             return result;
         }
@@ -197,6 +215,14 @@ public class MirrorBulkhead {
             executor.remove(task);
         });
         return result;
+    }
+
+    private static void logAdmission(String attempt, String lane, String outcome, long started) {
+        if (attempt == null) return;
+        LOG.atInfo().addKeyValue("playbackAttemptId", attempt).addKeyValue("lane", lane)
+                .addKeyValue("admissionOutcome", outcome)
+                .addKeyValue("queueWaitMs", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
+                .log("Mirror executor admission");
     }
 
     private static <T> void settle(CompletableFuture<T> result, T fallback, Throwable ex) {

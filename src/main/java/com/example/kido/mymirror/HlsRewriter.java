@@ -80,36 +80,70 @@ public final class HlsRewriter {
         return out.toString();
     }
 
-    /**
-     * Whether a master playlist carries at least one variant the player can actually stream — a
-     * bare variant URL (the line after an {@code #EXT-X-STREAM-INF}) that resolves to a real host.
-     *
-     * <p>The mirror intermittently answers with a placeholder master whose only variant has an empty
-     * authority ({@code https:///files/<id>/720p/720p.m3u8}) — a form seen while its CDN node mapping
-     * for the title is still warming. Such a master is unplayable: the empty host carries no segments
-     * and cannot be resolved (the real freecdn node and its content id are not derivable from it). The
-     * caller uses this to re-request a master until a resolved one comes back, rather than handing the
-     * player a master it can only fail on.
-     */
-    public static boolean hasPlayableVariant(String master, URI masterUrl) {
-        if (master == null || master.isEmpty()) {
+    public enum PlaylistKind { MASTER, MEDIA, MALFORMED, AMBIGUOUS }
+
+    private static final Pattern BANDWIDTH = Pattern.compile("(?:^|,)BANDWIDTH=([1-9][0-9]*)(?:,|$)");
+
+    /** Parse the playlist type and the URI declarations used by the playback master endpoint. */
+    public static PlaylistKind playlistKind(String body, URI base) {
+        if (body == null) return PlaylistKind.MALFORMED;
+        String[] lines = body.split("\r?\n", -1);
+        if (!"#EXTM3U".equals(lines[0])) return PlaylistKind.MALFORMED;
+        boolean master = false;
+        boolean media = false;
+        boolean variant = false;
+        boolean segment = false;
+        boolean needsUri = false;
+        boolean streamInf = false;
+        for (int i = 1; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if (line.isEmpty() || (line.startsWith("#") && !line.startsWith("#EXT"))) continue;
+            if (needsUri) {
+                if (line.startsWith("#") || !httpUri(base, line)) return PlaylistKind.MALFORMED;
+                if (streamInf) variant = true;
+                else segment = true;
+                needsUri = false;
+                continue;
+            }
+            if (!line.startsWith("#") || line.equals("#EXTM3U")) return PlaylistKind.MALFORMED;
+            if (line.startsWith("#EXT-X-STREAM-INF:") || line.startsWith("#EXT-X-I-FRAME-STREAM-INF:")) {
+                master = true;
+                String attributes = line.substring(line.indexOf(':') + 1);
+                if (!BANDWIDTH.matcher(attributes).find()) return PlaylistKind.MALFORMED;
+                streamInf = line.startsWith("#EXT-X-STREAM-INF:");
+                needsUri = streamInf;
+                if (!streamInf) {
+                    if (!httpUri(base, attribute(line, "URI"))) return PlaylistKind.MALFORMED;
+                    variant = true;
+                }
+            } else if (line.startsWith("#EXT-X-MEDIA:")) {
+                master = true;
+                String uri = attribute(line, "URI");
+                // Preserve rewriteMaster's handling of the provider's known hostless alternate rendition.
+                if (uri != null && !uri.startsWith("https:///") && !httpUri(base, uri)) return PlaylistKind.MALFORMED;
+            } else if (line.startsWith("#EXTINF:") || line.startsWith("#EXT-X-TARGETDURATION:")
+                    || line.startsWith("#EXT-X-MEDIA-SEQUENCE:") || line.equals("#EXT-X-ENDLIST")) {
+                media = true;
+                streamInf = false;
+                needsUri = line.startsWith("#EXTINF:");
+            }
+        }
+        if (needsUri) return PlaylistKind.MALFORMED;
+        if (master && media) return PlaylistKind.AMBIGUOUS;
+        if (variant) return PlaylistKind.MASTER;
+        if (segment) return PlaylistKind.MEDIA;
+        return PlaylistKind.MALFORMED;
+    }
+
+    private static boolean httpUri(URI base, String value) {
+        if (value == null || value.isBlank()) return false;
+        try {
+            URI uri = base.resolve(value);
+            return uri.getHost() != null && uri.getRawUserInfo() == null
+                    && ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()));
+        } catch (IllegalArgumentException ex) {
             return false;
         }
-        for (String line : master.split("\r?\n", -1)) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                continue; // tags and blanks are not variant URLs
-            }
-            try {
-                String host = masterUrl.resolve(trimmed).getHost();
-                if (host != null && !host.isEmpty()) {
-                    return true;
-                }
-            } catch (IllegalArgumentException ex) {
-                // an unparseable variant line is not a playable one; keep looking
-            }
-        }
-        return false;
     }
 
     /** An attribute's value from an HLS tag line, quoted or bare, or {@code null} if absent. */

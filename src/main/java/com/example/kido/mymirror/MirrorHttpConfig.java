@@ -71,8 +71,8 @@ public class MirrorHttpConfig {
                         provider.observe(cookie, MirrorSessionProvider.State.THROTTLED);
                     } else if (status >= 500) {
                         provider.observe(cookie, MirrorSessionProvider.State.TEMPORARILY_UNAVAILABLE);
-                    } else if (status >= 200 && status < 300 && !request.getURI().getPath().endsWith("/verify2.php")) {
-                        provider.observe(cookie, MirrorSessionProvider.State.VALID);
+                    } else if (status >= 200 && status < 300) {
+                        provider.observe(cookie, MirrorSessionProvider.State.REACHABLE);
                     }
                     return response;
                 } catch (java.io.IOException ex) {

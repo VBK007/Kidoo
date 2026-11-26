@@ -79,12 +79,12 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
         try {
             checkCooldown();
         } catch (Throttled ex) {
-            logRequest(request, started, 429, inFlight.get());
+            logRequest(request, started, 429, inFlight.get(), false, 0, "cooldown");
             throw ex;
         }
         try {
             if ((MirrorRequestContext.isOptional() && requestSlot.hasQueuedThreads()) || !requestSlot.tryAcquire(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
-                logRequest(request, started, 503, inFlight.get());
+                logRequest(request, started, 503, inFlight.get(), false, System.nanoTime() - started, "admission_busy");
                 throw new Busy();
             }
         } catch (InterruptedException ex) {
@@ -95,10 +95,12 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
         ClientHttpResponse response = null;
         int status = 0;
         boolean dispatched = false;
+        long queued = 0;
         try {
             checkCooldown();
             TimeUnit.NANOSECONDS.sleep(reserveStart(deadline));
             checkCooldown();
+            queued = System.nanoTime() - started;
             inFlight.incrementAndGet();
             dispatched = true;
             response = execution.execute(request, body);
@@ -113,14 +115,18 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
             if (status >= 300 && status < 400 && request.getMethod() != HttpMethod.HEAD) {
                 throw new ApiException(HttpStatus.BAD_GATEWAY, "Unexpected redirect from the streaming source");
             }
-            return new LimitedResponse(response, request, started, status);
+            return new LimitedResponse(response, request, started, status, queued);
         } catch (IOException | RuntimeException | InterruptedException ex) {
             try {
                 if (response != null) response.close();
             } finally {
                 int active = dispatched ? inFlight.getAndDecrement() : inFlight.get();
                 requestSlot.release();
-                logRequest(request, started, status, active);
+                int outcomeStatus = ex instanceof ApiException api ? api.getStatus().value() : status;
+                String outcome = dispatched ? (status == 0 ? "transport_error" : "upstream_response")
+                        : ex instanceof Throttled ? "cooldown" : "admission_failed";
+                logRequest(request, started, outcomeStatus, active, dispatched,
+                        dispatched ? queued : System.nanoTime() - started, outcome, status);
             }
             if (ex instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
@@ -131,7 +137,13 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
         }
     }
 
-    private void logRequest(HttpRequest request, long started, int status, int active) {
+    private void logRequest(HttpRequest request, long started, int status, int active,
+                            boolean dispatched, long queued, String outcome) {
+        logRequest(request, started, status, active, dispatched, queued, outcome, dispatched ? status : 0);
+    }
+
+    private void logRequest(HttpRequest request, long started, int status, int active,
+                            boolean dispatched, long queued, String outcome, int upstreamStatus) {
         String path = java.util.Objects.requireNonNullElse(request.getURI().getPath(), "");
         String type = switch (path.substring(path.lastIndexOf('/') + 1)) {
             case "p.php" -> "heartbeat";
@@ -147,7 +159,12 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
         log.atInfo().addKeyValue("playbackAttemptId", MDC.get(MirrorRequestContext.ATTEMPT))
                 .addKeyValue("requestType", type).addKeyValue("status", status)
                 .addKeyValue("durationMs", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
-                .addKeyValue("inFlight", active).log("Mirror upstream request");
+                .addKeyValue("inFlight", active).addKeyValue("dispatched", dispatched)
+                .addKeyValue("upstreamStatus", upstreamStatus == 0 ? null : upstreamStatus)
+                .addKeyValue("admissionOutcome", outcome)
+                .addKeyValue("outboundWaitMs", TimeUnit.NANOSECONDS.toMillis(queued))
+                .addKeyValue("cooldownRemainingMs", Math.max(0, resumeAt.get() - Instant.now().toEpochMilli()))
+                .log("Mirror upstream request");
     }
 
     public void checkCooldown() {
@@ -226,13 +243,15 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
         private final HttpRequest request;
         private final long started;
         private final int status;
+        private final long queued;
         private boolean closed;
 
-        private LimitedResponse(ClientHttpResponse response, HttpRequest request, long started, int status) {
+        private LimitedResponse(ClientHttpResponse response, HttpRequest request, long started, int status, long queued) {
             this.response = response;
             this.request = request;
             this.started = started;
             this.status = status;
+            this.queued = queued;
         }
 
         @Override
@@ -264,7 +283,7 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
             } finally {
                 int active = inFlight.getAndDecrement();
                 requestSlot.release();
-                logRequest(request, started, status, active);
+                logRequest(request, started, status, active, true, queued, "upstream_response");
             }
         }
     }

@@ -36,7 +36,7 @@ public class MirrorOperations {
         var state = sessions.state();
         String availability = switch (state) {
             case VALID -> "AVAILABLE";
-            case UNKNOWN -> "UNKNOWN";
+            case UNKNOWN, REACHABLE, VERIFIED -> "UNKNOWN";
             case THROTTLED -> "THROTTLED";
             case TEMPORARILY_UNAVAILABLE -> "UNAVAILABLE";
             case MISSING, REVOKED, ACCESS_DENIED -> "CREDENTIAL_UNAVAILABLE";

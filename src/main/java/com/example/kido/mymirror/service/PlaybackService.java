@@ -256,18 +256,31 @@ public class PlaybackService {
                 .addKeyValue("cache", outcome).log("Mirror master lookup");
     }
 
-    private void startup(Runnable request) {
+    private void startup(String operation, boolean required, Runnable request) {
         try {
             request.run();
+            logStartup(operation, "completed");
         } catch (HttpStatusCodeException ex) {
-            if (MirrorCloudflare.isChallenge(ex) || ex.getStatusCode().value() == 403) throw ex;
-            log.debug("Optional mirror startup request returned status {}", ex.getStatusCode().value());
+            int status = ex.getStatusCode().value();
+            if (required || MirrorCloudflare.isChallenge(ex)
+                    || status == 401 || status == 403 || status == 412 || status == 429) {
+                logStartup(operation, "blocked_http");
+                throw ex;
+            }
+            logStartup(operation, "optional_http_failure");
         } catch (RestClientException ex) {
-            log.debug("Optional mirror startup request failed: {}", ex.getClass().getSimpleName());
+            logStartup(operation, required ? "blocked_transport" : "optional_transport_failure");
+            if (required) throw ex;
         } catch (ApiException ex) {
-            if (ex.getStatus() != HttpStatus.PRECONDITION_FAILED) throw ex;
-            log.debug("Mirror startup request was deferred by an upstream precondition");
+            logStartup(operation, "blocked_local");
+            throw ex;
         }
+    }
+
+    private void logStartup(String operation, String outcome) {
+        log.atInfo().addKeyValue("playbackAttemptId", MDC.get(MirrorRequestContext.ATTEMPT))
+                .addKeyValue("startupOperation", operation).addKeyValue("startupOutcome", outcome)
+                .log("Mirror playback startup");
     }
 
     // Drop done entries that are failed or past their TTL once the map grows past a modest cap. Entries
@@ -283,23 +296,39 @@ public class PlaybackService {
     }
 
     private String resolveMaster(String baseUrl, String id, String cookie) {
-        String playbackToken = tokenManager.playbackT(cookie);
-        startup(() -> repo.heartbeat(baseUrl, tokenManager.tokensForOrigin(baseUrl, cookie).hash(), cookie));
-        startup(() -> repo.openTitle(baseUrl, id, playbackToken, cookie));
+        long generation = sessions.generation(cookie);
+        TokenManager.Tokens tokens;
+        try {
+            tokens = tokenManager.tokensForOrigin(baseUrl, cookie);
+            logStartup("authorization", "verified");
+        } catch (RuntimeException ex) {
+            logStartup("authorization", "blocked");
+            logStartup("heartbeat", "not_dispatched_authorization");
+            throw ex;
+        }
+        String playbackToken = tokens.t();
+        startup("heartbeat", false, () -> repo.heartbeat(baseUrl, tokens.hash(), cookie));
+        startup("title_open", true, () -> repo.openTitle(baseUrl, id, playbackToken, cookie));
         String playlist = repo.fetchPlaylist(baseUrl, id, "", playbackToken, cookie);
         URI masterUrl = UpstreamUrl.resolveOnMirror(baseUrl, masterSource(playlist));
         String master = repo.fetchHlsMaster(baseUrl, masterUrl, cookie);
-        if (isRateLimitPenalty(master)) {
+        String restriction = restrictionMatch(master);
+        if (restriction != null) {
+            logManifest("restriction_" + restriction);
             sessions.observe(cookie, MirrorSessionProvider.State.THROTTLED);
             throw requestLimit.throttled(null);
         }
-        if (!HlsRewriter.hasPlayableVariant(master, masterUrl)) {
+        var kind = HlsRewriter.playlistKind(master, masterUrl);
+        logManifest(kind.name());
+        if (kind != HlsRewriter.PlaylistKind.MASTER) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "The streaming source returned no usable rendition");
         }
 
         // The CDN gates each variant playlist on the mirror Referer; route them through our proxy,
         // pinned to the host live NOW so a mid-stream mirror rotation cannot invalidate the Referer.
-        return HlsRewriter.rewriteMaster(master, masterUrl, upstream -> variantProxyPath(upstream, baseUrl));
+        String rewritten = HlsRewriter.rewriteMaster(master, masterUrl, upstream -> variantProxyPath(upstream, baseUrl));
+        sessions.ifCurrent(cookie, generation, () -> sessions.observe(cookie, MirrorSessionProvider.State.VALID));
+        return rewritten;
     }
 
     /** The signed {@code /playback/variant} path the master hands the player for one variant URL. */
@@ -390,9 +419,23 @@ public class PlaybackService {
     private static final Pattern RATE_LIMIT_PENALTY = Pattern.compile(
             "/files/220884/[^\\s?]+[?][^\\s]*\\bin=unknown\\b");
 
-    /** Whether a fetched master is the mirror's rate-limit penalty clip rather than the real title. */
-    private static boolean isRateLimitPenalty(String masterBody) {
-        return masterBody != null && RATE_LIMIT_PENALTY.matcher(masterBody).find();
+    /** Preserve the historical full-body restriction check. Location is diagnostic only. */
+    private static String restrictionMatch(String body) {
+        if (body == null) return null;
+        var match = RATE_LIMIT_PENALTY.matcher(body);
+        if (!match.find()) return null;
+        int start = body.lastIndexOf('\n', match.start()) + 1;
+        int end = body.indexOf('\n', match.end());
+        String line = body.substring(start, end < 0 ? body.length() : end).strip();
+        if (line.startsWith("#EXT") && line.contains("URI=")) return "tag_attribute";
+        if (line.startsWith("#")) return "comment_or_tag";
+        if (line.chars().noneMatch(Character::isWhitespace)) return "uri_line_candidate";
+        return "other_text";
+    }
+
+    private void logManifest(String decision) {
+        log.atInfo().addKeyValue("playbackAttemptId", MDC.get(MirrorRequestContext.ATTEMPT))
+                .addKeyValue("manifestDecision", decision).log("Mirror manifest decision");
     }
 
     public String subtitle(String subtitleUrl, String cookie) {

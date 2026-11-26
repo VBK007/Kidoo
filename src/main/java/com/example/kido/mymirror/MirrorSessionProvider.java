@@ -36,7 +36,7 @@ public class MirrorSessionProvider {
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.beans.factory.ObjectProvider<SessionRecoveryCoordinator> coordinator;
 
-    public enum State { UNKNOWN, VALID, MISSING, REVOKED, ACCESS_DENIED, THROTTLED, TEMPORARILY_UNAVAILABLE }
+    public enum State { UNKNOWN, REACHABLE, VERIFIED, VALID, MISSING, REVOKED, ACCESS_DENIED, THROTTLED, TEMPORARILY_UNAVAILABLE }
 
     private record Session(String cookie, long generation, State state) {}
     private volatile Session current = new Session(null, 0, State.MISSING);
@@ -147,6 +147,8 @@ public class MirrorSessionProvider {
             return;
         }
         if (current.state() == State.REVOKED || current.state() == State.ACCESS_DENIED) return;
+        if (next == State.REACHABLE && (current.state() == State.VERIFIED || current.state() == State.VALID)
+                || next == State.VERIFIED && current.state() == State.VALID) return;
         current = new Session(current.cookie(), current.generation(), next);
     }
 
@@ -213,7 +215,7 @@ public class MirrorSessionProvider {
     private void publishActivation(long generation, String expected, String candidate) {
         blocked.add(expected);
         callerDenials.remove(identity(candidate));
-        current = new Session(candidate, generation + 1, State.VALID);
+        current = new Session(candidate, generation + 1, State.VERIFIED);
     }
 
     private boolean matches(String cookie) {

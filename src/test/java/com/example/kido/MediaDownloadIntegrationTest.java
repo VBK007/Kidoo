@@ -272,14 +272,19 @@ class MediaDownloadIntegrationTest {
      */
     @Test
     void convertingLabelNamesBothResolutionsAndThePercentage() throws Exception {
-        String jobId = extract(requestDownload(awkwardId, 1080).body(), "jobId");
+        // Seed the read-side fixture without scheduling a worker for this job.
+        DownloadJob job = jobs.save(DownloadJob.builder()
+                .profileId(profileId)
+                .mediaItemId(awkwardId)
+                .itemTitle("Awkward")
+                .mode(DownloadJob.Mode.CONVERT)
+                .state(DownloadJob.State.CONVERTING)
+                .sourceHeight(2160)
+                .targetHeight(1080)
+                .percent(68)
+                .build());
 
-        DownloadJob job = jobs.findById(jobId).orElseThrow();
-        job.setState(DownloadJob.State.CONVERTING);
-        job.setPercent(68);
-        jobs.save(job);
-
-        HttpResponse<String> status = send("GET", "/api/media/downloads/" + jobId, null);
+        HttpResponse<String> status = send("GET", "/api/media/downloads/" + job.getId(), null);
         assertEquals(200, status.statusCode(), status.body());
         // 2160 reads as "4K" to a person; the rest as their own number.
         assertTrue(status.body().contains("CONVERTING 4K -> 1080P · 68%"), status.body());

@@ -143,7 +143,7 @@ class MirrorFlowTest {
         for (String cookie : new String[] {"a=1", "b=2"}) {
             server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
                     .andExpect(header("Cookie", cookie))
-                    .andRespond(withSuccess("{\"statusup\":\"OK\"}", MediaType.APPLICATION_JSON));
+                    .andRespond(withSuccess("{ \"statusup\" : \"OK\" }", MediaType.APPLICATION_JSON));
             server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.GET))
                     .andExpect(header("Cookie", cookie))
                     .andRespond(withSuccess(HOME, MediaType.TEXT_HTML));
@@ -168,6 +168,87 @@ class MirrorFlowTest {
         ApiException ex = assertThrows(ApiException.class, () -> tokens.getT("a=1"));
         assertEquals(HttpStatus.PRECONDITION_FAILED, ex.getStatus());
         assertEquals(0, tokens.liveSessions());
+    }
+
+    @Test
+    void requiredAuthorizationStopsMasterBeforeAnyStartupRequests() {
+        for (String body : List.of(
+                "{\"c\":\"n\",\"statusup\":\"Waiting for your ads click.\"}",
+                "{\"wrapper\":{\"c\":\"y\"}}",
+                "{\"c\":\"y\"} trailing",
+                "{\"c\":\"n\",\"statusup\":\"OK\"}",
+                "{\"c\":\"n\",\"c\":\"y\"}")) {
+            RestTemplate rest = new RestTemplate();
+            MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+            server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
+                    .andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
+            var failure = assertThrows(ApiException.class,
+                    () -> newPlayback(rest).hlsMaster("42", "t_hash_t=fixture"));
+            assertEquals(body.contains("Waiting") ? HttpStatus.PRECONDITION_FAILED : HttpStatus.BAD_GATEWAY,
+                    failure.getStatus());
+            server.verify();
+        }
+    }
+
+    @Test
+    void distinguishesMasterMediaMalformedAndAmbiguousPlaylists() {
+        URI base = URI.create(BASE + "/master.m3u8");
+        String variant = "#EXT-X-STREAM-INF:BANDWIDTH=1000\nvariant.m3u8?label=unknown\n";
+        String segment = "#EXTINF:4,\nsegment.ts\n";
+        assertEquals(HlsRewriter.PlaylistKind.MASTER, HlsRewriter.playlistKind("#EXTM3U\n" + variant, base));
+        assertEquals(HlsRewriter.PlaylistKind.MEDIA, HlsRewriter.playlistKind("#EXTM3U\n" + segment, base));
+        assertEquals(HlsRewriter.PlaylistKind.AMBIGUOUS,
+                HlsRewriter.playlistKind("#EXTM3U\n" + variant + segment, base));
+        for (String body : List.of("", "Forbidden", "#EXTM3U\nloose.ts",
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=0\nvariant.m3u8",
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhttps:///variant.m3u8",
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1")) {
+            assertEquals(HlsRewriter.PlaylistKind.MALFORMED, HlsRewriter.playlistKind(body, base));
+        }
+    }
+
+    @Test
+    void ambiguousRestrictionMarkerStillBlocksAndStartsCooldown() {
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        expectStartup(server, "SESS");
+        server.expect(once(), requestTo(BASE + "/mobile/playlist.php?id=42&t=&tm=SESS"))
+                .andRespond(withSuccess("[{\"file\":\"/master.m3u8\"}]", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/master.m3u8")).andRespond(withSuccess("""
+                #EXTM3U
+                #EXT-X-STREAM-INF:BANDWIDTH=1000
+                variant.m3u8
+                # https://fixture.example/files/220884/notice.m3u8?note=in=unknown
+                """, MediaType.parseMediaType(HlsRewriter.MIME_TYPE)));
+        var limit = new MirrorRequestLimit();
+        var sessions = testSessionProvider();
+        var playback = new PlaybackService(new PlaybackRepository(rest, rest, rest), new FixedDispatcher(),
+                new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), sessions),
+                new MirrorStreamSigner(), limit, sessions);
+        assertThrows(MirrorRequestLimit.Throttled.class, () -> playback.hlsMaster("42", "t_hash_t=SESS"));
+        assertThrows(MirrorRequestLimit.Throttled.class, limit::checkCooldown);
+        server.verify();
+    }
+
+    @Test
+    void fastTokenCacheHitChecksGenerationAgainBeforeReturning() {
+        RestTemplate rest = new RestTemplate();
+        var server = MockRestServiceServer.bindTo(rest).build();
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"c\":\"y\"}", MediaType.APPLICATION_JSON));
+        server.expect(once(), requestTo(BASE + "/mobile/verify2.php")).andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(HOME, MediaType.TEXT_HTML));
+        var sessions = org.mockito.Mockito.spy(testSessionProvider());
+        var manager = new TokenManager(rest, new FixedDispatcher(), new AdGateRepository(rest), sessions);
+        String cookie = "t_hash_t=fixture";
+        assertEquals("fixture", manager.getT(cookie));
+        org.mockito.Mockito.doAnswer(call -> {
+            sessions.noteRejected(cookie);
+            return call.callRealMethod();
+        }).when(sessions).ifCurrent(org.mockito.ArgumentMatchers.eq(cookie),
+                org.mockito.ArgumentMatchers.eq(0L), org.mockito.ArgumentMatchers.any(Runnable.class));
+        assertThrows(MirrorSessionProvider.Revoked.class, () -> manager.tokensForOrigin(BASE, cookie));
+        server.verify();
     }
 
     @Test

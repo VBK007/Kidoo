@@ -9,6 +9,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import org.slf4j.MDC;
+import tools.jackson.core.StreamReadFeature;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.springframework.http.HttpEntity;
@@ -44,10 +48,11 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class TokenManager {
     private static final long LIFETIME_SECONDS = 180;
-    // How the live mirror signals a cleared gate. Uncleared it answers
-    // {"c":"n","statusup":"Waiting for your ads click."}; a real ad click flips both fields.
-    private static final String AD_GATE_CLEARED_STATUS = "\"statusup\":\"OK\"";
-    private static final String AD_GATE_CLEARED_FLAG = "\"c\":\"y\"";
+    private static final JsonMapper VERIFICATION_JSON = JsonMapper.builder()
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build();
+
+    private enum Verification { VERIFIED, REQUIRED, MALFORMED, UNKNOWN, ACCESS_DENIED }
 
     public record Tokens(String t, String hash, long expiry) {
         boolean liveAt(long now) { return now < expiry; }
@@ -79,20 +84,7 @@ public class TokenManager {
 
     public String getT(String cookie) { return tokensFor(cookie).t(); }
 
-    /**
-     * The {@code t} token for the playback path, read straight from the session cookie without
-     * touching the ad-gate.
-     *
-     * <p>{@link #getT} runs the per-play ad-gate verify (verify2.php) and 412s until a human clicks
-     * a fresh ad on the device. That gate is NetMirror's per-view monetization, not what authorizes
-     * the stream: playlist.php mints its own signed {@code in=} play_token inside the
-     * {@code sources[].file} it returns, and the master (and its variants) fetch and play on the
-     * session cookie alone — confirmed against the live mirror with the gate showing
-     * {@code "Waiting for your ads click."}. {@code t} is only the {@code tm=} analytics/display
-     * value on playlist.php, which the mirror accepts empty. So the playback resolver takes {@code t}
-     * from the cookie's own {@code t_hash_t} (blank when it carries none, which the mirror tolerates)
-     * rather than gating every single play on an ad click, which would make the player unusable.
-     */
+    /** The cookie-derived value used by legacy request paths. It does not establish authorization. */
     public String playbackT(String cookie) { return sessionTokenFromCookie(cookie); }
     /** Only the alternate-video call needs this; 502 when the mirror gave none. */
     public String getHash(String cookie) {
@@ -120,7 +112,12 @@ public class TokenManager {
         long generation = sessionProvider.generation(cookie);
         TokenKey key = new TokenKey(baseUrl, cookie, generation);
         Tokens cached = byCookie.get(key);
-        if (cached != null && cached.liveAt(now())) return cached;
+        if (cached != null && cached.liveAt(now())) {
+            sessionProvider.ifCurrent(cookie, generation, () -> {});
+            logToken("cache_hit", generation, true);
+            return cached;
+        }
+        logToken("cache_miss", generation, null);
         CompletableFuture<Tokens> owned = new CompletableFuture<>();
         CompletableFuture<Tokens> running = refreshes.putIfAbsent(key, owned);
         if (running != null) {
@@ -152,10 +149,12 @@ public class TokenManager {
                 if (previous != null) failures.remove(key, previous);
                 Metrics.counter("mirror.token.refresh", "outcome", "attempt").increment();
                 try {
-                    cached = load(baseUrl, cookie, ClientHeaderSupport.current());
+                    cached = load(baseUrl, cookie, ClientHeaderSupport.current(), generation);
                     Tokens verified = cached;
-                    sessionProvider.ifCurrent(cookie, key.generation(), () -> byCookie.put(key, verified));
-                    sessionProvider.observe(cookie, MirrorSessionProvider.State.VALID);
+                    sessionProvider.ifCurrent(cookie, key.generation(), () -> {
+                        byCookie.put(key, verified);
+                        sessionProvider.observe(cookie, MirrorSessionProvider.State.VERIFIED);
+                    });
                     Metrics.counter("mirror.token.refresh", "outcome", "success").increment();
                 } catch (RuntimeException failure) {
                     Metrics.counter("mirror.token.refresh", "outcome", "failure").increment();
@@ -195,7 +194,8 @@ public class TokenManager {
 
     private static boolean accessDenied(Throwable error) {
         return error instanceof MirrorRequestLimit.AccessDenied
-                || error instanceof HttpStatusCodeException response && response.getStatusCode().value() == 403
+                || error instanceof HttpStatusCodeException response
+                    && (response.getStatusCode().value() == 401 || response.getStatusCode().value() == 403)
                 || MirrorCloudflare.isChallenge(error);
     }
 
@@ -214,18 +214,26 @@ public class TokenManager {
         failures.values().removeIf(failure -> failure.retryAt() <= monotonic);
     }
 
-    private Tokens load(String baseUrl, String cookie, ClientHeaders client) {
-        return MirrorRequestContext.within(Duration.ofSeconds(20), () -> verifyAndLoad(baseUrl, cookie, client));
+    private Tokens load(String baseUrl, String cookie, ClientHeaders client, long generation) {
+        return MirrorRequestContext.within(Duration.ofSeconds(20), () -> verifyAndLoad(baseUrl, cookie, client, generation));
     }
 
-    private Tokens verifyAndLoad(String baseUrl, String cookie, ClientHeaders client) {
-
-        // Step 1: Verify ad-gate
-        String verifyResponse = adGateRepository.verifyAds(baseUrl, cookie, client);
-        if (verifyResponse == null
-                || !(verifyResponse.contains(AD_GATE_CLEARED_STATUS) || verifyResponse.contains(AD_GATE_CLEARED_FLAG))) {
-            throw new ApiException(HttpStatus.PRECONDITION_FAILED,
+    private Tokens verifyAndLoad(String baseUrl, String cookie, ClientHeaders client, long generation) {
+        Verification outcome;
+        try {
+            outcome = classifyVerification(adGateRepository.verifyAds(baseUrl, cookie, client));
+        } catch (RuntimeException ex) {
+            logToken(accessDenied(ex) ? Verification.ACCESS_DENIED.name() : "verification_request_failed",
+                    generation, null);
+            throw ex;
+        }
+        logToken(outcome.name(), generation, null);
+        switch (outcome) {
+            case REQUIRED -> throw new ApiException(HttpStatus.PRECONDITION_FAILED,
                     "The mirror's ad-gate has not been cleared for this session");
+            case MALFORMED, UNKNOWN -> throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "The mirror returned an unrecognized verification response");
+            default -> { }
         }
 
         // Step 2: Fetch tokens. The live mirror's own pages send t as the first segment of the
@@ -239,11 +247,38 @@ public class TokenManager {
             if (t.isBlank()) t = doc.body().attr("data-time");
             hash = doc.body().attr("data-hash");
         }
+        logToken("token_extracted", generation, !t.isBlank());
         if (t.isBlank()) {
-            log.warn("Mirror session carried no token");
             throw new ApiException(HttpStatus.BAD_GATEWAY, "The mirror did not hand out playback tokens");
         }
         return new Tokens(t, hash, now() + LIFETIME_SECONDS);
+    }
+
+    private static Verification classifyVerification(String body) {
+        if (body == null || body.isBlank()) return Verification.MALFORMED;
+        try {
+            var root = VERIFICATION_JSON.readTree(body);
+            if (!root.isObject()) return Verification.MALFORMED;
+            var flag = root.path("c");
+            var status = root.path("statusup");
+            if ((!flag.isMissingNode() && !flag.isTextual())
+                    || (!status.isMissingNode() && !status.isTextual())) return Verification.MALFORMED;
+            String c = flag.asString("");
+            String message = status.asString("");
+            boolean required = c.equals("n") || message.equals("Waiting for your ads click.") || message.equals("NO");
+            boolean cleared = c.equals("y") || message.equals("OK");
+            if (required && cleared) return Verification.UNKNOWN;
+            if (required) return Verification.REQUIRED;
+            return cleared ? Verification.VERIFIED : Verification.UNKNOWN;
+        } catch (tools.jackson.core.JacksonException ex) {
+            return Verification.MALFORMED;
+        }
+    }
+
+    private static void logToken(String outcome, long generation, Boolean present) {
+        log.atInfo().addKeyValue("playbackAttemptId", MDC.get(MirrorRequestContext.ATTEMPT))
+                .addKeyValue("tokenOutcome", outcome).addKeyValue("sessionGeneration", generation)
+                .addKeyValue("tokenPresent", present).log("Mirror token decision");
     }
 
     /** The first {@code ::} segment of the verified {@code t_hash_t} cookie, or "" without one. */
@@ -269,7 +304,9 @@ public class TokenManager {
                     new HttpEntity<>(headers), String.class).getBody();
             return Jsoup.parse(html == null ? "" : html);
         } catch (RestClientException e) {
-            if (MirrorCloudflare.isChallenge(e)) throw new MirrorRequestLimit.AccessDenied();
+            if (accessDenied(e)) throw new MirrorRequestLimit.AccessDenied();
+            if (e instanceof HttpStatusCodeException http
+                    && (http.getStatusCode().value() == 401 || http.getStatusCode().value() == 429)) throw e;
             log.debug("Mirror token page unavailable: {}", e.getClass().getSimpleName());
             return null;
         }
