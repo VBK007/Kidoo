@@ -88,3 +88,20 @@ if (project.hasProperty('h2')) {
         runtimeOnly 'com.h2database:h2'
     }
 }
+
+// Opt-in isolated-PostgreSQL acceptance leg for the mirror catalogue matrix.
+// `./gradlew test -Ppg --tests '*Postgres*'` boots a throwaway embedded Postgres
+// (zonky) so the matrix runs against the real postgresql Flyway tree, not just H2.
+// Guarded by a property so the normal build never pulls the ~15MB binary.
+if (project.hasProperty('pg')) {
+    dependencies {
+        testImplementation 'io.zonky.test:embedded-postgres:2.0.7'
+        testImplementation enforcedPlatform('io.zonky.test.postgres:embedded-postgres-binaries-bom:16.2.0')
+    }
+} else {
+    // The Postgres acceptance leg depends on the embedded-postgres library, which is only on the
+    // classpath under -Ppg. Keep it out of the normal test compile so the default build stays green.
+    tasks.named('compileTestJava') {
+        exclude '**/MirrorCatalogueStorePostgresMatrixTest.java'
+    }
+}
