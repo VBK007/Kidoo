@@ -224,7 +224,7 @@ async function main() {
     process.stdout.write('  waiting for honest ad-view… \r');
     await sleep(3000);
   }
-  if (!verified) { console.log('\nGate not passed within timeout — stopping without authenticated capture.'); return await cleanup(cdp); }
+  if (!verified) { console.log('\nGate not passed within timeout — stopping without authenticated capture.'); return await cleanup(cdp, 3); }
   log('\nstep 3/5 — gate verified (t_hash_t cookie present)');
   // verify2 redirects once the gate flips; let that finish, then settle on a stable same-origin page
   await sleep(4000);
@@ -361,14 +361,14 @@ async function main() {
   await cleanup(cdp);
 }
 
-async function cleanup(cdp) {
-  try { await cdp.send('Browser.close'); } catch {}
+async function cleanup(cdp, exitCode = 0) {
+  try { await Promise.race([cdp.send('Browser.close'), sleep(1500)]); } catch {}
   await sleep(1000);
   try { chrome.kill(); } catch {}
   await sleep(800);
   try { fs.rmSync(PROFILE, { recursive: true, force: true }); log('purged throwaway profile'); } catch {}
   log('done.');
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 main().catch(async e => {
