@@ -211,28 +211,28 @@ class MirrorHomeEndpointIntegrationTest {
     }
 
     @Test
-    void aHungLiveRefreshIsBoundedByTheDeadlineRatherThanWaitingForever() throws Exception {
+    void aHungLiveRefreshServesTheStaleSnapshotAtTheDeadline() throws Exception {
         catalogueProps.getCacheFirst().setEnabled(true);
-        // dp (Hotstar): warm read is stale and a live refresh IS admitted (a worker was free) but then
-        // hangs past the bounded budget. The bulkhead's stale fallback covers executor *saturation*
-        // (no free worker); an admitted-then-overrunning task instead hits the bounded request deadline
-        // and returns 504. This pins the current contract: refresh happens only through the bounded
-        // mechanism and never waits unbounded.
-        //
-        // NOTE (reported to the maintainer, not silently changed): when a usable stale/partial snapshot
-        // is in hand, arguably #1 ("serve permitted stale snapshots"; "cached Home available
-        // independently of executor saturation") would prefer serving that stale snapshot over a 504 on
-        // a hung refresh. Making that change means having submitOptional deliver the fallback on the
-        // deadline/error path too — a controller+bulkhead change held for explicit approval.
+        var refreshStarted = new java.util.concurrent.CountDownLatch(1);
+        var releaseRefresh = new java.util.concurrent.CountDownLatch(1);
         when(mirrorHome.warmRails("sess=1", "dp")).thenReturn(new RailResult(List.of(RAIL), "stale"));
         when(mirrorHome.railWithStatus("sess=1", "dp")).thenAnswer(inv -> {
-            Thread.sleep(30_000); // never returns within the budget
+            refreshStarted.countDown();
+            releaseRefresh.await(25, TimeUnit.SECONDS);
             return new RailResult(List.of(freshRail()), "available");
         });
 
-        HttpResponse<String> home = home(account("PARENT"), "sess=1", "dp");
+        try {
+            HttpResponse<String> home = home(account("PARENT"), "sess=1", "dp");
 
-        assertEquals(504, home.statusCode(), home.body());
+            assertEquals(0, refreshStarted.getCount(), "live refresh must have been admitted");
+            assertEquals(200, home.statusCode(), home.body());
+            assertEquals("stale", home.headers().firstValue("X-Mirror-Catalogue-State").orElse(null));
+            assertTrue(home.body().contains("\"id\":\"111\""), home.body());
+            assertTrue(!home.body().contains("\"id\":\"999\""), home.body());
+        } finally {
+            releaseRefresh.countDown();
+        }
     }
 
     @Test
