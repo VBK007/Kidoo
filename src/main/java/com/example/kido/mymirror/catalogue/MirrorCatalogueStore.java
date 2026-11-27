@@ -12,6 +12,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
+
+import org.springframework.data.domain.PageRequest;
+import com.example.kido.mymirror.MirrorStreamSigner;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,6 +86,8 @@ public class MirrorCatalogueStore {
      */
     private final TransactionTemplate snapshotTx;
     private final TransactionTemplate metadataTx;
+    private final TransactionTemplate cleanupTx;
+    private static final int CLEANUP_BATCH = 16;
 
     /** The poster host allowlist from configuration, lowercased once for case-insensitive matching. */
     private final Set<String> allowedPosterHosts;
@@ -102,6 +108,9 @@ public class MirrorCatalogueStore {
         this.snapshotTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.metadataTx = new TransactionTemplate(txManager);
         this.metadataTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.cleanupTx = new TransactionTemplate(txManager);
+        this.cleanupTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.cleanupTx.setTimeout(3);
         this.allowedPosterHosts = normalizeHosts(props.getAllowedPosterHosts());
     }
 
@@ -123,14 +132,56 @@ public class MirrorCatalogueStore {
         return props.getPersistence().isEnabled();
     }
 
+    public MirrorCatalogueProperties.BackgroundRefresh backgroundRefreshPolicy() {
+        return props.getBackgroundRefresh();
+    }
+
     /** The configured, non-secret catalogue scope. Never a cookie, token or profile id. */
     public String scope() {
         return props.getScope();
     }
 
     /** Versioned physical key for an authorized generation within the configured deployment scope. */
-    public String namespace(String epoch, com.example.kido.mymirror.MirrorStreamSigner signer) {
-        return "g1-" + signer.sign("catalogue\n" + scope() + "\n" + epoch);
+    public String namespace(String epoch, MirrorStreamSigner signer) {
+        return namespacePrefix() + signer.sign("catalogue-generation\n" + scope() + "\n" + epoch);
+    }
+
+    private String namespacePrefix() {
+        try {
+            var digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(scope().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return "g2-" + java.util.HexFormat.of().formatHex(digest, 0, 8) + "-";
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    /** Delete an age-limited batch belonging to this deployment, leaving the active generation intact. */
+    public int retireInactiveNamespaces(String active, BooleanSupplier stillCurrent) {
+        if (!persistenceEnabled() || active == null || !stillCurrent.getAsBoolean()) return 0;
+        String prefix = namespacePrefix();
+        if (!active.startsWith(prefix)) throw new IllegalArgumentException("Invalid active catalogue namespace");
+        String pattern = prefix + "%";
+        Instant cutoff = Instant.now().minus(props.getFreshness().getHardExpiry());
+        return cleanupTx.execute(status -> {
+            int deleted = 0;
+            for (var candidate : snapshots.expiredNamespaces(pattern, active, cutoff, PageRequest.of(0, CLEANUP_BATCH))) {
+                if (!stillCurrent.getAsBoolean()) {
+                    status.setRollbackOnly();
+                    return 0;
+                }
+                if (snapshots.deleteExpired(candidate.getId(), cutoff) == 1) {
+                    relations.deleteNamespace(candidate.getScope(), candidate.getOtt());
+                    items.deleteNamespace(candidate.getScope(), candidate.getOtt());
+                    deleted++;
+                }
+            }
+            if (!stillCurrent.getAsBoolean()) {
+                status.setRollbackOnly();
+                return 0;
+            }
+            return deleted;
+        });
     }
 
     /** Normalize an OTT token to the stored form; blank/unknown defaults to Netflix ("nf"). */
@@ -241,7 +292,12 @@ public class MirrorCatalogueStore {
 
     public boolean publishInNamespace(String namespace, String ott, List<MirrorRailDto> rails,
                                       boolean complete, long buildSeq) {
-        if (!persistenceEnabled() || rails == null || rails.isEmpty()) {
+        return publishInNamespace(namespace, ott, rails, complete, buildSeq, () -> true);
+    }
+
+    public boolean publishInNamespace(String namespace, String ott, List<MirrorRailDto> rails,
+                                      boolean complete, long buildSeq, BooleanSupplier stillCurrent) {
+        if (!persistenceEnabled() || rails == null || rails.isEmpty() || !stillCurrent.getAsBoolean()) {
             return false;
         }
         String scope = namespace;
@@ -257,8 +313,16 @@ public class MirrorCatalogueStore {
 
         // Tx1 — the atomic snapshot compare-and-set, committed on its own. No exception path: a
         // losing publish updates zero rows and returns false.
-        Boolean stored = snapshotTx.execute(status ->
-                writeSnapshot(scope, ottKey, json, sanitized.size(), itemCount, complete, buildSeq, now));
+        Boolean stored = snapshotTx.execute(status -> {
+            boolean changed = writeSnapshot(scope, ottKey, json, sanitized.size(), itemCount, complete, buildSeq, now);
+            // Recheck after the write acquired its database row lock. A delayed, superseded
+            // publisher cannot recreate a namespace that the cleanup transaction just removed.
+            if (!stillCurrent.getAsBoolean()) {
+                status.setRollbackOnly();
+                return false;
+            }
+            return changed;
+        });
         if (!Boolean.TRUE.equals(stored)) {
             return false;
         }
@@ -267,9 +331,15 @@ public class MirrorCatalogueStore {
         // and swallowed; because it is a separate transaction, it cannot undo the committed snapshot.
         try {
             metadataTx.executeWithoutResult(status -> {
+                if (scope.startsWith("g2-")) {
+                    var snapshot = snapshots.lockSnapshot(scope, ottKey);
+                    if (snapshot.isEmpty() || snapshot.get().getBuildSeq() != buildSeq
+                            || !stillCurrent.getAsBoolean()) return;
+                }
                 upsertItems(scope, ottKey, sanitized, now);
                 upsertRelations(scope, ottKey, sanitized, now);
                 enforceRetention(scope, ottKey, now);
+                if (!stillCurrent.getAsBoolean()) status.setRollbackOnly();
             });
         } catch (RuntimeException e) {
             log.warn("catalogue: item/relation refresh failed for {}/{} (snapshot kept)", scope, ottKey, e);

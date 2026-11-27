@@ -63,10 +63,10 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
                 value -> Math.max(0, value.get() - Instant.now().toEpochMilli()) / 1_000d);
     }
 
-    private synchronized long reserveStart(long deadline) {
+    private synchronized long reserveStart(long deadline, boolean background) {
         long now = System.nanoTime();
         long start = Math.max(now, nextStart);
-        if (start > deadline) throw new Busy();
+        if (start > deadline || background && start > now) throw new Busy();
         nextStart = start + intervalNanos;
         return start - now;
     }
@@ -75,7 +75,8 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
     public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution)
             throws IOException {
         long started = System.nanoTime();
-        long deadline = MirrorRequestContext.deadlineWithin(MirrorRequestContext.isOptional() ? Duration.ofMillis(250) : Duration.ofSeconds(2));
+        AtomicInteger budget = MirrorRequestContext.backgroundBudget();
+        long deadline = MirrorRequestContext.deadlineWithin((MirrorRequestContext.isOptional() || budget != null) ? Duration.ofMillis(250) : Duration.ofSeconds(2));
         try {
             checkCooldown();
         } catch (Throttled ex) {
@@ -83,7 +84,9 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
             throw ex;
         }
         try {
-            if ((MirrorRequestContext.isOptional() && requestSlot.hasQueuedThreads()) || !requestSlot.tryAcquire(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+            boolean optional = MirrorRequestContext.isOptional() || budget != null;
+            long wait = budget == null ? Math.max(0, deadline - System.nanoTime()) : 0;
+            if ((optional && requestSlot.hasQueuedThreads()) || !requestSlot.tryAcquire(wait, TimeUnit.NANOSECONDS)) {
                 logRequest(request, started, 503, inFlight.get(), false, System.nanoTime() - started, "admission_busy");
                 throw new Busy();
             }
@@ -98,8 +101,12 @@ public class MirrorRequestLimit implements ClientHttpRequestInterceptor {
         long queued = 0;
         try {
             checkCooldown();
-            TimeUnit.NANOSECONDS.sleep(reserveStart(deadline));
+            if (budget != null && budget.get() <= 0) throw new Busy();
+            TimeUnit.NANOSECONDS.sleep(reserveStart(deadline, budget != null));
             checkCooldown();
+            if (budget != null && budget.getAndUpdate(remaining -> Math.max(0, remaining - 1)) == 0) {
+                throw new Busy();
+            }
             queued = System.nanoTime() - started;
             inFlight.incrementAndGet();
             dispatched = true;

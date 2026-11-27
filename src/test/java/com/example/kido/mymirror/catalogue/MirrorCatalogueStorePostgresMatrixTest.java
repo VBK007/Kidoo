@@ -78,6 +78,11 @@ class MirrorCatalogueStorePostgresMatrixTest extends MirrorCatalogueStoreMatrixT
         var seed = List.of(new MirrorRailDto("seed", "Existing",
                 List.of(new MirrorTileDto("1", "Existing", null, null))));
         assertTrue(store.publishInNamespace(namespace, "pv", seed, true, store.nextSequence()));
+        var oldSnapshot = snapshots.findByScopeAndOtt(namespace, "pv").orElseThrow();
+        var expired = java.time.Instant.now().minus(java.time.Duration.ofDays(8));
+        oldSnapshot.setLastAccess(expired);
+        oldSnapshot.setLastAttemptedRefresh(expired);
+        snapshots.saveAndFlush(oldSnapshot);
         var mock = MockRestServiceServer.bindTo(rest).build();
         mock.expect(requestTo(base + "/pv/homepage.php")).andRespond(withSuccess(
                 "{\"slider\":[{\"id\":\"0RTZ57DQ6PBHH29UN5JS7U7CW4\"}]}", MediaType.APPLICATION_JSON));
@@ -100,22 +105,29 @@ class MirrorCatalogueStorePostgresMatrixTest extends MirrorCatalogueStoreMatrixT
                 try (var result = st.executeQuery()) { assertTrue(result.next()); }
             }
             var publication = pool.submit(() -> home.railWithStatus(old, "pv"));
+            java.util.concurrent.Future<Integer> sweep;
             try {
-                awaitBlockedWriter(observer, holder);
+                awaitBlockedWriter(observer, holder, 1);
                 assertEquals(generation, pool.submit(() -> sessions.generation(old)).get(1, TimeUnit.SECONDS));
                 Path next = Files.writeString(dir.resolve("candidate.txt"), replacement);
                 Files.move(next, sessionFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                 pool.submit(() -> ReflectionTestUtils.invokeMethod(sessions, "load")).get(1, TimeUnit.SECONDS);
                 assertEquals(generation + 1, sessions.generation(replacement));
                 assertEquals("unavailable", home.warmRails(replacement, "pv").state());
+                long newGeneration = sessions.generation(replacement);
+                String active = store.namespace(sessions.catalogueEpoch(replacement, newGeneration), signer);
+                sweep = pool.submit(() -> store.retireInactiveNamespaces(active,
+                        () -> sessions.generation(replacement) == newGeneration));
+                awaitBlockedWriter(observer, holder, 2);
             } finally {
                 lock.rollback();
             }
             assertEquals("unavailable", publication.get(5, TimeUnit.SECONDS).state());
+            assertEquals(1, sweep.get(5, TimeUnit.SECONDS));
         }
         mock.verify();
-        assertEquals("Delayed build", store.readInNamespace(namespace, "pv").orElseThrow()
-                .rails().getFirst().items().getFirst().title());
+        assertTrue(store.readInNamespace(namespace, "pv").isEmpty());
+        assertFalse(items.findAll().stream().anyMatch(item -> item.getScope().equals(namespace)));
         assertEquals("unavailable", home.warmRails(old, "pv").state());
         assertEquals("unavailable", home.warmRails(replacement, "pv").state());
         var restarted = new MirrorSessionProvider(properties, gate, dispatcher);
@@ -124,15 +136,17 @@ class MirrorCatalogueStorePostgresMatrixTest extends MirrorCatalogueStoreMatrixT
                 restarted.catalogueEpoch(replacement, restarted.generation(replacement)), signer));
     }
 
-    private static void awaitBlockedWriter(java.sql.Connection observer, int holder) throws Exception {
+    private static void awaitBlockedWriter(java.sql.Connection observer, int holder, int minimum) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
         try (var check = observer.prepareStatement("""
-                select exists(select 1 from pg_stat_activity where ? = any(pg_blocking_pids(pid)))
+                select count(*) from pg_stat_activity
+                 where ? = any(pg_blocking_pids(pid))
+                    or (datname = current_database() and wait_event_type = 'Lock')
                 """)) {
             check.setInt(1, holder);
             while (System.nanoTime() < deadline) {
                 try (var result = check.executeQuery()) {
-                    if (result.next() && result.getBoolean(1)) return;
+                    if (result.next() && result.getInt(1) >= minimum) return;
                 }
                 Thread.sleep(10);
             }

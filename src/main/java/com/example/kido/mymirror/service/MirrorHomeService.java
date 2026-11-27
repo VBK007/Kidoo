@@ -167,6 +167,9 @@ public class MirrorHomeService {
     private final ThreadPoolExecutor pool = new ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(32), Thread.ofPlatform().daemon().name("mirror-catalogue-", 0).factory());
 
+    private final ThreadPoolExecutor refreshWorker = new ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS,
+            new java.util.concurrent.SynchronousQueue<>(), Thread.ofPlatform().daemon().name("mirror-refresh-", 0).factory());
+
     private record HomeKey(String cookie, long generation) {}
     private record Cached(List<MirrorRailDto> rails, long until) {}
     private final ConcurrentHashMap<HomeKey, Cached> byCookie = new ConcurrentHashMap<>();
@@ -174,10 +177,12 @@ public class MirrorHomeService {
 
     private <T> Future<T> submit(Callable<T> task) {
         long deadline = MirrorRequestContext.deadlineWithin(Duration.ofSeconds(8));
+        var budget = MirrorRequestContext.backgroundBudget();
         try {
             return pool.submit(() -> {
                 if (System.nanoTime() >= deadline) return null;
-                return MirrorRequestContext.withinDeadline(deadline, () -> MirrorRequestContext.optional(task));
+                return MirrorRequestContext.withinDeadline(deadline,
+                        () -> MirrorRequestContext.background(budget, () -> MirrorRequestContext.optional(task)));
             });
         } catch (RejectedExecutionException ex) {
             io.micrometer.core.instrument.Metrics.counter("mirror.catalogue.rejected").increment();
@@ -402,7 +407,7 @@ public class MirrorHomeService {
             if (namespace != null && !built.rails().isEmpty()) {
                 try {
                     catalogueStore.publishInNamespace(namespace, MirrorOtt.of(effective), built.rails(),
-                            built.complete(), buildSeq);
+                            built.complete(), buildSeq, () -> isCurrent(key));
                 } catch (RuntimeException ex) {
                     log.debug("Mirror catalogue publish skipped: {}", ex.getClass().getSimpleName());
                 }
@@ -414,6 +419,55 @@ public class MirrorHomeService {
             throw ex;
         } finally {
             builds.remove(key, owned);
+        }
+    }
+
+    @org.springframework.scheduling.annotation.Scheduled(
+            initialDelayString = "${app.mymirror.catalogue.background-refresh.interval:1h}",
+            fixedDelayString = "${app.mymirror.catalogue.background-refresh.interval:1h}")
+    void scheduleBackgroundRefresh() {
+        var policy = catalogueStore.backgroundRefreshPolicy();
+        if (!catalogueStore.persistenceEnabled() || !policy.configured()) return;
+        try {
+            refreshWorker.execute(() -> {
+                if (sessionProvider.state() != MirrorSessionProvider.State.VALID
+                        && sessionProvider.state() != MirrorSessionProvider.State.VERIFIED) return;
+                String cookie = sessionProvider.currentCookie();
+                if (cookie == null || "cached".equals(warmRails(cookie, policy.getOtt()).state())) return;
+                long deadline = MirrorRequestContext.deadlineWithin(Duration.ofSeconds(3));
+                try {
+                    MirrorRequestContext.withinDeadline(deadline, () ->
+                            MirrorRequestContext.background(new java.util.concurrent.atomic.AtomicInteger(
+                                    policy.getMaxRequestsPerRun()), () -> railWithStatus(cookie, policy.getOtt())));
+                } catch (Exception ex) {
+                    log.debug("Catalogue refresh deferred: {}", ex.getClass().getSimpleName());
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            log.debug("Catalogue refresh already running");
+        }
+    }
+
+    private boolean isCurrent(HomeKey key) {
+        try {
+            return sessionProvider.generation(key.cookie()) == key.generation();
+        } catch (com.example.kido.common.ApiException ex) {
+            return false;
+        }
+    }
+
+    @org.springframework.scheduling.annotation.Scheduled(
+            initialDelayString = "${app.mymirror.catalogue.retention-interval:1h}",
+            fixedDelayString = "${app.mymirror.catalogue.retention-interval:1h}")
+    void retireObsoleteCatalogues() {
+        if (!catalogueStore.persistenceEnabled()) return;
+        String cookie = sessionProvider.currentCookie();
+        if (cookie == null) return;
+        try {
+            var key = new HomeKey(cookie, sessionProvider.generation(cookie));
+            catalogueStore.retireInactiveNamespaces(catalogueNamespace(key), () -> isCurrent(key));
+        } catch (RuntimeException ex) {
+            log.debug("Catalogue retention deferred: {}", ex.getClass().getSimpleName());
         }
     }
 
@@ -1118,6 +1172,7 @@ public class MirrorHomeService {
 
     @PreDestroy
     void shutdown() {
+        refreshWorker.shutdownNow();
         pool.shutdownNow();
     }
 }

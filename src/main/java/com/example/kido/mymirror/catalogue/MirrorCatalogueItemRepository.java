@@ -58,4 +58,7 @@ public interface MirrorCatalogueItemRepository extends JpaRepository<MirrorCatal
     @Modifying
     @Query("delete from MirrorCatalogueItem i where i.scope = :scope and i.ott = :ott and i.lastSeen < :cutoff")
     int deleteStale(@Param("scope") String scope, @Param("ott") String ott, @Param("cutoff") Instant cutoff);
+    @Modifying
+    @Query("delete from MirrorCatalogueItem i where i.scope = :scope and i.ott = :ott")
+    int deleteNamespace(@Param("scope") String scope, @Param("ott") String ott);
 }

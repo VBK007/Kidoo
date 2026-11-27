@@ -1,7 +1,12 @@
 package com.example.kido.mymirror.catalogue;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
+
+import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.Lock;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -12,6 +17,26 @@ public interface MirrorCatalogueSnapshotRepository extends JpaRepository<MirrorC
 
     /** The one LKG snapshot for a scoped OTT; the warm Home read's single-row lookup. */
     Optional<MirrorCatalogueSnapshot> findByScopeAndOtt(String scope, String ott);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from MirrorCatalogueSnapshot s where s.scope = :scope and s.ott = :ott")
+    Optional<MirrorCatalogueSnapshot> lockSnapshot(@Param("scope") String scope, @Param("ott") String ott);
+
+    @Query("""
+            select s from MirrorCatalogueSnapshot s
+             where s.scope like :pattern escape '!' and s.scope <> :active
+               and s.lastAccess < :cutoff and s.lastAttemptedRefresh < :cutoff
+             order by s.lastAccess, s.id
+            """)
+    List<MirrorCatalogueSnapshot> expiredNamespaces(@Param("pattern") String pattern,
+            @Param("active") String active, @Param("cutoff") Instant cutoff, Pageable page);
+
+    @Modifying
+    @Query("""
+            delete from MirrorCatalogueSnapshot s where s.id = :id
+             and s.lastAccess < :cutoff and s.lastAttemptedRefresh < :cutoff
+            """)
+    int deleteExpired(@Param("id") String id, @Param("cutoff") Instant cutoff);
 
     /** Seed the in-memory build sequence past anything already persisted, so it stays monotonic. */
     @Query("select coalesce(max(s.buildSeq), 0) from MirrorCatalogueSnapshot s")

@@ -21,7 +21,7 @@ import lombok.Setter;
  *   <li>{@code cache-first.enabled} gates whether a saturated Home request falls back to the
  *       cached catalogue instead of an empty one. Off by default, so the controller's fallback is
  *       the pre-existing empty {@code home}.</li>
- *   <li>{@code background-refresh.enabled} is reserved and off by default: no background metadata
+ *   <li>{@code background-refresh.enabled} is off by default: no background metadata
  *       crawler runs without confirmed provider permission and a defined request budget.</li>
  * </ul>
  */
@@ -67,8 +67,20 @@ public class MirrorCatalogueProperties {
     @Getter
     @Setter
     public static class BackgroundRefresh {
-        /** Reserved; no background crawler runs until this is deliberately enabled. */
         private boolean enabled = false;
+        /** Non-secret reference to the approved storage scope and background request budget. */
+        private String authorizationReference = "";
+        /** One explicitly authorized OTT per scheduled run. */
+        private String ott = "";
+        private int maxRequestsPerRun;
+        private Duration interval = Duration.ofHours(1);
+
+        public boolean configured() {
+            return enabled && authorizationReference != null && !authorizationReference.isBlank()
+                    && com.example.kido.mymirror.MirrorOtt.VALUES.contains(ott)
+                    && maxRequestsPerRun >= 1 && maxRequestsPerRun <= 32
+                    && interval.compareTo(Duration.ofMinutes(1)) >= 0;
+        }
     }
 
     @Getter

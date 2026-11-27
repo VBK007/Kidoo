@@ -41,4 +41,7 @@ public interface MirrorCatalogueRelationRepository extends JpaRepository<MirrorC
     int insertIfAbsent(@Param("id") String id, @Param("scope") String scope, @Param("ott") String ott,
                        @Param("sourceRef") String sourceRef, @Param("relatedId") String relatedId,
                        @Param("kind") String kind, @Param("ordinal") int ordinal, @Param("now") Instant now);
+    @Modifying
+    @Query("delete from MirrorCatalogueRelation r where r.scope = :scope and r.ott = :ott")
+    int deleteNamespace(@Param("scope") String scope, @Param("ott") String ott);
 }

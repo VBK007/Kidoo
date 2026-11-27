@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -85,6 +86,36 @@ class MirrorCatalogueStoreMatrixTest {
         relations.deleteAll();
         items.deleteAll();
         snapshots.deleteAll();
+    }
+
+    @Test
+    void cleanupIsBoundedAndPreservesActiveAndOtherScopes() {
+        var signer = new com.example.kido.mymirror.MirrorStreamSigner();
+        String active = store.namespace("current", signer);
+        assertTrue(store.publishInNamespace(active, "nf", sampleHome(), true, 1));
+        String initialScope = props.getScope();
+        String foreign;
+        try {
+            props.setScope("foreign");
+            foreign = store.namespace("retired", signer);
+            assertTrue(store.publishInNamespace(foreign, "nf", sampleHome(), true, 1));
+        } finally {
+            props.setScope(initialScope);
+        }
+        for (int i = 0; i < 18; i++) {
+            assertTrue(store.publishInNamespace(store.namespace("old-" + i, signer), "nf", sampleHome(), true, 1));
+        }
+        Instant past = Instant.now().minus(Duration.ofDays(8));
+        var rows = snapshots.findAll();
+        rows.forEach(row -> { row.setLastAttemptedRefresh(past); row.setLastAccess(past); });
+        snapshots.saveAllAndFlush(rows);
+        assertEquals(0, store.retireInactiveNamespaces(active, () -> false));
+        assertEquals(16, store.retireInactiveNamespaces(active, () -> true));
+        assertEquals(2, store.retireInactiveNamespaces(active, () -> true));
+        assertEquals(2, snapshots.count());
+        assertTrue(snapshots.findByScopeAndOtt(active, "nf").isPresent());
+        assertTrue(snapshots.findByScopeAndOtt(foreign, "nf").isPresent());
+        assertTrue(items.findAll().stream().allMatch(row -> Set.of(active, foreign).contains(row.getScope())));
     }
 
     // ---- helpers ---------------------------------------------------------

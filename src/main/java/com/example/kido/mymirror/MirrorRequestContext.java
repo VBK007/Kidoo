@@ -29,6 +29,7 @@ public class MirrorRequestContext extends OncePerRequestFilter {
     public static final String ATTEMPT = "playbackAttemptId";
     private static final ThreadLocal<Boolean> OPTIONAL = new ThreadLocal<>();
     private static final ThreadLocal<Long> DEADLINE = new ThreadLocal<>();
+    private static final ThreadLocal<AtomicInteger> BACKGROUND_BUDGET = new ThreadLocal<>();
     private final MeterRegistry metrics;
     private final AtomicInteger active = new AtomicInteger();
 
@@ -62,6 +63,22 @@ public class MirrorRequestContext extends OncePerRequestFilter {
         } finally {
             if (previous == null) DEADLINE.remove();
             else DEADLINE.set(previous);
+        }
+    }
+
+    public static AtomicInteger backgroundBudget() {
+        return BACKGROUND_BUDGET.get();
+    }
+
+    public static <T> T background(AtomicInteger budget, Callable<T> action) throws Exception {
+        if (budget == null) return action.call();
+        AtomicInteger previous = BACKGROUND_BUDGET.get();
+        BACKGROUND_BUDGET.set(budget);
+        try {
+            return action.call();
+        } finally {
+            if (previous == null) BACKGROUND_BUDGET.remove();
+            else BACKGROUND_BUDGET.set(previous);
         }
     }
 

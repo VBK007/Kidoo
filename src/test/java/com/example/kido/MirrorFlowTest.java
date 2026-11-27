@@ -576,6 +576,53 @@ class MirrorFlowTest {
     }
 
     @Test
+    void backgroundBudgetNeverQueuesBehindForegroundOrExceedsItsDispatchLimit() throws Exception {
+        var limit = new MirrorRequestLimit();
+        var rest = new RestTemplate();
+        rest.getInterceptors().add(limit);
+        var entered = new CountDownLatch(1);
+        var released = new CountDownLatch(1);
+        var mock = MockRestServiceServer.bindTo(rest).build();
+        mock.expect(once(), requestTo(BASE + "/foreground")).andRespond(req -> {
+            entered.countDown();
+            try {
+                if (!released.await(3, TimeUnit.SECONDS)) throw new java.io.IOException("fixture deadline");
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException(ex);
+            }
+            return withSuccess("foreground", MediaType.TEXT_PLAIN).createResponse(req);
+        });
+        mock.expect(once(), requestTo(BASE + "/background"))
+                .andRespond(withSuccess("background", MediaType.TEXT_PLAIN));
+        var budget = new java.util.concurrent.atomic.AtomicInteger(1);
+        try (var worker = Executors.newVirtualThreadPerTaskExecutor()) {
+            var foreground = worker.submit(() -> rest.getForObject(BASE + "/foreground", String.class));
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                assertThrows(MirrorRequestLimit.Busy.class, () ->
+                        com.example.kido.mymirror.MirrorRequestContext.background(budget,
+                                () -> rest.getForObject(BASE + "/unused", String.class)));
+                assertEquals(1, budget.get());
+            } finally {
+                released.countDown();
+            }
+            assertEquals("foreground", foreground.get(3, TimeUnit.SECONDS));
+            assertEquals("background", com.example.kido.mymirror.MirrorRequestContext.background(budget,
+                    () -> rest.getForObject(BASE + "/background", String.class)));
+            assertThrows(MirrorRequestLimit.Busy.class, () ->
+                    com.example.kido.mymirror.MirrorRequestContext.background(budget,
+                            () -> rest.getForObject(BASE + "/over-budget", String.class)));
+            limit.throttled("60");
+            assertThrows(MirrorRequestLimit.Throttled.class, () ->
+                    com.example.kido.mymirror.MirrorRequestContext.background(
+                            new java.util.concurrent.atomic.AtomicInteger(1),
+                            () -> rest.getForObject(BASE + "/under-cooldown", String.class)));
+        }
+        mock.verify();
+    }
+
+    @Test
     void masterCacheDoesNotReuseAnotherSessionsResult() {
         RestTemplate rest = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();

@@ -85,3 +85,37 @@ Only one process can own the recovery lock for a configured journal. An interrup
 New starts use the validated generation. The service does not change the variant signing key or restart existing players during recovery. Existing playback still depends on the provider accepting its already issued URLs.
 
 To roll back, first stop new mirror starts at ingress or use a known-valid, operator-approved credential. Set `MIRROR_RECOVERY_ENABLED=false` and restart the service with the prior artifact if needed. The original session-file polling mode becomes available again. Retain the private journal for investigation. Disabling recovery by itself does not protect against loading a revoked file in the legacy mode, so remove or replace that credential first. The Cloudflare tunnel and Firebase endpoint discovery require no changes.
+
+### Isolated Chromium runtime
+
+The optional recovery image runs Chromium as UID 1001. On Linux amd64, generate the
+sandbox test profile from the pinned [Playwright baseline](https://github.com/microsoft/playwright/blob/v1.58.0/utils/docker/seccomp_profile.json).
+
+```bash
+curl --fail --silent --show-error \
+  https://raw.githubusercontent.com/microsoft/playwright/v1.58.0/utils/docker/seccomp_profile.json \
+  | python3 scripts/build-recovery-seccomp.py > chromium-recovery-seccomp.json
+```
+
+Use the generated file with `--security-opt seccomp=/absolute/path/chromium-recovery-seccomp.json`,
+`--cap-drop ALL`, and `--security-opt no-new-privileges`. Keep AppArmor and user namespace
+support enabled. The profile keeps the default deny behavior and narrows the added namespace
+permissions to Chromium's user, PID and network namespaces. It allows the kernel to enforce
+`chroot` permissions after the browser has entered its sandbox. Keep CDP on loopback.
+This profile was tested on an isolated container. Browser sandboxing does not establish
+authorization for automated verification.
+
+### Catalogue maintenance gates
+
+Generation namespaces with the current `g2` prefix are swept in batches of up to 16 snapshot
+rows after hard expiry. The sweep excludes the active session and other configured scopes.
+Legacy `g1` rows have no attributable scope in the key and are left untouched. Newly
+published snapshots use the existing schema and do not import legacy entries automatically.
+
+Background refresh stays disabled by default. Enable it only with confirmed provider storage
+and automated refresh approval. Configure a non-secret
+`app.mymirror.catalogue.background-refresh.authorization-reference`, one approved
+`ott`, an approved `max-requests-per-run` between 1 and 32, and an `interval` of at least one
+minute. An enabled flag without all these settings admits no work. Each eligible tick has one
+worker, no queued runs, a three-second upstream budget, and the shared provider limiter.
+It skips fresh snapshots and yields when the upstream slot or pacing interval is occupied.
