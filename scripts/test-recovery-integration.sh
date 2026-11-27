@@ -28,9 +28,12 @@ docker run -d --name "$worker" --pull never --network none --init --read-only \
 export KIDOO_TEST_WORKER_SOCKET="$base/socket/acquisition.sock"
 export KIDOO_TEST_WORKER_CONTAINER="$worker"
 export KIDOO_TEST_WORKER_NODE="${KIDOO_TEST_WORKER_NODE:-$(command -v node)}"
-for attempt in $(seq 1 40); do
-    if test -S "$KIDOO_TEST_WORKER_SOCKET"; then break; fi
-    test "$attempt" -lt 40
+deadline=$((SECONDS + 60))
+until test -S "$KIDOO_TEST_WORKER_SOCKET"; do
+    if (( SECONDS >= deadline )); then
+        echo 'Fixture worker did not create its socket within 60 seconds' >&2
+        exit 1
+    fi
     sleep 0.25
 done
 # Environment changes must not let Gradle reuse results from a run with the fixture disabled.
