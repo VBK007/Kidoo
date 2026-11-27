@@ -3,7 +3,10 @@ package com.example.kido;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -26,11 +29,15 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
 import com.example.kido.media.dto.HomeDtos.MirrorRailDto;
 import com.example.kido.media.dto.HomeDtos.MirrorTileDto;
+import com.example.kido.mymirror.MirrorSessionProvider;
+import com.example.kido.mymirror.MirrorStreamSigner;
 import com.example.kido.mymirror.catalogue.MirrorCatalogueItemRepository;
 import com.example.kido.mymirror.catalogue.MirrorCatalogueProperties;
 import com.example.kido.mymirror.catalogue.MirrorCatalogueRelationRepository;
@@ -58,6 +65,24 @@ import com.example.kido.mymirror.catalogue.MirrorCatalogueStore;
         "app.mymirror.catalogue.freshness.hard-expiry=168h",
 })
 class MirrorHomeCacheFirstStackTest {
+
+    private static final String OPERATOR = "t_hash_t=local-stack-fixture";
+
+    @DynamicPropertySource
+    static void operatorFile(DynamicPropertyRegistry registry) throws IOException {
+        Path file = Files.createTempFile("kidoo-catalogue-stack-", ".session");
+        file.toFile().deleteOnExit();
+        Files.writeString(file, OPERATOR);
+        registry.add("app.mymirror.session.session-file", file::toString);
+    }
+
+    @Autowired MirrorSessionProvider sessions;
+    @Autowired MirrorStreamSigner signer;
+
+    private void seedOperatorSnapshot() {
+        String epoch = sessions.catalogueEpoch(OPERATOR, sessions.generation(OPERATOR));
+        assertTrue(store.publishInNamespace(store.namespace(epoch, signer), "nf", sampleHome(), true, 1));
+    }
 
     @LocalServerPort
     int port;
@@ -109,11 +134,10 @@ class MirrorHomeCacheFirstStackTest {
 
     @Test
     void aFreshL2SnapshotIsServedAsCachedWithZeroUpstreamHttp() throws Exception {
-        store.publish("nf", sampleHome(), true, 1);
+        seedOperatorSnapshot();
 
-        // A never-before-seen cookie: the in-memory L1 cache has nothing for it, so the only possible
-        // source of a "cached" answer is the L2 snapshot just published — proving the persistence path.
-        HttpResponse<String> home = home(account("PARENT"), "stack-" + UUID.randomUUID(), "nf");
+        // The operator namespace has no in-memory entry. The request must hit the persisted snapshot.
+        HttpResponse<String> home = home(account("PARENT"), null, "nf");
 
         assertEquals(200, home.statusCode(), home.body());
         assertEquals("cached", home.headers().firstValue("X-Mirror-Catalogue-State").orElse(null), home.body());
@@ -126,7 +150,7 @@ class MirrorHomeCacheFirstStackTest {
 
     @Test
     void concurrentEndpointRequestsAllServeTheFreshL2SnapshotWithZeroUpstream() throws Exception {
-        store.publish("nf", sampleHome(), true, 1);
+        seedOperatorSnapshot();
         String[] account = account("PARENT");
 
         int clients = 16;
@@ -134,9 +158,8 @@ class MirrorHomeCacheFirstStackTest {
         try {
             List<CompletableFuture<HttpResponse<String>>> calls = new ArrayList<>();
             for (int i = 0; i < clients; i++) {
-                String cookie = "stack-" + UUID.randomUUID();
                 calls.add(CompletableFuture.supplyAsync(() -> {
-                    try { return home(account, cookie, "nf"); }
+                    try { return home(account, null, "nf"); }
                     catch (Exception e) { throw new RuntimeException(e); }
                 }, pool));
             }

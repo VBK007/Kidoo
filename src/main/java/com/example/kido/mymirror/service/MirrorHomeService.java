@@ -40,6 +40,7 @@ import com.example.kido.mymirror.MirrorCloudflare;
 import com.example.kido.mymirror.MirrorOtt;
 import com.example.kido.mymirror.MirrorRequestLimit;
 import com.example.kido.mymirror.MirrorSessionProvider;
+import com.example.kido.mymirror.MirrorStreamSigner;
 import com.example.kido.mymirror.manager.TokenManager;
 import com.example.kido.mymirror.model.ClientHeaders;
 import com.example.kido.mymirror.repo.BrowseRepository;
@@ -159,6 +160,7 @@ public class MirrorHomeService {
     private final TokenManager tokenManager;
     private final MirrorSessionProvider sessionProvider;
     private final MirrorCatalogueStore catalogueStore;
+    private final MirrorStreamSigner signer;
     private final ObjectMapper mapper = JsonMapper.builder().build();
     // A few at a time: a burst of simultaneous calls per home screen would look like a flood
     // upstream, so every name and playlist lookup goes through this bounded pool.
@@ -263,13 +265,15 @@ public class MirrorHomeService {
 
     public MirrorHomeService(BrowseRepository browseRepository, PlaybackService playbackService,
                              DispatcherService dispatcherService, TokenManager tokenManager,
-                             MirrorSessionProvider sessionProvider, MirrorCatalogueStore catalogueStore) {
+                             MirrorSessionProvider sessionProvider, MirrorCatalogueStore catalogueStore,
+                             MirrorStreamSigner signer) {
         this.browseRepository = browseRepository;
         this.playbackService = playbackService;
         this.dispatcherService = dispatcherService;
         this.tokenManager = tokenManager;
         this.sessionProvider = sessionProvider;
         this.catalogueStore = catalogueStore;
+        this.signer = signer;
     }
 
     public List<MirrorRailDto> rail(String cookie) {
@@ -326,11 +330,14 @@ public class MirrorHomeService {
             long now = System.currentTimeMillis();
             Cached cached = byCookie.get(key);
             if (cached != null && now < cached.until() && !cached.rails().isEmpty()) {
+                sessionProvider.ifCurrent(effective, key.generation(), () -> {});
                 return new RailResult(cached.rails(), "cached");
             }
-            if (catalogueStore.persistenceEnabled()) {
-                var view = catalogueStore.read(MirrorOtt.of(effective));
+            String namespace = catalogueNamespace(key);
+            if (namespace != null) {
+                var view = catalogueStore.readInNamespace(namespace, MirrorOtt.of(effective));
                 if (view.isPresent() && !view.get().rails().isEmpty()) {
+                    sessionProvider.ifCurrent(effective, key.generation(), () -> {});
                     String state = switch (view.get().freshness()) {
                         case FRESH -> "cached";
                         case STALE -> "stale";
@@ -351,6 +358,7 @@ public class MirrorHomeService {
         Cached cached = byCookie.get(key);
         if (cached != null && now < cached.until()) {
             io.micrometer.core.instrument.Metrics.counter("mirror.home.cache", "outcome", "hit").increment();
+            sessionProvider.ifCurrent(effective, key.generation(), () -> {});
             return cached.rails();
         }
         io.micrometer.core.instrument.Metrics.counter("mirror.home.cache", "outcome", "miss").increment();
@@ -372,12 +380,14 @@ public class MirrorHomeService {
         try {
             cached = byCookie.get(key);
             if (cached != null && now < cached.until()) {
-                owned.complete(cached.rails());
-                return cached.rails();
+                var existing = cached.rails();
+                sessionProvider.ifCurrent(effective, key.generation(), () -> owned.complete(existing));
+                return existing;
             }
             // Taken when the build starts, so a slow build that began earlier can never publish over
             // a newer catalogue that finished first. Returns 0 (a no-op token) when persistence is off.
-            long buildSeq = catalogueStore.nextSequence();
+            String namespace = catalogueNamespace(key);
+            long buildSeq = namespace == null ? 0 : catalogueStore.nextSequence();
             Build built = build(effective, catalogueData(key));
             long ttl = built.complete() ? CACHE_MILLIS : PARTIAL_CACHE_MILLIS;
             sessionProvider.ifCurrent(effective, key.generation(), () -> {
@@ -386,17 +396,18 @@ public class MirrorHomeService {
                     byCookie.put(key, new Cached(built.rails(), now + ttl));
                 }
                 owned.complete(built.rails());
-                // Persist the last-known-good snapshot, only when this build is still the current
-                // generation (we are inside ifCurrent) and persistence is enabled. Never throws into
-                // the request: a persistence hiccup must not drop a rail the client already has.
-                if (catalogueStore.persistenceEnabled() && !built.rails().isEmpty()) {
-                    try {
-                        catalogueStore.publish(MirrorOtt.of(effective), built.rails(), built.complete(), buildSeq);
-                    } catch (RuntimeException ex) {
-                        log.debug("Mirror catalogue publish skipped: {}", ex.getClass().getSimpleName());
-                    }
-                }
             });
+            // A late commit stays in its original namespace. Neither JDBC nor transaction
+            // completion may hold the monitor used by playback generation lookups.
+            if (namespace != null && !built.rails().isEmpty()) {
+                try {
+                    catalogueStore.publishInNamespace(namespace, MirrorOtt.of(effective), built.rails(),
+                            built.complete(), buildSeq);
+                } catch (RuntimeException ex) {
+                    log.debug("Mirror catalogue publish skipped: {}", ex.getClass().getSimpleName());
+                }
+            }
+            sessionProvider.ifCurrent(effective, key.generation(), () -> {});
             return built.rails();
         } catch (RuntimeException | Error ex) {
             owned.completeExceptionally(ex);
@@ -404,6 +415,13 @@ public class MirrorHomeService {
         } finally {
             builds.remove(key, owned);
         }
+    }
+
+    private String catalogueNamespace(HomeKey key) {
+        if (!catalogueStore.persistenceEnabled()) return null;
+        String epoch = sessionProvider.catalogueEpoch(key.cookie(), key.generation());
+        if (epoch == null) return null;
+        return catalogueStore.namespace(epoch, signer);
     }
 
     private Build build(String cookie, CatalogueData data) {

@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.UUID;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.http.HttpStatus;
@@ -38,8 +39,12 @@ public class MirrorSessionProvider {
 
     public enum State { UNKNOWN, REACHABLE, VERIFIED, VALID, MISSING, REVOKED, ACCESS_DENIED, THROTTLED, TEMPORARILY_UNAVAILABLE }
 
-    private record Session(String cookie, long generation, State state) {}
-    private volatile Session current = new Session(null, 0, State.MISSING);
+    private record Session(String cookie, long generation, State state, String catalogueEpoch) {
+        Session withState(State next) {
+            return new Session(cookie, generation, next, catalogueEpoch);
+        }
+    }
+    private volatile Session current = new Session(null, 0, State.MISSING, null);
     private final java.util.Set<String> blocked = new java.util.HashSet<>();
     private final java.util.Map<String, State> callerDenials = new java.util.HashMap<>();
     private static final int MAX_DENIALS = 4096;
@@ -73,6 +78,7 @@ public class MirrorSessionProvider {
                 removeSession();
                 return;
             }
+            String before = fileEpoch(file);
             String saved = (recovery != null && recovery.isEnabled()
                     ? RecoveryFiles.read(file) : Files.readString(file, StandardCharsets.UTF_8)).trim();
             boolean valid = saved.indexOf('\r') < 0 && saved.indexOf('\n') < 0
@@ -82,10 +88,16 @@ public class MirrorSessionProvider {
                 removeSession();
                 return;
             }
-            if (!saved.equals(current.cookie()) && !blocked.contains(identity(saved))) {
-                if (current.cookie() != null) blocked.add(identity(current.cookie()));
+            String after = fileEpoch(file);
+            boolean sameCredential = saved.equals(current.cookie());
+            boolean stableEpoch = before != null && before.equals(after);
+            if ((!sameCredential || stableEpoch && !before.equals(current.catalogueEpoch()))
+                    && !blocked.contains(identity(saved)) && (!sameCredential || current.state() != State.REVOKED
+                    && current.state() != State.ACCESS_DENIED)) {
+                if (!sameCredential && current.cookie() != null) blocked.add(identity(current.cookie()));
                 callerDenials.remove(identity(saved));
-                current = new Session(saved, current.generation() + 1, State.UNKNOWN);
+                String epoch = stableEpoch ? before : UUID.randomUUID().toString();
+                current = new Session(saved, current.generation() + 1, State.UNKNOWN, epoch);
                 log.info("Loaded operator-provisioned mirror session");
             }
         } catch (IOException ex) {
@@ -96,7 +108,7 @@ public class MirrorSessionProvider {
     private void removeSession() {
         if (current.cookie() != null) {
             blocked.add(identity(current.cookie()));
-            current = new Session(null, current.generation() + 1, State.MISSING);
+            current = new Session(null, current.generation() + 1, State.MISSING, null);
         }
     }
 
@@ -149,7 +161,7 @@ public class MirrorSessionProvider {
         if (current.state() == State.REVOKED || current.state() == State.ACCESS_DENIED) return;
         if (next == State.REACHABLE && (current.state() == State.VERIFIED || current.state() == State.VALID)
                 || next == State.VERIFIED && current.state() == State.VALID) return;
-        current = new Session(current.cookie(), current.generation(), next);
+        current = current.withState(next);
     }
 
     boolean recoveryEnabled() {
@@ -170,14 +182,14 @@ public class MirrorSessionProvider {
     private synchronized void confirmCurrentExpiry(String cookie, long generation) {
         if (generation != 0 && current.generation() == generation && matches(cookie)
                 && current.state() != State.REVOKED) {
-            current = new Session(current.cookie(), generation, State.REVOKED);
+            current = current.withState(State.REVOKED);
             coordinator.getObject().begin(generation, identity(current.cookie()));
         }
     }
 
     synchronized void restoreRevocation(String fingerprint) {
         if (current.cookie() != null && identity(current.cookie()).equals(fingerprint)) {
-            current = new Session(current.cookie(), current.generation(), State.REVOKED);
+            current = current.withState(State.REVOKED);
         } else {
             blocked.add(fingerprint);
         }
@@ -185,7 +197,7 @@ public class MirrorSessionProvider {
 
     synchronized void blockUnvalidatedFile() {
         if (current.cookie() != null) {
-            current = new Session(current.cookie(), current.generation(), State.REVOKED);
+            current = current.withState(State.REVOKED);
         }
     }
 
@@ -215,7 +227,32 @@ public class MirrorSessionProvider {
     private void publishActivation(long generation, String expected, String candidate) {
         blocked.add(expected);
         callerDenials.remove(identity(candidate));
-        current = new Session(candidate, generation + 1, State.VERIFIED);
+        String epoch = fileEpoch(sessionFile());
+        current = new Session(candidate, generation + 1, State.VERIFIED,
+                epoch == null ? UUID.randomUUID().toString() : epoch);
+    }
+
+    /**
+     * Only the operator credential has a durable catalogue namespace. A caller-supplied
+     * credential outside that boundary may use the ordinary per-session memory cache.
+     */
+    public synchronized String catalogueEpoch(String cookie, long generation) {
+        if (generation(cookie) != generation) throw new Revoked();
+        if (generation == 0) return null;
+        return current.catalogueEpoch() + "\n" + identity(current.cookie());
+    }
+
+    private static String fileEpoch(Path file) {
+        try {
+            var attributes = Files.readAttributes(file, "unix:dev,ino,ctime");
+            if (attributes.get("dev") == null || attributes.get("ino") == null || attributes.get("ctime") == null) {
+                return null;
+            }
+            return attributes.get("dev") + ":" + attributes.get("ino") + ":" + attributes.get("ctime");
+        } catch (IOException | UnsupportedOperationException | IllegalArgumentException ex) {
+            // A deployment without stable file metadata gets a cold namespace on restart.
+            return null;
+        }
     }
 
     private boolean matches(String cookie) {

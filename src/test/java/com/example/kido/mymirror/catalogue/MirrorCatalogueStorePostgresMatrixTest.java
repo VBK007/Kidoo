@@ -1,6 +1,34 @@
 package com.example.kido.mymirror.catalogue;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import javax.sql.DataSource;
+
+import com.example.kido.media.dto.HomeDtos.MirrorRailDto;
+import com.example.kido.media.dto.HomeDtos.MirrorTileDto;
+import com.example.kido.mymirror.*;
+import com.example.kido.mymirror.manager.TokenManager;
+import com.example.kido.mymirror.repo.AdGateRepository;
+import com.example.kido.mymirror.repo.BrowseRepository;
+import com.example.kido.mymirror.service.DispatcherService;
+import com.example.kido.mymirror.service.MirrorHomeService;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.RestTemplate;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -22,6 +50,95 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
  * external server, no Docker, nothing shared with production.
  */
 class MirrorCatalogueStorePostgresMatrixTest extends MirrorCatalogueStoreMatrixTest {
+
+    @Autowired DataSource dataSource;
+
+    @Test
+    void blockedOldPublicationDoesNotBlockPlaybackOrReachTheReplacement(@TempDir Path dir) throws Exception {
+        String old = "t_hash_t=old-fixture";
+        String replacement = "t_hash_t=replacement-fixture";
+        Path sessionFile = Files.writeString(dir.resolve("session.txt"), old);
+        var properties = new MirrorSessionProperties();
+        properties.setSessionFile(sessionFile.toString());
+        var rest = new RestTemplate();
+        var gate = new AdGateRepository(rest);
+        String base = "https://local-fixture.invalid";
+        var dispatcher = new DispatcherService(null) {
+            @Override public String resolveActiveBaseUrl() { return base; }
+        };
+        var sessions = new MirrorSessionProvider(properties, gate, dispatcher);
+        ReflectionTestUtils.invokeMethod(sessions, "load");
+        long generation = sessions.generation(old);
+        var signer = new MirrorStreamSigner();
+        String namespace = store.namespace(sessions.catalogueEpoch(old, generation), signer);
+        var reopened = new MirrorSessionProvider(properties, gate, dispatcher);
+        ReflectionTestUtils.invokeMethod(reopened, "load");
+        assertEquals(namespace, store.namespace(reopened.catalogueEpoch(old, reopened.generation(old)), signer));
+
+        var seed = List.of(new MirrorRailDto("seed", "Existing",
+                List.of(new MirrorTileDto("1", "Existing", null, null))));
+        assertTrue(store.publishInNamespace(namespace, "pv", seed, true, store.nextSequence()));
+        var mock = MockRestServiceServer.bindTo(rest).build();
+        mock.expect(requestTo(base + "/pv/homepage.php")).andRespond(withSuccess(
+                "{\"slider\":[{\"id\":\"0RTZ57DQ6PBHH29UN5JS7U7CW4\"}]}", MediaType.APPLICATION_JSON));
+        mock.expect(requestTo(org.hamcrest.Matchers.startsWith(base + "/pv/post.php"))).andRespond(
+                withSuccess("{\"title\":\"Delayed build\"}", MediaType.APPLICATION_JSON));
+
+        var home = new MirrorHomeService(new BrowseRepository(rest), null, dispatcher,
+                new TokenManager(rest, dispatcher, gate, sessions), sessions, store, signer);
+        try (var lock = dataSource.getConnection(); var observer = dataSource.getConnection();
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            lock.setAutoCommit(false);
+            int holder;
+            try (var st = lock.createStatement(); var result = st.executeQuery("select pg_backend_pid()")) {
+                assertTrue(result.next());
+                holder = result.getInt(1);
+            }
+            try (var st = lock.prepareStatement(
+                    "select 1 from mirror_catalogue_snapshot where catalogue_scope=? and ott='pv' for update")) {
+                st.setString(1, namespace);
+                try (var result = st.executeQuery()) { assertTrue(result.next()); }
+            }
+            var publication = pool.submit(() -> home.railWithStatus(old, "pv"));
+            try {
+                awaitBlockedWriter(observer, holder);
+                assertEquals(generation, pool.submit(() -> sessions.generation(old)).get(1, TimeUnit.SECONDS));
+                Path next = Files.writeString(dir.resolve("candidate.txt"), replacement);
+                Files.move(next, sessionFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                pool.submit(() -> ReflectionTestUtils.invokeMethod(sessions, "load")).get(1, TimeUnit.SECONDS);
+                assertEquals(generation + 1, sessions.generation(replacement));
+                assertEquals("unavailable", home.warmRails(replacement, "pv").state());
+            } finally {
+                lock.rollback();
+            }
+            assertEquals("unavailable", publication.get(5, TimeUnit.SECONDS).state());
+        }
+        mock.verify();
+        assertEquals("Delayed build", store.readInNamespace(namespace, "pv").orElseThrow()
+                .rails().getFirst().items().getFirst().title());
+        assertEquals("unavailable", home.warmRails(old, "pv").state());
+        assertEquals("unavailable", home.warmRails(replacement, "pv").state());
+        var restarted = new MirrorSessionProvider(properties, gate, dispatcher);
+        ReflectionTestUtils.invokeMethod(restarted, "load");
+        assertNotEquals(namespace, store.namespace(
+                restarted.catalogueEpoch(replacement, restarted.generation(replacement)), signer));
+    }
+
+    private static void awaitBlockedWriter(java.sql.Connection observer, int holder) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+        try (var check = observer.prepareStatement("""
+                select exists(select 1 from pg_stat_activity where ? = any(pg_blocking_pids(pid)))
+                """)) {
+            check.setInt(1, holder);
+            while (System.nanoTime() < deadline) {
+                try (var result = check.executeQuery()) {
+                    if (result.next() && result.getBoolean(1)) return;
+                }
+                Thread.sleep(10);
+            }
+        }
+        fail("Catalogue writer never reached the PostgreSQL row lock");
+    }
 
     private static EmbeddedPostgres POSTGRES;
 

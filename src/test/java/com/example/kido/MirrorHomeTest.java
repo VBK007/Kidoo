@@ -151,7 +151,7 @@ class MirrorHomeTest {
         // configuration (the TransactionTemplates are built but their execute() is never reached).
         MirrorCatalogueStore catalogueStore = new MirrorCatalogueStore(null, null, null, new MirrorCatalogueProperties(), null);
         return new MirrorHomeService(new BrowseRepository(rest), playback, dispatcher, tokens, sessionProvider,
-                catalogueStore);
+                catalogueStore, new MirrorStreamSigner());
     }
 
     // Netflix serves its categorised home as HTML at /mobile/home?app=1: one <h2 class="tray-title">

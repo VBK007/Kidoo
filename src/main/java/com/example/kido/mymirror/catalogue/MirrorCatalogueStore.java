@@ -128,6 +128,11 @@ public class MirrorCatalogueStore {
         return props.getScope();
     }
 
+    /** Versioned physical key for an authorized generation within the configured deployment scope. */
+    public String namespace(String epoch, com.example.kido.mymirror.MirrorStreamSigner signer) {
+        return "g1-" + signer.sign("catalogue\n" + scope() + "\n" + epoch);
+    }
+
     /** Normalize an OTT token to the stored form; blank/unknown defaults to Netflix ("nf"). */
     public String ott(String raw) {
         if (raw == null || raw.isBlank()) {
@@ -177,10 +182,15 @@ public class MirrorCatalogueStore {
      */
     @Transactional
     public Optional<CatalogueView> read(String ott) {
+        return readInNamespace(scope(), ott);
+    }
+
+    @Transactional
+    public Optional<CatalogueView> readInNamespace(String namespace, String ott) {
         if (!persistenceEnabled()) {
             return Optional.empty();
         }
-        String scope = scope();
+        String scope = namespace;
         String ottKey = ott(ott);
         Optional<MirrorCatalogueSnapshot> found;
         try {
@@ -226,10 +236,15 @@ public class MirrorCatalogueStore {
      * @param buildSeq the token from {@link #nextSequence()} taken when this build started
      */
     public boolean publish(String ott, List<MirrorRailDto> rails, boolean complete, long buildSeq) {
+        return publishInNamespace(scope(), ott, rails, complete, buildSeq);
+    }
+
+    public boolean publishInNamespace(String namespace, String ott, List<MirrorRailDto> rails,
+                                      boolean complete, long buildSeq) {
         if (!persistenceEnabled() || rails == null || rails.isEmpty()) {
             return false;
         }
-        String scope = scope();
+        String scope = namespace;
         String ottKey = ott(ott);
         Instant now = Instant.now();
 
