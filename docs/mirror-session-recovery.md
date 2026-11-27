@@ -154,3 +154,39 @@ renewal interface, service authentication method and scopes, credential response
 schema, definitive expiry discriminator, and positive validation response from
 the provider. Add egress only for the approved interface when it is available.
 Do not use the diagnostic capture workflow to automate a human verification gate.
+
+#### Opt-in backend overlay and integrated fixture
+
+`compose.recovery-coordinator.yaml` adds a read-only socket directory mount to an
+existing `kidoo` service and selects the worker adapter. Use it only with a backend
+image that packages that adapter. The overlay defaults recovery to disabled.
+Keep the worker Compose project separate and provision both private directories
+first. The two services share only the socket directory. Spring owns its existing
+session, staging and incident paths. It does not depend on worker startup to serve
+core APIs.
+
+Validate the worker and backend Compose files separately with `docker compose config
+--quiet`, using the actual paths. Run the disconnected Docker and Java 21 fixture
+with `bash scripts/test-recovery-integration.sh /absolute/path/to/seccomp.json`.
+An optional Gradle `--tests` selector narrows the run. Without the runner, Gradle
+skips the Docker integration case. The runner matches the test host user to the
+fixture socket owner. Production stays UID/GID 1001. The runner only uses the
+synthetic worker and loopback provider.
+
+#### Provider acquisition interface still required
+
+`run-capture.mjs` demonstrates ephemeral Chromium profiles, loopback browser
+readiness, bounded waiting for candidate state, and cleanup. These techniques
+are reusable if the provider officially supports browser-based unattended renewal.
+The capture workflow prompts the operator to complete an ad verification step
+and then observes a cookie. Its click automation, device identity emulation,
+and unrelated catalogue and playback capture are outside production acquisition.
+
+| Contract | Evidence needed before integration |
+| --- | --- |
+| Unattended authentication | The official grant or service login, allowed account type, scopes, secret provisioning, and whether human verification applies to normal renewal. |
+| Credential issuance | The exact supported HTTPS endpoint or SDK method, request parameters, permitted retries, and a provider-approved test account or environment. |
+| Network destinations | Exact approved host and port pairs for issuance, required identity dependencies, and candidate validation. Confirm redirect behavior. Keep all other destinations blocked. Diagnostic capture host patterns are insufficient for an egress allowlist. |
+| Credential response | Success status, response field or cookie placement and encoding, scope, expiry, and whether companion fields are required. The observed cookie name `t_hash_t` is not an issuance contract. |
+| Definitive expiry | The endpoint, definitive status and discriminator header/value that establish revocation of the credential currently in use. Generic denial, rate limiting and stream limits do not qualify. |
+| Positive validation | The approved read-only endpoint, required input credentials, success status and exact positive response marker. HTTP 200 alone is insufficient. |

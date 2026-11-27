@@ -71,6 +71,7 @@ dependencies {
 }
 
 tasks.named('test') {
+    inputs.property('recoveryWorkerFixture', providers.environmentVariable('KIDOO_TEST_WORKER_SOCKET').isPresent())
     useJUnitPlatform {
         // Timing-based load benchmarks are opt-in so they never flake the regression baseline.
         // Run them with: ./gradlew test -PrunBenchmarks --tests '*Benchmark'

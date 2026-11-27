@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.http.HttpHeaders;
@@ -156,6 +157,111 @@ class SessionRecoveryCoordinatorTest {
         }
     }
 
+    @Test
+    @EnabledIfEnvironmentVariable(named = "KIDOO_TEST_WORKER_SOCKET", matches = "/.+")
+    void dockerWorkerAcquisitionAndCoordinatorReconcileTheSameIncident() throws Exception {
+        Path adapter = Path.of("tools/netmirror-capture/acquire-worker.mjs").toAbsolutePath();
+        String socket = System.getenv("KIDOO_TEST_WORKER_SOCKET");
+        String worker = System.getenv("KIDOO_TEST_WORKER_CONTAINER");
+        assertTrue(worker != null && worker.matches("kidoo-integrated-worker-[0-9]+"), "Expected a disposable worker");
+        var receivedCandidate = new CountDownLatch(1);
+        var allowValidation = new CountDownLatch(1);
+        try (var fixture = new Fixture("exit 5\n", true, Duration.ofSeconds(60))) {
+            var script = Files.writeString(root.resolve("worker-adapter.mjs"), """
+                    import { appendFile } from 'node:fs/promises';
+                    import { acquire } from '%s';
+                    await appendFile('launches', 'launch\\n');
+                    process.exitCode = await acquire(process.argv[2], Number(process.argv[3]), '%s');
+                    """.formatted(adapter.toUri(), socket));
+            fixture.config.setScript(script);
+            fixture.config.setNode(System.getenv("KIDOO_TEST_WORKER_NODE"));
+            fixture.config.setValidationTimeout(Duration.ofSeconds(30));
+            fixture.beforeValidationResponse = () -> {
+                receivedCandidate.countDown();
+                try {
+                    if (!allowValidation.await(15, TimeUnit.SECONDS)) throw new java.io.IOException("Fixture validation blocked");
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.IOException(ex);
+                }
+            };
+            fixture.mock.createContext("/expiry", exchange -> {
+                try (exchange) {
+                    assertEquals(OLD, exchange.getRequestHeaders().getFirst("Cookie"));
+                    exchange.getResponseHeaders().set("X-Fixture-Session", "expired");
+                    exchange.sendResponseHeaders(401, -1);
+                }
+            });
+            var beans = new DefaultListableBeanFactory();
+            beans.registerSingleton("sessions", fixture.provider);
+            var upstream = new MirrorHttpConfig().restTemplate(fixture.access, new MirrorRequestLimit(),
+                    beans.getBeanProvider(MirrorSessionProvider.class));
+            var headers = new HttpHeaders();
+            headers.set(HttpHeaders.COOKIE, OLD);
+            assertThrows(MirrorSessionProvider.Revoked.class, () -> upstream.exchange(
+                    fixture.config.getExpiryEndpoint(), org.springframework.http.HttpMethod.GET,
+                    new org.springframework.http.HttpEntity<>(headers), Void.class));
+            var start = new CountDownLatch(1);
+            long oldGeneration = fixture.generation;
+            try (var clients = Executors.newVirtualThreadPerTaskExecutor()) {
+                var calls = java.util.stream.IntStream.range(0, 199).mapToObj(i -> clients.submit(() -> {
+                    start.await();
+                    fixture.confirm();
+                    return null;
+                })).toList();
+                start.countDown();
+                for (var call : calls) call.get(10, TimeUnit.SECONDS);
+            }
+            assertTrue(receivedCandidate.await(75, TimeUnit.SECONDS), () -> fixture.coordinator.status().toString());
+            try {
+                assertEquals(SessionRecoveryCoordinator.State.VALIDATING, fixture.coordinator.status().state());
+                assertEquals(OLD, Files.readString(fixture.active).strip());
+                try (var files = Files.list(fixture.config.getStagingDirectory())) {
+                    Path staged = files.filter(path -> path.toString().endsWith(".cookie")).findFirst().orElseThrow();
+                    assertEquals(NEW, Files.readString(staged).strip());
+                    assertEquals(fromString("rw-------"), Files.getPosixFilePermissions(staged));
+                }
+                var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders
+                        .standaloneSetup(new com.example.kido.common.HealthController()).build();
+                mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/health"))
+                        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+            } finally {
+                allowValidation.countDown();
+            }
+            fixture.await(SessionRecoveryCoordinator.State.SUCCEEDED, Duration.ofSeconds(25));
+            assertEquals(1, fixture.validations.get());
+            assertEquals(NEW + "\n", Files.readString(fixture.active));
+            assertEquals(oldGeneration + 1, fixture.provider.generation(NEW));
+            assertEquals(List.of("launch"), Files.readAllLines(root.resolve("launches")));
+            dockerFixture("exec", worker, "sh", "-c", "test -z \"$(find /tmp -maxdepth 1 -name 'kidoo-browser-*')\"");
+            var incident = fixture.coordinator.status().incidentId();
+            String journal = RecoveryFiles.read(fixture.config.getMetadataPath());
+            fixture.coordinator.stop();
+            RecoveryFiles.replace(fixture.config.getMetadataPath(),
+                    journal.replace("\"state\":\"SUCCEEDED\"", "\"state\":\"ACTIVATING\""));
+            dockerFixture("restart", worker);
+            fixture.reopen();
+            assertEquals(incident, fixture.coordinator.status().incidentId());
+            assertEquals("ACTIVATION_RECONCILED", fixture.coordinator.status().outcome());
+            assertEquals(NEW, fixture.provider.ensureSession());
+            assertEquals(List.of("launch"), Files.readAllLines(root.resolve("launches")));
+        }
+    }
+
+    private static void dockerFixture(String... args) throws Exception {
+        var command = new java.util.ArrayList<String>();
+        command.add("docker");
+        command.addAll(List.of(args));
+        var process = new ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+        try {
+            assertTrue(process.waitFor(20, TimeUnit.SECONDS), "Docker fixture command timed out");
+            assertEquals(0, process.exitValue());
+        } finally {
+            if (process.isAlive()) process.destroyForcibly();
+        }
+    }
+
     @FunctionalInterface
     interface BeforeResponse { void run() throws java.io.IOException; }
 
@@ -239,7 +345,11 @@ class SessionRecoveryCoordinatorTest {
         }
 
         void await(SessionRecoveryCoordinator.State expected) throws InterruptedException {
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(7);
+            await(expected, Duration.ofSeconds(7));
+        }
+
+        void await(SessionRecoveryCoordinator.State expected, Duration timeout) throws InterruptedException {
+            long deadline = System.nanoTime() + timeout.toNanos();
             while (coordinator.status().state() != expected && System.nanoTime() < deadline) Thread.sleep(20);
             assertEquals(expected, coordinator.status().state(), () -> coordinator.status().outcome());
         }

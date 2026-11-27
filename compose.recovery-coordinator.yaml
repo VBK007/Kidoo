@@ -1,0 +1,13 @@
+# Explicit overlay for a backend image that packages acquire-worker.mjs.
+services:
+  kidoo:
+    environment:
+      MIRROR_RECOVERY_ENABLED: "${KIDOO_ENABLE_AUTHORIZED_RECOVERY:-false}"
+      MIRROR_RECOVERY_SCRIPT: /app/recovery/acquire-worker.mjs
+    volumes:
+      - type: bind
+        source: ${KIDOO_RECOVERY_SOCKET_DIR:?provision a private socket directory owned by UID 1001}
+        target: /run/kidoo-recovery
+        read_only: true
+        bind:
+          create_host_path: false
