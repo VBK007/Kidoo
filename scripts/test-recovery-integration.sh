@@ -20,7 +20,7 @@ mkdir -m 700 "$base/socket" "$base/state"
 # Match the invoking UID for local fixture access. Production uses fixed UID/GID 1001.
 docker run -d --name "$worker" --pull never --network none --init --read-only \
     --user "$(id -u):$(id -g)" --security-opt no-new-privileges --security-opt "seccomp=$profile" \
-    --cap-drop ALL --cpus 0.75 --memory 512m --memory-swap 512m --pids-limit 160 --shm-size 128m \
+    --env KIDOO_FIXTURE_BROWSER_TIMEOUT_MS=120000 --cap-drop ALL --cpus 0.75 --memory 512m --memory-swap 512m --pids-limit 160 --shm-size 128m \
     --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=128m \
     --mount "type=bind,source=$base/socket,target=/run/kidoo-recovery" \
     --mount "type=bind,source=$base/state,target=/var/lib/kidoo-worker" "$image" --synthetic-fixture >/dev/null

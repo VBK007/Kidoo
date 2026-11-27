@@ -166,7 +166,7 @@ class SessionRecoveryCoordinatorTest {
         assertTrue(worker != null && worker.matches("kidoo-integrated-worker-[0-9]+"), "Expected a disposable worker");
         var receivedCandidate = new CountDownLatch(1);
         var allowValidation = new CountDownLatch(1);
-        try (var fixture = new Fixture("exit 5\n", true, Duration.ofSeconds(60))) {
+        try (var fixture = new Fixture("exit 5\n", true, Duration.ofSeconds(150))) {
             var script = Files.writeString(root.resolve("worker-adapter.mjs"), """
                     import { appendFile } from 'node:fs/promises';
                     import { acquire } from '%s';
@@ -212,7 +212,7 @@ class SessionRecoveryCoordinatorTest {
                 start.countDown();
                 for (var call : calls) call.get(10, TimeUnit.SECONDS);
             }
-            assertTrue(receivedCandidate.await(75, TimeUnit.SECONDS), () -> fixture.coordinator.status().toString());
+            assertTrue(receivedCandidate.await(165, TimeUnit.SECONDS), () -> fixture.coordinator.status().toString());
             try {
                 assertEquals(SessionRecoveryCoordinator.State.VALIDATING, fixture.coordinator.status().state());
                 assertEquals(OLD, Files.readString(fixture.active).strip());

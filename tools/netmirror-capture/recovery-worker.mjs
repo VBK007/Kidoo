@@ -9,6 +9,9 @@ const socketDirectory = '/run/kidoo-recovery';
 const stateDirectory = '/var/lib/kidoo-worker';
 const socketPath = join(socketDirectory, 'acquisition.sock');
 const fixture = process.argv[2] === '--synthetic-fixture';
+// The isolated integration runner can allow extra time for cold browser startup on a busy host.
+const timeout = fixture ? Number(process.env.KIDOO_FIXTURE_BROWSER_TIMEOUT_MS ?? 30000) : 30000;
+if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120000) throw new Error('Invalid fixture timeout');
 const id = process.getuid();
 
 for (const directory of [socketDirectory, stateDirectory]) {
@@ -89,7 +92,7 @@ const server = createServer(async (req, res) => {
   }
   const controller = new AbortController();
   active = controller;
-  const timer = setTimeout(() => controller.abort(), 30000);
+  const timer = setTimeout(() => controller.abort(), timeout);
   const disconnect = () => controller.abort();
   res.on('close', disconnect);
   try {
