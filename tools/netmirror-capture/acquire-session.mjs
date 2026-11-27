@@ -14,7 +14,8 @@ async function acquire() {
   const inbox = join(dirname(output), 'operator', basename(output));
   const deadline = performance.now() + duration;
   while (performance.now() < deadline) {
-    if (process.ppid !== parent || parent === 1) return 4;
+    // A container can legitimately run Spring Boot as PID 1.
+    if (process.ppid !== parent) return 4;
     try {
       const stat = await lstat(inbox);
       if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 || stat.size > 8192) return 2;

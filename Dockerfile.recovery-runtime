@@ -1,0 +1,32 @@
+# Package a Java 21 bootJar already built and tested from this checkout.
+# Pass --build-context artifact=<directory containing only app.jar> to docker build.
+FROM eclipse-temurin:21-jre-jammy AS java
+
+FROM node:22-bookworm-slim AS runtime-deps
+WORKDIR /app
+COPY --from=java /opt/java/openjdk /opt/java/openjdk
+COPY --from=java /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="/opt/java/openjdk/bin:${PATH}"
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates chromium chromium-sandbox ffmpeg python3-aubio i965-va-driver intel-media-va-driver \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1001 appuser \
+    && install -d -m 0755 -o appuser -g appuser /app/data /app/logs \
+    && install -d -m 0700 -o appuser -g appuser \
+        /var/lib/kidoo/recovery /var/lib/kidoo/recovery/staging /var/lib/kidoo/recovery/staging/operator
+FROM runtime-deps
+COPY --from=artifact /app.jar app.jar
+COPY tools/netmirror-capture/acquire-session.mjs /app/recovery/acquire-session.mjs
+ENV HOME=/home/appuser \
+    MIRROR_RECOVERY_ENABLED=false \
+    MIRROR_SESSION_FILE=/var/lib/kidoo/recovery/session.txt \
+    MIRROR_RECOVERY_NODE=/usr/local/bin/node \
+    MIRROR_RECOVERY_SCRIPT=/app/recovery/acquire-session.mjs \
+    MIRROR_RECOVERY_WORKING_DIRECTORY=/var/lib/kidoo/recovery \
+    MIRROR_RECOVERY_STAGING_DIRECTORY=/var/lib/kidoo/recovery/staging \
+    MIRROR_RECOVERY_METADATA_PATH=/var/lib/kidoo/recovery/recovery.json
+USER 1001
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
