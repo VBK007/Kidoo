@@ -18,7 +18,7 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
         /var/lib/kidoo/recovery /var/lib/kidoo/recovery/staging /var/lib/kidoo/recovery/staging/operator
 FROM runtime-deps
 COPY --from=artifact /app.jar app.jar
-COPY tools/netmirror-capture/acquire-session.mjs /app/recovery/acquire-session.mjs
+COPY tools/netmirror-capture/acquire-session.mjs tools/netmirror-capture/acquire-worker.mjs /app/recovery/
 ENV HOME=/home/appuser \
     MIRROR_RECOVERY_ENABLED=false \
     MIRROR_SESSION_FILE=/var/lib/kidoo/recovery/session.txt \

@@ -119,3 +119,38 @@ and automated refresh approval. Configure a non-secret
 minute. An enabled flag without all these settings admits no work. Each eligible tick has one
 worker, no queued runs, a three-second upstream budget, and the shared provider limiter.
 It skips fresh snapshots and yields when the upstream slot or pacing interval is occupied.
+
+### Dedicated recovery worker
+
+`Dockerfile.recovery-worker` packages Node 22 and Chromium without the application.
+`compose.recovery-worker.yaml` runs it as UID/GID 1001 with 0.75 CPU, 512 MiB RAM,
+zero container swap, 160 PIDs, a read-only root, and the validated Chromium seccomp
+profile. The service starts only when the recovery-worker profile is requested.
+Its network is disabled. It can run the synthetic browser fixture and otherwise
+rejects acquisition because the provider renewal interface is unavailable.
+
+Provision separate owner-only host directories for the shared socket and the worker
+journal. Use mode 0700 and ownership 1001:1001. Set
+`KIDOO_RECOVERY_SOCKET_DIR`, `KIDOO_RECOVERY_WORKER_STATE_DIR`, and
+`KIDOO_RECOVERY_SECCOMP` to their absolute paths. Mount only the socket directory
+at `/run/kidoo-recovery` in Spring; the coordinator adapter can use a read-only
+mount for that directory. Keep the existing persistent Spring staging and
+recovery journal private to Spring. Never mount its active session, staging,
+secrets, database files, or Docker socket in the worker.
+
+In a future authorized deployment, package `acquire-worker.mjs` with the
+backend and set `MIRROR_RECOVERY_SCRIPT` to its absolute container path. The
+adapter asks for one acquisition over the private Unix socket and stages at most
+8 KiB in the coordinator's exclusive 0600 candidate file. The worker holds an
+exclusive journal lock and refuses a second simultaneous request. Losing the
+client or reaching the deadline kills the browser and removes its temporary
+profile. Spring retains validation, journal reconciliation, generation fencing,
+and atomic replacement. There is no public service port or worker restart
+dependency on the backend.
+
+Use `--synthetic-fixture` only in a disconnected disposable worker with mock
+validation. Before enabling real recovery, obtain the exact official unattended
+renewal interface, service authentication method and scopes, credential response
+schema, definitive expiry discriminator, and positive validation response from
+the provider. Add egress only for the approved interface when it is available.
+Do not use the diagnostic capture workflow to automate a human verification gate.

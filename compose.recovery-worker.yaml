@@ -1,0 +1,34 @@
+services:
+  recovery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.recovery-worker
+    profiles: [recovery-worker]
+    user: "1001:1001"
+    init: true
+    restart: "on-failure:3"
+    stop_grace_period: 15s
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=${KIDOO_RECOVERY_SECCOMP:?set the validated Chromium seccomp profile path}
+    cpus: 0.75
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 160
+    shm_size: 128m
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777,size=128m
+    volumes:
+      - type: bind
+        source: ${KIDOO_RECOVERY_SOCKET_DIR:?provision a private socket directory owned by UID 1001}
+        target: /run/kidoo-recovery
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${KIDOO_RECOVERY_WORKER_STATE_DIR:?provision a private worker state directory owned by UID 1001}
+        target: /var/lib/kidoo-worker
+        bind:
+          create_host_path: false
